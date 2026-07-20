@@ -1,0 +1,73 @@
+ { 1	:'admin      ',\
+  37	:'chj        ',\
+  38	:'jjh        ',\
+  39	:'ecs        ',\
+  40	:'cauphh     ',\
+  41	:'snuchj     ',\
+  42	:'kaerikmk   ',\
+  43	:'kribbbk    ',\
+  44	:'dgmif      ',\
+  45	:'ckd        ',\
+  46	:'kbrihhlim  ',\
+  47	:'linwoo     ',\
+  49	:'kuhks      ',\
+  51	:'nccbilee   ',\
+  53	:'unistkcu   ',\
+  54	:'gisteom    ',\
+  55	:'ewhacha    ',\
+  56	:'poscho     ',\
+  57	:'unilcw     ',\
+  58	:'knujhc     ',\
+  59	:'yuwtl      ',\
+  60	:'dongaysm   ',\
+  61	:'kaistkhs   ',\
+  62	:'snulbj     ',\
+  63	:'knukbs     ',\
+  64	:'csushlee   ',\
+  65	:'kuhwang    ',\
+  66	:'skkukyh    ',\
+  67	:'kopjhlee   ',\
+  68	:'cgijwc     ',\
+  69	:'dgujylee   ',\
+  70	:'kujeon     ',\
+  71	:'dmuybx     ',\
+  72	:'kistchs    ',\
+  73	:'kistkek    ',\
+  74	:'snuhnc     ',\
+  75	:'11c        ',\
+  76	:'kuhys      ',\
+  77	:'posmsk     ',\
+  78	:'gistmsj    ',\
+  79	:'gnulkh     ',\
+  80	:'kaistbhoh  ',\
+  81	:'lgysj      ',\
+  82	:'snuhbw     ',\
+  83	:'b2shlk     ',\
+  85	:'lsjlsjj    ',\
+  87	:'palnam     ',\
+  89	:'snulhh     ',\
+  90	:'bl5c       ',\
+  91	:'gistjwk    ',\
+  92	:'ncchsk     ',\
+  93	:'snujsk     ',\
+  94	:'kribb_shin ',\
+  95	:'yucho      ',\
+  97	:'jlee       ',\
+  98	:'dyokim     ',\
+  99	:'inseong89  ',\
+100	:'hyunkbri   ',\
+101	:'snush      ',\
+102	:'kribb_hwang',\
+103	:'postechljo ',\
+104	:'mdseo      ',\
+105	:'ssjinn     ',\
+106	:'snujy      ',\
+107	:'uosjc      ',\
+108	:'shg        ',\
+109	:'kbiolee    ',\
+110	:'mogam      ',\
+111	:'niccolo    ',\
+112	:'kyg        ',\
+113	:'snuswj     ',\
+114	:'promedigen ',\ 
+}

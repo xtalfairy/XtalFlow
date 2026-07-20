@@ -1,0 +1,280 @@
+/* define colors */
+.section-box, .tool-box {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.section-box > * > label, .section-box > label {
+  font-weight: bold;
+  margin: 6px;
+}
+
+.device-fbk {
+  font-size: 90%;
+  font-weight: bold;
+}
+
+.device-fbk.prefetched {
+  background: rgba(254, 255, 172, 0.75);
+  font-size: 90%;
+  font-weight: bold;
+}
+
+.state-active, .state-inactive {
+  font-size: 90%;
+  font-weight: bold;
+}
+
+.state-active {
+  background: #4a90d9;
+  color: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+}
+
+.state-inactive {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.value-fbk {
+
+}
+
+.value-sp {
+  font-size: 90%;
+}
+
+.list-action-box {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.device-label {
+  font-size: 85%;
+  text-shadow: 1px 1px rgba(0, 0, 0, 0.1); /* Doesn't work */
+}
+
+.data-header {
+  font-size: 85%;
+  opacity: 0.85;
+  font-weight: bold;
+  color: gray;
+}
+
+.data-subtitle {
+  color: gray;
+}
+
+.arrow-frame {
+  border: solid 1px;
+  border-bottom-width: 0px;
+  border-top-width: 0px;
+  background-color: @theme_bg_color;
+  border-color: @borders;
+}
+
+.arrow-frame:dir(ltr) {
+  border-right-width: 0px;
+}
+
+.arrow-frame:dir(rtl) {
+  border-left-width: 0px;
+}
+
+.run-row {
+  border-bottom: 1px solid alpha(@borders, 0.4);
+}
+
+.status-box {
+  border: 1px solid @borders;
+  border-radius: 2px;
+}
+
+.status-box label {
+  font-size: 90%;
+}
+
+.add-tool, .complete-run {
+  opacity: 0.5;
+}
+
+.active-run image {
+  color: @warning_color;
+}
+
+.paused-run image {
+  color: @warning_color;
+}
+
+.complete-run image {
+  color: @success_color;
+}
+
+.error-run image {
+  color: @error_color;
+}
+
+.hint-text {
+  font-size: 90%;
+  opacity: .8;
+}
+
+.changed {
+  color: red;
+}
+
+.uv-light {
+  color: #9B59B6;
+}
+
+label.status-fbk, label.status-label {
+  font-size: 95%;
+}
+
+label.status-label {
+  opacity: 0.8;
+}
+
+label.status-fbk {
+  font-weight: bold;
+}
+
+.periodic-table label {
+  font-size: 90%;
+}
+
+.edge-menu {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.edge-box {
+  background: DodgerBlue;
+  color: #fff;
+  font-weight: bold;
+  border-radius: 2px;
+}
+
+.edge-box.disabled {
+  border: 1px solid alpha(@borders, 0.4);
+  background: transparent;
+  color: @borders;
+}
+
+.element-box {
+  border-radius: 2px;
+  font-weight: bold;
+}
+
+.la-ac-gap-right {
+  border-right: 4px solid rgba(0, 0, 0, 0.2);
+}
+
+.la-ac-gap-left {
+  border-left: 4px solid rgba(0, 0, 0, 0.2);
+}
+
+.plot-tool-message {
+  font-family: monospace;
+  font-size: 85%;
+}
+
+.tuner-fbk {
+  font-family: monospace;
+}
+
+.config-value, .config-label {
+  font-size: 90%;
+}
+
+.config-value, .config-title {
+  font-weight: bold;
+}
+
+.config-label {
+  opacity: 0.8;
+}
+
+.diagnostics {
+  font-weight: bold;
+  font-size: 95%;
+}
+
+.chat-message-box {
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  border-radius: 10px;
+  padding: 8px;
+  color: #000;
+}
+
+.bubble-rtl {
+  border-top-right-radius: 0;
+}
+
+.bubble-ltr {
+  border-top-left-radius: 0;
+}
+
+.chat-username {
+  font-size: 90%;
+}
+
+.chat-message {
+  font-weight: normal;
+}
+
+.chat-time {
+  opacity: .6;
+}
+
+.dewar {
+  background: DodgerBlue;
+  border: 1px solid #000000;
+}
+
+.value-fbk, .value-sp {
+  color: inherit;
+  font-size: 90%;
+  padding: 0 6px;
+}
+.value-fbk {
+  font-weight: bold;
+}
+
+.mode-fbk {
+  font-size: 75%;
+  color:  #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+}
+
+.mode-fbk.mode-mounting {
+  background-color: #3a7ca8;
+}
+
+.mode-fbk.mode-centering {
+  background-color: #e98b39;
+}
+
+.mode-fbk.mode-collecting {
+  background-color: #1e8449;
+}
+
+.mode-fbk.mode-aligning {
+  background-color: #D2413A;
+}
+
+.mode-fbk.mode-unknown {
+  background-color: #666666;
+}
+
+.video-bkg {
+   background-color: rgba(0, 0, 0, 0.08);
+}
+
+.dev-warning, label.status-fbk.dev-warning {
+  color: #e98b39;
+}
+
+.dev-error, label.status-fbk.dev-error {
+  color: #D2413A;
+}
+
+.dev-active {
+  color: #d2413a;
+}

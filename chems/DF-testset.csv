@@ -1,0 +1,14 @@
+﻿Vendor,Library,No,ID,Formula,MW,Smile,Conc_mM,Solvent,Plate_ID,Plate_well
+PrestWick,DrugFragCoreSet,1,Prestw-Frag-0608,C8H15NO,141.21485,CN1C2CCC1CC(O)C2,100,DMSO,PwDF-CoreS-01,C03
+PrestWick,DrugFragCoreSet,2,Prestw-Frag-1001,C9H7NO2,161.16164,NC1=Cc2ccccc2OC1=O,100,DMSO,PwDF-CoreS-01,D03
+PrestWick,DrugFragCoreSet,3,Prestw-Frag-1003,C11H11N3,185.23042,Cc1cc(nnc1N)c2ccccc2,100,DMSO,PwDF-CoreS-01,E03
+PrestWick,DrugFragCoreSet,4,Prestw-Frag-1006,C7H8N2O3S,200.21741,NC(=O)NS(=O)(=O)c1ccccc1,100,DMSO,PwDF-CoreS-01,F03
+PrestWick,DrugFragCoreSet,5,Prestw-Frag-1008,C4H5N3OS,143.16795,CC(=O)Nc1nncs1,100,DMSO,PwDF-CoreS-01,G03
+PrestWick,DrugFragCoreSet,6,Prestw-Frag-1013,C15H14O2,226.27763,COC(=O)C(c1ccccc1)c2ccccc2,100,DMSO,PwDF-CoreS-01,H03
+PrestWick,DrugFragCoreSet,7,Prestw-Frag-1014,C11H12N2,172.23169,C1Cc2c(CN1)[nH]c3ccccc23,100,DMSO,PwDF-CoreS-01,I03
+PrestWick,DrugFragCoreSet,8,Prestw-Frag-1016,C15H24O,220.35793,Cc1cc(ccc1O)C(C)(C)CC(C)(C)C,100,DMSO,PwDF-CoreS-01,J03
+PrestWick,DrugFragCoreSet,9,Prestw-Frag-1017,C11H18NO,180.27221,C[N+](C)(CCO)Cc1ccccc1,100,DMSO,PwDF-CoreS-01,K03
+PrestWick,DrugFragCoreSet,10,Prestw-Frag-1019,C6H7NOS,141.19279,NC(=O)Cc1cccs1,100,DMSO,PwDF-CoreS-01,L03
+PrestWick,DrugFragCoreSet,11,Prestw-Frag-1033,C15H16O2,228.29357,COc1ccc(Cc2ccc(OC)cc2)cc1,100,DMSO,PwDF-CoreS-01,M03
+PrestWick,DrugFragCoreSet,12,Prestw-Frag-1039,C7H8Cl2N2,191.06121,NCc1c(N)ccc(Cl)c1Cl,100,DMSO,PwDF-CoreS-01,N03
+PrestWick,DrugFragCoreSet,13,Prestw-Frag-1047,C8H9N5O,191.19383,CCC(=O)Nc1ncnc2[nH]cnc12,100,DMSO,PwDF-CoreS-01,C04

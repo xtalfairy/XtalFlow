@@ -1,0 +1,27 @@
+{
+    "name": "chj",
+    "staff_comments": "upload test",
+    "status": 5,
+    "attachment": "null",
+    "expri_id": "SCREEN-AUG2021_08",
+    "protein_name": "protein1",
+    "plate_type": "SwissCI-MRC-3d",
+    "plate_code": 640,
+    "plate_imgpath": "null",
+    "plate_well": "G12b",
+    "plate_x": -584.7146,
+    "plate_y": -503.0432,
+    "crystal_no": 153,
+    "soak_plate": " PwDF-CoreS-02",
+    "soak_well": "N22",
+    "soak_vol": 10,
+    "soak_id": "Prestw-Frag-3757",
+    "soak_smile": "CC1CCC(=O)O1",
+    "harvest_time": " 2021-08-27 12:52:56.0",
+    "harvest_order": 313,
+    "harvest_comment": "OK: No comment:No comment",
+    "puck_name": "ISA-020",
+    "puck_nohole": 8,
+    "project_id": 37
+}
+

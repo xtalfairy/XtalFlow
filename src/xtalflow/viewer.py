@@ -3060,6 +3060,9 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="SQLite review database (default: application data directory)",
     )
+    parser.add_argument("--mxlive-url", default=DEFAULT_SETTINGS.mxlive_base_url)
+    parser.add_argument("--mxlive-key", type=Path, default=DEFAULT_SETTINGS.mxlive_key_path)
+    parser.add_argument("--mxlive-ca", type=Path, default=DEFAULT_SETTINGS.mxlive_ca_bundle)
     return parser
 
 
@@ -3082,6 +3085,9 @@ def main(argv: list[str] | None = None) -> int:
         echo_output_directory=args.echo_dir,
         shifter1_output_directory=args.shifter1_dir,
         shifter2_output_directory=args.shifter2_dir,
+        mxlive_base_url=args.mxlive_url,
+        mxlive_key_path=args.mxlive_key,
+        mxlive_ca_bundle=args.mxlive_ca,
     )
     try:
         review_store = SQLiteReviewStore(database_path)

@@ -15,7 +15,8 @@ def test_development_paths_are_centralized_in_settings() -> None:
 def test_cli_uses_central_defaults_and_allows_site_overrides() -> None:
     defaults = build_parser().parse_args([])
     overridden = build_parser().parse_args(
-        ["--root", "/rm", "--library-dir", "/libraries", "--echo-dir", "/echo"]
+        ["--root", "/rm", "--library-dir", "/libraries", "--echo-dir", "/echo",
+         "--mxlive-url", "https://mxlive.example", "--mxlive-key", "/keys.dsa"]
     )
 
     assert defaults.root == DEFAULT_SETTINGS.rmserver_root
@@ -23,3 +24,5 @@ def test_cli_uses_central_defaults_and_allows_site_overrides() -> None:
     assert str(overridden.root) == "/rm"
     assert str(overridden.library_dir) == "/libraries"
     assert str(overridden.echo_dir) == "/echo"
+    assert overridden.mxlive_url == "https://mxlive.example"
+    assert str(overridden.mxlive_key) == "/keys.dsa"

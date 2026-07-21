@@ -11,6 +11,9 @@ dependencies = [
     "numpy==1.26.4",
     "opencv-python-headless==4.10.0.84",
     "PyQt5==5.15.11",
+    "cryptography==45.0.5",
+    "msgpack==1.1.1",
+    "requests==2.32.4",
 ]
 
 [project.optional-dependencies]
@@ -20,6 +23,7 @@ dev = [
 
 [project.scripts]
 xtalflow-viewer = "xtalflow.viewer:main"
+xtalflow-mxlive-read = "xtalflow.mxlive_read:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

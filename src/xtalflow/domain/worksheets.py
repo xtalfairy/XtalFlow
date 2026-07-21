@@ -39,7 +39,7 @@ SHIFTER_HEADER = (
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class EchoWorksheetRow:
     source_plate: str
     source_well: str
@@ -63,7 +63,7 @@ class EchoWorksheetRow:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ShifterWorksheetRow:
     plate_type: str
     plate_id: str

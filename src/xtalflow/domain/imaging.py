@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class CrystalImage:
     plate_code: str
     batch_id: int
@@ -38,7 +38,7 @@ class CrystalImage:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PlateImages:
     plate_code: str
     batch_id: int

@@ -15,7 +15,7 @@ from .crystal_workflow import (
 TRANSFER_INCREMENT_NL = Decimal("2.5")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class Fragment:
     vendor: str
     library: str
@@ -47,7 +47,7 @@ class Fragment:
             raise ValueError("fragment concentration must be positive")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class FragmentLibrary:
     name: str
     fragments: tuple[Fragment, ...]
@@ -72,13 +72,13 @@ class FragmentLibrary:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class FragmentTransfer:
     target: CrystalTarget
     volume_nl: Decimal
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class FragmentAssignment:
     crystal: SelectedCrystal
     fragment: Fragment
@@ -89,7 +89,7 @@ class FragmentAssignment:
         return sum((item.volume_nl for item in self.transfers), Decimal("0"))
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class FragmentScreenPlan:
     library: FragmentLibrary
     assignments: tuple[FragmentAssignment, ...]
@@ -117,7 +117,7 @@ def build_fragment_screen_plan(
     assignments: list[FragmentAssignment] = []
     total_units = int(units)
     selected_fragments = library.fragments[: len(ordered_crystals)]
-    for crystal, fragment in zip(ordered_crystals, selected_fragments, strict=True):
+    for crystal, fragment in zip(ordered_crystals, selected_fragments):
         target_count = len(crystal.targets)
         if total_units < target_count:
             raise ValueError(

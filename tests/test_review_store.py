@@ -1,6 +1,6 @@
 from pathlib import Path
 import sqlite3
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -103,7 +103,7 @@ def test_fragment_library_import_is_content_deduplicated_and_reloadable(
 
 def test_planning_draft_revision_and_export_lifecycle(tmp_path: Path) -> None:
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     project = Project("project-1", "Test", now, now)
     store.save_project(project)
     draft = PlanningDraft(

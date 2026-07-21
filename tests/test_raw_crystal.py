@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from xtalflow.domain import SWISSCI_MIDI_3_LENS
@@ -16,7 +16,7 @@ def _crystal(image: str, plate: str, well: str, selected_at: datetime) -> Select
 
 
 def test_raw_crystal_plan_defaults_to_target_selection_order() -> None:
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     first = _crystal("first", "2070", "A02c", now)
     second = _crystal("second", "2069", "A01a", now + timedelta(seconds=1))
 
@@ -27,7 +27,7 @@ def test_raw_crystal_plan_defaults_to_target_selection_order() -> None:
 
 
 def test_raw_crystal_plan_can_sort_by_plate_and_well() -> None:
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     later_plate = _crystal("later", "2070", "B02a", now)
     earlier_plate = _crystal("earlier", "2069", "H12d", now + timedelta(seconds=1))
 
@@ -40,7 +40,7 @@ def test_raw_crystal_plan_can_sort_by_plate_and_well() -> None:
 
 
 def test_each_target_becomes_one_raw_crystal_shifter_row() -> None:
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     crystal = SelectedCrystal(
         "image", "2069", "A01a",
         (

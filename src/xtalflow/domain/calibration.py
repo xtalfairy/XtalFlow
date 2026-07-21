@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from enum import Enum
 from math import isfinite
 
@@ -11,7 +11,7 @@ class CalibrationMethod(str, Enum):
     MANUAL_THREE_POINT = "manual_three_point"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class WellBoundary:
     center_x_px: float
     center_y_px: float
@@ -34,7 +34,7 @@ class WellBoundary:
             raise ValueError("confidence must be between zero and one")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ImageCalibration:
     image_key: str
     center_x_px: float
@@ -85,7 +85,7 @@ class ImageCalibration:
             CalibrationMethod.AUTO_CIRCLE,
             confidence,
             False,
-            datetime.now(UTC),
+            datetime.now(timezone.utc),
         )
 
     def pixel_to_mm(self, x_px: float, y_px: float) -> tuple[float, float]:

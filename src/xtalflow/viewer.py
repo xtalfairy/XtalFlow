@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from PyQt5.QtCore import QRectF, QStandardPaths, QStringListModel, QTimer, Qt, pyqtSignal
@@ -1326,7 +1326,7 @@ class ViewerWindow(QMainWindow):
         editor.plan_id = restored.id if restored else str(uuid4())
         editor.project_id = project.id
         editor.plan_name = name
-        editor.plan_created_at = restored.created_at if restored else datetime.now(UTC)
+        editor.plan_created_at = restored.created_at if restored else datetime.now(timezone.utc)
         editor.last_revision = None
         editor.last_revision_snapshot = None
         editor.autosave_timer = QTimer(editor)
@@ -1396,7 +1396,7 @@ class ViewerWindow(QMainWindow):
         editor.plan_id = restored.id if restored else str(uuid4())
         editor.project_id = project.id
         editor.plan_name = name
-        editor.plan_created_at = restored.created_at if restored else datetime.now(UTC)
+        editor.plan_created_at = restored.created_at if restored else datetime.now(timezone.utc)
         editor.last_revision = None
         editor.last_revision_snapshot = None
         editor.autosave_timer = QTimer(editor)
@@ -1448,7 +1448,7 @@ class ViewerWindow(QMainWindow):
         if self.review_store is None:
             editor.lifecycle_label.setText("Draft · memory only")
             return
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         draft = PlanningDraft(
             editor.plan_id, editor.project_id, "raw_crystal", editor.plan_name,
             None, "", editor.protein_input.text(), "0",
@@ -1511,7 +1511,7 @@ class ViewerWindow(QMainWindow):
             revision = self.review_store.finalize_plan_revision(
                 PlanRevision(str(uuid4()), editor.plan_id, 0,
                              self._suggest_raw_crystal_experiment_id(editor.protein_input.text()),
-                             snapshot, getpass.getuser(), datetime.now(UTC))
+                             snapshot, getpass.getuser(), datetime.now(timezone.utc))
             )
         except (ValueError, ReviewPersistenceError) as error:
             QMessageBox.warning(self, "Cannot finalize plan", str(error))
@@ -1535,7 +1535,7 @@ class ViewerWindow(QMainWindow):
         if self.review_store is None:
             editor.lifecycle_label.setText("Draft · memory only")
             return
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         draft = PlanningDraft(
             editor.plan_id, editor.project_id, "fragment_screening", editor.plan_name,
             editor.library_input.currentData(Qt.UserRole), editor.rows_input.text(),
@@ -1618,7 +1618,7 @@ class ViewerWindow(QMainWindow):
             experiment_id = self._suggest_fragment_experiment_id(editor.protein_input.text())
             revision = self.review_store.finalize_plan_revision(
                 PlanRevision(str(uuid4()), editor.plan_id, 0, experiment_id, snapshot,
-                             getpass.getuser(), datetime.now(UTC))
+                             getpass.getuser(), datetime.now(timezone.utc))
             )
         except (ValueError, ReviewPersistenceError) as error:
             QMessageBox.warning(self, "Cannot finalize plan", str(error))
@@ -1758,7 +1758,7 @@ class ViewerWindow(QMainWindow):
         if self.review_store is None:
             return
         event = WorksheetExportEvent(
-            str(uuid4()), revision.id, getpass.getuser(), datetime.now(UTC), status,
+            str(uuid4()), revision.id, getpass.getuser(), datetime.now(timezone.utc), status,
             str(result.echo_path) if result and hasattr(result, "echo_path") else None,
             str(result.shifter1_path) if result else None,
             str(result.shifter2_path) if result else None,

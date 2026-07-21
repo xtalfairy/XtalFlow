@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from xtalflow.domain import SWISSCI_MIDI_3_LENS
@@ -32,7 +32,7 @@ def test_fragment_plan_builds_echo_and_shifter_preview_rows() -> None:
         "A01d",
         (
             CrystalTarget(
-                "target", Decimal("0.25"), Decimal("-0.5"), datetime.now(UTC)
+                "target", Decimal("0.25"), Decimal("-0.5"), datetime.now(timezone.utc)
             ),
         ),
         SWISSCI_MIDI_3_LENS.id,

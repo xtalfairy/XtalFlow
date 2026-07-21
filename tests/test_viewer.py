@@ -1,6 +1,6 @@
 import os
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -53,7 +53,7 @@ def _fragment(number: int) -> Fragment:
 
 def test_fragment_plan_dialog_previews_and_reassigns_by_plate_well() -> None:
     app = QApplication.instance() or QApplication([])
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     crystals = (
         SelectedCrystal(
             "first",
@@ -192,7 +192,7 @@ def test_planning_tab_lists_libraries_from_designated_directory(
         "image",
         "1070",
         "A01a",
-        (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(UTC)),),
+        (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
         SWISSCI_MIDI_3_LENS.id,
     )
 
@@ -214,7 +214,7 @@ def test_raw_crystal_plan_has_shifter_preview_without_echo(tmp_path: Path) -> No
     window = ViewerWindow(RockMakerImageRepository(tmp_path), store)
     crystal = SelectedCrystal(
         "image", "1070", "A01a",
-        (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(UTC)),),
+        (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
         SWISSCI_MIDI_3_LENS.id,
     )
 

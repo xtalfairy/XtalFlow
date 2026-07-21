@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 
 LATEST_SCHEMA_VERSION = 12
@@ -396,7 +396,7 @@ def _assign_legacy_selection_times(
         f"SELECT rowid FROM {table_name} WHERE selected_at = ? ORDER BY rowid",
         (epoch,),
     ).fetchall()
-    base = datetime(1970, 1, 1, tzinfo=UTC)
+    base = datetime(1970, 1, 1, tzinfo=timezone.utc)
     connection.executemany(
         f"UPDATE {table_name} SET selected_at = ? WHERE rowid = ?",
         (

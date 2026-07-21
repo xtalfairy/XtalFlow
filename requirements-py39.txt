@@ -1,0 +1,8 @@
+# XtalFlow runtime dependencies for the Python 3.9 operating server.
+# Install with: python3.9 -m pip install -r requirements-py39.txt
+numpy==1.26.4
+opencv-python-headless==4.10.0.84
+PyQt5==5.15.11
+cryptography==45.0.5
+msgpack==1.1.1
+requests==2.32.4

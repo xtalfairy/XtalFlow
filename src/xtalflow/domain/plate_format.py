@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class WellAddress:
     row: str
     column: int
@@ -19,7 +19,7 @@ class WellAddress:
         return f"{self.row}{self.column:02d}{self.lens}"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class LensDefinition:
     drop_number: int
     suffix: str
@@ -30,7 +30,7 @@ class LensDefinition:
     destination_column_offset: int = 0
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PlateFormat:
     id: str
     version: int

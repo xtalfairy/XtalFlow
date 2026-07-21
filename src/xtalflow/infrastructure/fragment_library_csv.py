@@ -28,7 +28,7 @@ class FragmentLibraryCsvError(ValueError):
     pass
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class FragmentLibraryCatalogEntry:
     id: str
     file_name: str

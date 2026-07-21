@@ -21,7 +21,7 @@ class WorksheetDestinationUnavailable(ReviewPersistenceError):
     pass
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class WorksheetExportResult:
     experiment_id: str
     file_stem: str
@@ -30,7 +30,7 @@ class WorksheetExportResult:
     shifter2_path: Path
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ShifterExportResult:
     experiment_id: str
     file_stem: str

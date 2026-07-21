@@ -5,13 +5,13 @@ from dataclasses import dataclass
 from .crystal_workflow import AssignmentOrder, CrystalTarget, SelectedCrystal
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RawCrystalSelection:
     crystal: SelectedCrystal
     target: CrystalTarget
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RawCrystalPlan:
     selections: tuple[RawCrystalSelection, ...]
     assignment_order: AssignmentOrder

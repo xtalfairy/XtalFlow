@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from math import hypot
 from typing import Protocol
 
@@ -64,7 +64,7 @@ class WellCalibrationService:
             CalibrationMethod.AUTO_CIRCLE,
             boundary.confidence,
             False,
-            datetime.now(UTC),
+            datetime.now(timezone.utc),
         )
         self.save(calibration)
         return calibration
@@ -88,7 +88,7 @@ class WellCalibrationService:
             CalibrationMethod.MANUAL_THREE_POINT,
             1.0,
             True,
-            datetime.now(UTC),
+            datetime.now(timezone.utc),
         )
         self.save(calibration)
         return calibration
@@ -100,7 +100,7 @@ class WellCalibrationService:
 
     def confirm(self, calibration: ImageCalibration) -> ImageCalibration:
         confirmed = replace(
-            calibration, confirmed=True, updated_at=datetime.now(UTC)
+            calibration, confirmed=True, updated_at=datetime.now(timezone.utc)
         )
         self.save(confirmed)
         return confirmed

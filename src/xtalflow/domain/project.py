@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from .plate_format import SWISSCI_MIDI_3_LENS
 
 
-@dataclass(slots=True)
+@dataclass
 class ProjectImageSet:
     id: str
     project_id: str
@@ -57,7 +57,7 @@ class ProjectImageSet:
             profile=profile,
             display_order=display_order,
             active_image_key=active_image_key,
-            created_at=datetime.now(UTC),
+            created_at=datetime.now(timezone.utc),
             plate_format_id=plate_format_id,
             plate_format_version=plate_format_version,
         )
@@ -71,7 +71,7 @@ class ProjectImageSet:
         return self.archived_at is not None
 
 
-@dataclass(slots=True)
+@dataclass
 class Project:
     id: str
     name: str
@@ -92,7 +92,7 @@ class Project:
 
     @classmethod
     def create(cls, name: str) -> Project:
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         return cls(str(uuid4()), name, now, now)
 
     @property
@@ -110,7 +110,7 @@ class Project:
             raise ValueError("project name must not be empty")
         self.name = normalized
         if hasattr(self, "updated_at"):
-            self.updated_at = datetime.now(UTC)
+            self.updated_at = datetime.now(timezone.utc)
 
     def add_image_set(
         self,
@@ -138,14 +138,14 @@ class Project:
         )
         self.image_sets.append(image_set)
         self.active_image_set_id = image_set.id
-        self.updated_at = datetime.now(UTC)
+        self.updated_at = datetime.now(timezone.utc)
         return image_set
 
     def activate(self, image_set_id: str) -> None:
         if image_set_id not in {item.id for item in self.active_image_sets}:
             raise ValueError("image set is not an active project member")
         self.active_image_set_id = image_set_id
-        self.updated_at = datetime.now(UTC)
+        self.updated_at = datetime.now(timezone.utc)
 
     def move_image_set(self, image_set_id: str, offset: int) -> None:
         ordered = list(self.active_image_sets)
@@ -160,7 +160,7 @@ class Project:
         ordered[current], ordered[destination] = ordered[destination], ordered[current]
         for order, image_set in enumerate(ordered):
             image_set.display_order = order
-        self.updated_at = datetime.now(UTC)
+        self.updated_at = datetime.now(timezone.utc)
 
     def archive_image_set(self, image_set_id: str) -> None:
         image_set = next(
@@ -168,13 +168,13 @@ class Project:
         )
         if image_set is None:
             raise ValueError("image set is not an active project member")
-        image_set.archived_at = datetime.now(UTC)
+        image_set.archived_at = datetime.now(timezone.utc)
         for order, item in enumerate(self.active_image_sets):
             item.display_order = order
         if self.active_image_set_id == image_set_id:
             active = self.active_image_sets
             self.active_image_set_id = active[0].id if active else None
-        self.updated_at = datetime.now(UTC)
+        self.updated_at = datetime.now(timezone.utc)
 
     def restore_image_set(self, image_set_id: str) -> ProjectImageSet:
         image_set = next(
@@ -191,5 +191,5 @@ class Project:
         image_set.archived_at = None
         image_set.display_order = len(self.active_image_sets) - 1
         self.active_image_set_id = image_set.id
-        self.updated_at = datetime.now(UTC)
+        self.updated_at = datetime.now(timezone.utc)
         return image_set

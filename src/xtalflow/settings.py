@@ -13,7 +13,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ApplicationSettings:
     rmserver_root: Path
     fragment_library_directory: Path

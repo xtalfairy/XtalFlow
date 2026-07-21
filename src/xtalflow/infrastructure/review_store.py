@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from hashlib import sha256
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -203,7 +203,7 @@ class SQLiteReviewStore:
         )
         if existing is not None:
             return existing
-        imported_at = datetime.now(UTC)
+        imported_at = datetime.now(timezone.utc)
         entry = FragmentLibraryCatalogEntry(
             digest,
             source.name,
@@ -653,7 +653,7 @@ class SQLiteImageSetReviewStore:
                         ON CONFLICT(image_set_id, image_key) DO UPDATE SET
                             reviewed_at = excluded.reviewed_at
                         """,
-                        (self.image_set_id, image_key, datetime.now(UTC).isoformat()),
+                        (self.image_set_id, image_key, datetime.now(timezone.utc).isoformat()),
                     )
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not save image-set checkpoint") from error

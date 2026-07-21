@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PlanningDraft:
     id: str
     project_id: str
@@ -19,7 +19,7 @@ class PlanningDraft:
     updated_at: datetime
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PlanRevision:
     id: str
     plan_id: str
@@ -30,7 +30,7 @@ class PlanRevision:
     finalized_at: datetime
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class WorksheetExportEvent:
     id: str
     revision_id: str

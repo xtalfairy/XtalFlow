@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
 from typing import Protocol
@@ -27,7 +27,7 @@ from .review_controller import ReviewController
 from .review_port import ReviewPersistenceError
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ProjectReviewStatistics:
     total_images: int
     reviewed_images: int
@@ -43,7 +43,7 @@ class TargetValidationIssue(str, Enum):
     OUTSIDE_WELL = "outside_well"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ProjectTargetSummary:
     image_set_id: str
     image: CrystalImage
@@ -393,7 +393,7 @@ class ProjectController:
             )
         for image_set_id, calibration in candidates:
             confirmed = replace(
-                calibration, confirmed=True, updated_at=datetime.now(UTC)
+                calibration, confirmed=True, updated_at=datetime.now(timezone.utc)
             )
             self.workspace_store.scoped_to(image_set_id).save_calibration(confirmed)
         return len(candidates)

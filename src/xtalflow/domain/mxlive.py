@@ -8,7 +8,7 @@ class MxLiveReadError(RuntimeError):
     """MxLive could not be read safely or returned an invalid response."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class MxLiveLabwork:
     experiment_id: str
     protein_name: str | None
@@ -32,7 +32,7 @@ class MxLiveLabwork:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class MxLiveSample:
     name: str
     sample_id: str | None

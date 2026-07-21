@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from math import hypot, isfinite
 from uuid import uuid4
 from enum import Enum
@@ -16,7 +16,7 @@ class ImageFilter(str, Enum):
     UNREVIEWED = "unreviewed"
 
 
-@dataclass(slots=True)
+@dataclass
 class ReviewProgress:
     plan_key: str
     plate_code: str
@@ -42,7 +42,7 @@ class ReviewProgress:
         profile: str,
         current_image_key: str,
     ) -> ReviewProgress:
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         return cls(
             plan_key=f"{plate_code}:{batch_id}:{profile}",
             plate_code=plate_code,
@@ -58,10 +58,10 @@ class ReviewProgress:
             raise ValueError("image_key must not be empty")
         if image_key != self.current_image_key:
             self.current_image_key = image_key
-            self.updated_at = datetime.now(UTC)
+            self.updated_at = datetime.now(timezone.utc)
 
 
-@dataclass(slots=True)
+@dataclass
 class ReviewPreferences:
     auto_advance_target_count: int = 1
 
@@ -75,13 +75,13 @@ class ReviewPreferences:
         self.auto_advance_target_count = count
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TargetPoint:
     id: str
     image_key: str
     x_px: float
     y_px: float
-    selected_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    selected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def __post_init__(self) -> None:
         if not self.id:
@@ -116,7 +116,7 @@ class ReviewSession:
         if not (0 <= x_px < image_width and 0 <= y_px < image_height):
             raise ValueError("target must be inside the image")
         target = TargetPoint(
-            str(uuid4()), image.image_key, x_px, y_px, datetime.now(UTC)
+            str(uuid4()), image.image_key, x_px, y_px, datetime.now(timezone.utc)
         )
         self._targets_by_image.setdefault(image.image_key, []).append(target)
         return target

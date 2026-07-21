@@ -1,6 +1,6 @@
 import csv
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -40,7 +40,7 @@ def fragment_plan():
         "image",
         "2069",
         "A01d",
-        (CrystalTarget("target", Decimal("0.25"), Decimal("-0.5"), datetime.now(UTC)),),
+        (CrystalTarget("target", Decimal("0.25"), Decimal("-0.5"), datetime.now(timezone.utc)),),
         SWISSCI_MIDI_3_LENS.id,
     )
     return build_fragment_screen_plan(

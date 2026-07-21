@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -43,7 +43,7 @@ def crystal(name: str, selected_at: datetime, target_count: int) -> SelectedCrys
 
 
 def test_plan_assigns_fragments_in_crystal_selection_order() -> None:
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     library = FragmentLibrary("Library", (fragment(1), fragment(2)))
 
     plan = build_fragment_screen_plan(
@@ -57,7 +57,7 @@ def test_plan_assigns_fragments_in_crystal_selection_order() -> None:
 
 
 def test_plan_splits_each_crystal_volume_across_its_own_targets() -> None:
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     plan = build_fragment_screen_plan(
         FragmentLibrary("Library", (fragment(1),)),
         (crystal("image", now, 3),),
@@ -71,7 +71,7 @@ def test_plan_splits_each_crystal_volume_across_its_own_targets() -> None:
 
 @pytest.mark.parametrize("volume", [Decimal("0"), Decimal("6")])
 def test_plan_rejects_invalid_transfer_volume(volume: Decimal) -> None:
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     with pytest.raises(ValueError):
         build_fragment_screen_plan(
             FragmentLibrary("Library", (fragment(1),)),
@@ -81,7 +81,7 @@ def test_plan_rejects_invalid_transfer_volume(volume: Decimal) -> None:
 
 
 def test_plan_rejects_zero_volume_transfers() -> None:
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     with pytest.raises(ValueError, match="needs at least"):
         build_fragment_screen_plan(
             FragmentLibrary("Library", (fragment(1),)),
@@ -91,7 +91,7 @@ def test_plan_rejects_zero_volume_transfers() -> None:
 
 
 def test_plan_rejects_too_few_fragments() -> None:
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     with pytest.raises(ValueError, match="enough fragments"):
         build_fragment_screen_plan(
             FragmentLibrary("Library", (fragment(1),)),
@@ -119,7 +119,7 @@ def test_invalid_library_row_selection_is_rejected(selection: str) -> None:
 
 
 def test_plan_can_reassign_fragments_in_plate_and_well_order() -> None:
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     library = FragmentLibrary("Library", (fragment(1), fragment(2), fragment(3)))
     crystals = (
         SelectedCrystal(

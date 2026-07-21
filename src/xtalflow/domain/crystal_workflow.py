@@ -15,7 +15,7 @@ class AssignmentOrder(str, Enum):
     PLATE_WELL = "plate_well"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class CrystalTarget:
     target_id: str
     x_mm: Decimal
@@ -29,7 +29,7 @@ class CrystalTarget:
             raise ValueError("target selection time must include a timezone")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class SelectedCrystal:
     image_key: str
     destination_plate: str

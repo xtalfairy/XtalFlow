@@ -62,8 +62,8 @@ OPERATING_SERVER_SETTINGS = ApplicationSettings(
     shifter1_output_directory=Path("/smbmount/shifter1"),
     shifter2_output_directory=Path("/smbmount/shifter2"),
     create_missing_instrument_roots=False,
-    mxlive_base_url="https://mxlive.5c.postech.ac.kr",
-    # Legacy resolves /data/users/{username}/.config/keys.dsa. Supply the
+    mxlive_base_url="https://mxlive.postech.ac.kr",
+    # Legacy resolves /data/users/{username}/.config/mxdc/keys.dsa. Supply the
     # user-specific path with --mxlive-key rather than embedding an account.
 )
 

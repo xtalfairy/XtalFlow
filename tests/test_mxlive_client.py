@@ -9,6 +9,7 @@ from cryptography.hazmat.primitives.asymmetric import dsa
 
 from xtalflow.domain.mxlive import MxLiveReadError
 from xtalflow.infrastructure.mxlive_client import LegacyMxLiveReadClient
+from xtalflow.infrastructure.mxlive_client import RequestsJsonTransport
 
 
 class FakeTransport:
@@ -105,4 +106,16 @@ def test_insecure_http_and_missing_ca_bundle_are_rejected(tmp_path: Path) -> Non
         LegacyMxLiveReadClient(
             "https://mxlive.example", "BL-5C", "scientist", key,
             ca_bundle=tmp_path / "missing-ca.pem",
+        )
+
+
+def test_missing_python_ssl_support_has_an_actionable_error(monkeypatch) -> None:
+    def no_ssl(*args, **kwargs):
+        raise ImportError("SSL module is not available")
+
+    monkeypatch.setattr("xtalflow.infrastructure.mxlive_client.requests.get", no_ssl)
+
+    with pytest.raises(MxLiveReadError, match="Python SSL support"):
+        RequestsJsonTransport().get_json(
+            "https://mxlive.example", timeout_seconds=10, ca_bundle=None
         )

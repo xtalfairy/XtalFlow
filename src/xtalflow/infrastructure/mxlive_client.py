@@ -36,6 +36,10 @@ class RequestsJsonTransport:
             )
             response.raise_for_status()
             return response.json()
+        except ImportError as error:
+            raise MxLiveReadError(
+                "Python SSL support is unavailable; use a Python build with the ssl module"
+            ) from error
         except requests.RequestException as error:
             status = error.response.status_code if error.response is not None else None
             detail = f"HTTP {status}" if status is not None else type(error).__name__

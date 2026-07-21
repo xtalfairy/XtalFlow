@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from math import hypot
 from typing import Protocol
@@ -96,6 +97,13 @@ class WellCalibrationService:
         if self.store is not None:
             self.store.save_calibration(calibration)
         self._cache[calibration.image_key] = calibration
+
+    def confirm(self, calibration: ImageCalibration) -> ImageCalibration:
+        confirmed = replace(
+            calibration, confirmed=True, updated_at=datetime.now(UTC)
+        )
+        self.save(confirmed)
+        return confirmed
 
 
 def circle_from_three_points(

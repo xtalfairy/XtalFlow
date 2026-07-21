@@ -7,9 +7,10 @@ from xtalflow.infrastructure import (
     PlateImagesNotFoundError,
     RockMakerImageRepository,
 )
+from xtalflow.settings import DEFAULT_SETTINGS
 
 
-FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "rmserver"
+FIXTURE_ROOT = DEFAULT_SETTINGS.rmserver_root
 requires_real_fixture = pytest.mark.skipif(
     not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available"
 )

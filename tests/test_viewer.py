@@ -1,10 +1,13 @@
 import os
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QPoint, Qt
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QInputDialog, QMessageBox
 
@@ -15,13 +18,83 @@ from xtalflow.domain import (
     SWISSCI_MIDI_3_LENS,
     SWISSCI_MRC_2_WELL,
 )
+from xtalflow.domain.fragment_screening import (
+    AssignmentOrder,
+    CrystalTarget,
+    Fragment,
+    FragmentLibrary,
+    SelectedCrystal,
+)
 from xtalflow.application import ReviewPersistenceError
 from xtalflow.infrastructure import RockMakerImageRepository, SQLiteReviewStore
-from xtalflow.viewer import ViewerWindow
+from xtalflow.viewer import FragmentScreeningDialog, ViewerWindow
 from xtalflow.viewer import main
+from xtalflow.settings import DEFAULT_SETTINGS
 
 
-FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "rmserver"
+FIXTURE_ROOT = DEFAULT_SETTINGS.rmserver_root
+
+
+def _fragment(number: int) -> Fragment:
+    return Fragment(
+        "Vendor",
+        "Library",
+        str(number),
+        f"CMP-{number}",
+        "C2H6O",
+        Decimal("46.07"),
+        "CCO",
+        Decimal("100"),
+        "DMSO",
+        "SRC",
+        f"A{number:02d}",
+    )
+
+
+def test_fragment_plan_dialog_previews_and_reassigns_by_plate_well() -> None:
+    app = QApplication.instance() or QApplication([])
+    now = datetime.now(UTC)
+    crystals = (
+        SelectedCrystal(
+            "first",
+            "20",
+            "A01a",
+            (CrystalTarget("t1", Decimal(0), Decimal(0), now),),
+            SWISSCI_MIDI_3_LENS.id,
+        ),
+        SelectedCrystal(
+            "second",
+            "3",
+            "A01a",
+            (CrystalTarget("t2", Decimal(0), Decimal(0), now + timedelta(seconds=1)),),
+            SWISSCI_MIDI_3_LENS.id,
+        ),
+    )
+    dialog = FragmentScreeningDialog(
+        FragmentLibrary("Library", (_fragment(8), _fragment(15))), crystals
+    )
+
+    assert dialog.table.item(0, 0).text() == "1"
+    assert dialog.table.item(0, 1).text() == "20"
+    assert dialog.table.item(0, 4).text() == "CMP-8"
+    assert [
+        dialog.editor.preview_tabs.tabText(index)
+        for index in range(dialog.editor.preview_tabs.count())
+    ] == ["Summary", "ECHO Worksheet", "SHIFTER Worksheet"]
+    assert dialog.editor.echo_table.rowCount() == 2
+    assert dialog.editor.shifter_table.rowCount() == 2
+    dialog.order_input.setCurrentIndex(
+        dialog.order_input.findData(AssignmentOrder.PLATE_WELL)
+    )
+    assert dialog.table.item(0, 1).text() == "3"
+    assert dialog.table.item(0, 4).text() == "CMP-8"
+    dialog.rows_input.setText("2")
+    assert dialog.current_plan is None
+    assert "enough fragments" in dialog.error_label.text()
+    assert dialog.editor.echo_table.rowCount() == 0
+    assert dialog.editor.shifter_table.rowCount() == 0
+    dialog.close()
+    app.processEvents()
 
 
 @pytest.mark.requires_rmserver_fixture
@@ -37,6 +110,7 @@ def test_viewer_loads_and_navigates_images() -> None:
     first_well = window.well_input.text()
     assert window.auto_advance_input.prefix() == "Targets/img: "
     assert window.load_button.text() == "Load"
+    assert window.target_summary_button.text() == "View Target Summary"
     assert window.previous_button.text() == "◀"
     assert window.next_button.text() == "▶"
     assert window.save_status_label.parent() is window.statusBar()
@@ -73,9 +147,246 @@ def test_status_bar_is_visible_before_navigation(tmp_path: Path) -> None:
     window = ViewerWindow(RockMakerImageRepository(tmp_path))
     window.show()
     app.processEvents()
-
     assert window.statusBar().isVisible()
     assert window.statusBar().height() > 0
+    window.close()
+    app.processEvents()
+
+
+def test_main_window_separates_image_review_and_planning_tabs(
+    tmp_path: Path,
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(RockMakerImageRepository(tmp_path))
+
+    assert window.main_tabs.count() == 2
+    assert window.main_tabs.tabText(window.image_review_tab_index) == "Image Review"
+    assert window.main_tabs.tabText(window.planning_tab_index) == "Planning"
+    assert window.main_tabs.currentIndex() == window.image_review_tab_index
+    assert window.plan_list.count() == 0
+    assert window.new_plan_button.text() == "+ New Plan"
+
+    window.close()
+    app.processEvents()
+
+
+def test_planning_tab_lists_libraries_from_designated_directory(
+    tmp_path: Path,
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    csv_path = tmp_path / "library.csv"
+    csv_path.write_text(
+        "Vendor,Library,No,ID,Formula,MW,Smile,Conc_mM,Solvent,Plate_ID,Plate_well\n"
+        "Vendor,Lib,8,CMP-8,C2H6O,46.07,CCO,100,DMSO,SRC-1,A01\n",
+        encoding="utf-8",
+    )
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(
+        RockMakerImageRepository(tmp_path),
+        store,
+        settings=replace(
+            DEFAULT_SETTINGS, fragment_library_directory=tmp_path
+        ),
+    )
+    crystal = SelectedCrystal(
+        "image",
+        "1070",
+        "A01a",
+        (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(UTC)),),
+        SWISSCI_MIDI_3_LENS.id,
+    )
+
+    window._add_fragment_plan(None, (crystal,))
+    editor = window.plan_stack.currentWidget()
+    editor.library_input.setCurrentIndex(1)
+
+    assert window.plan_list.count() == 1
+    assert not window.plan_list_empty_label.isVisible()
+    assert editor.library_input.currentText() == "library.csv · 1 rows"
+    assert editor.table.item(0, 4).text() == "CMP-8"
+    window.close()
+    app.processEvents()
+
+
+def test_raw_crystal_plan_has_shifter_preview_without_echo(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store)
+    crystal = SelectedCrystal(
+        "image", "1070", "A01a",
+        (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(UTC)),),
+        SWISSCI_MIDI_3_LENS.id,
+    )
+
+    window.main_tabs.setCurrentIndex(window.planning_tab_index)
+    window._add_raw_crystal_plan((crystal,))
+    editor = window.plan_stack.currentWidget()
+    editor.protein_input.setText("BRD4")
+    window._persist_raw_crystal_draft(editor)
+
+    assert editor.current_plan is not None
+    assert editor.shifter_table.rowCount() == 1
+    assert not hasattr(editor, "echo_table")
+    drafts = store.load_planning_drafts(window.project_controller.active_project.id)
+    assert drafts[-1].plan_type == "raw_crystal"
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_zoom_pan_and_fit_preserve_original_pixel_coordinates() -> None:
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT), auto_advance_target_count=10
+    )
+    window.load_plate("2070", SWISSCI_MRC_2_WELL)
+    window.show()
+    app.processEvents()
+    canvas = window.image_canvas
+    anchor = canvas.rect().center()
+    before_zoom = canvas.transform().viewport_to_image(anchor.x(), anchor.y())
+
+    canvas._set_zoom(2.0, anchor)
+    after_zoom = canvas.transform().viewport_to_image(anchor.x(), anchor.y())
+    assert after_zoom == pytest.approx(before_zoom)
+    assert window.zoom_label.text() == "200%"
+
+    QTest.mousePress(canvas, Qt.MiddleButton, pos=anchor)
+    QTest.mouseMove(canvas, anchor + QPoint(40, 30))
+    QTest.mouseRelease(canvas, Qt.MiddleButton, pos=anchor + QPoint(40, 30))
+    assert canvas._pan_x != 0 or canvas._pan_y != 0
+
+    expected_x, expected_y = 500.0, 400.0
+    viewport_x, viewport_y = canvas.transform().image_to_viewport(
+        expected_x, expected_y
+    )
+    QTest.mouseClick(
+        canvas,
+        Qt.LeftButton,
+        pos=QPoint(round(viewport_x), round(viewport_y)),
+    )
+    target = window.controller.current_targets[-1]
+    assert target.x_px == pytest.approx(expected_x, abs=0.6)
+    assert target.y_px == pytest.approx(expected_y, abs=0.6)
+
+    canvas.fit_image()
+    assert canvas.zoom == 1.0
+    assert window.zoom_label.text() == "100%"
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_target_summary_uses_hidden_right_dock_and_jumps_to_image(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+    )
+    window.load_plate("2070", SWISSCI_MRC_2_WELL)
+    target_image_key = window.controller.current_image.image_key
+    window.show()
+    app.processEvents()
+    review_only_width = window.width()
+
+    assert not window.target_summary_dock.isVisible()
+    window.target_summary_button.click()
+    app.processEvents()
+    assert window.target_summary_dock.isVisible()
+    assert window.dockWidgetArea(window.target_summary_dock) == Qt.RightDockWidgetArea
+    expansion = window._target_summary_window_expansion
+    assert expansion > 0
+    summary_width = window.width()
+    window.target_summary_dock.hide()
+    app.processEvents()
+    assert window.width() == max(window.minimumWidth(), summary_width - expansion)
+    assert window.width() < summary_width
+    window.target_summary_dock.show()
+    app.processEvents()
+
+    window._handle_image_click(600, 500, Qt.LeftButton)
+    second_target_image_key = window.controller.current_image.image_key
+    window._handle_image_click(610, 510, Qt.LeftButton)
+    assert window.target_summary_table.rowCount() == 2
+    assert window.target_summary_table.item(0, 1).text() == "A01a"
+    assert window.target_summary_table.item(0, 3).text() != "—"
+    window._review_target_warnings()
+    assert window.target_summary_filter.currentData() == "warnings"
+    assert window.target_summary_dock.isVisible()
+    assert window.target_summary_table.rowCount() == 2
+    window.target_summary_filter.setCurrentIndex(
+        window.target_summary_filter.findData("all")
+    )
+
+    window.target_summary_table.setCurrentCell(0, 0)
+    assert window.controller.current_image.image_key == target_image_key
+    assert window.target_summary_table.hasFocus()
+    assert "Unconfirmed calibration" in window.target_summary_table.item(0, 6).text()
+    assert window.accept_calibration_button.isEnabled()
+    window.accept_calibration_button.click()
+    assert window.current_calibration.confirmed
+    assert window.target_summary_table.item(0, 6).text() == "Ready"
+    assert not window.accept_calibration_button.isEnabled()
+    QTest.keyClick(window.target_summary_table, Qt.Key_Down)
+    assert window.target_summary_table.currentRow() == 1
+    assert window.controller.current_image.image_key == second_target_image_key
+    window.target_summary_filter.setCurrentIndex(
+        window.target_summary_filter.findData("warnings")
+    )
+    assert window.target_summary_table.rowCount() == 1
+    assert "Unconfirmed calibration" in window.target_summary_table.item(0, 6).text()
+    window.target_summary_filter.setCurrentIndex(
+        window.target_summary_filter.findData("all")
+    )
+    window.target_summary_table.selectAll()
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes
+    )
+    window._remove_selected_targets()
+    assert window.target_summary_table.rowCount() == 0
+    assert window.controller.session.target_count == 0
+    assert window.review_store.target_count_for_image_set(
+        window.project_controller.active_image_set.id
+    ) == 0
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_valid_automatic_wells_can_be_confirmed_in_bulk(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        auto_advance_target_count=10,
+    )
+    window.load_plate("2070", SWISSCI_MRC_2_WELL)
+    window._handle_image_click(600, 500, Qt.LeftButton)
+    window._handle_image_click(610, 510, Qt.LeftButton)
+
+    assert (
+        window.project_controller.valid_unconfirmed_automatic_calibration_count()
+        == 1
+    )
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes
+    )
+    window._accept_valid_auto_wells()
+
+    summaries = window.project_controller.project_target_summaries()
+    assert all(summary.is_ready for summary in summaries)
+    assert window.current_calibration.confirmed
+    assert (
+        window.project_controller.valid_unconfirmed_automatic_calibration_count()
+        == 0
+    )
     window.close()
     app.processEvents()
 

@@ -36,6 +36,25 @@ def test_every_address_in_a_plate_format_is_unique(
     assert len(addresses) == expected_count
 
 
+def test_three_lens_echo_offset_corrects_only_subwell_d_x_axis() -> None:
+    assert SWISSCI_MIDI_3_LENS.echo_offset_um("A01a", 0.25, -0.5) == (
+        250.0,
+        -500.0,
+    )
+    assert SWISSCI_MIDI_3_LENS.echo_offset_um("A01c", 0.25, -0.5) == (
+        250.0,
+        -500.0,
+    )
+    assert SWISSCI_MIDI_3_LENS.echo_offset_um("A01d", 0.25, -0.5) == (
+        -450.0,
+        -500.0,
+    )
+    assert SWISSCI_MIDI_3_LENS.echo_destination_well("A01a") == "A01"
+    assert SWISSCI_MIDI_3_LENS.echo_destination_well("A01c") == "B01"
+    assert SWISSCI_MIDI_3_LENS.echo_destination_well("A01d") == "B02"
+    assert SWISSCI_MIDI_3_LENS.echo_destination_well("H12d") == "P24"
+
+
 def test_selected_format_filters_images_without_inferring_plate_identity() -> None:
     images = tuple(
         CrystalImage(

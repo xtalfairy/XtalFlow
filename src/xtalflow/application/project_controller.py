@@ -1,9 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
+from decimal import Decimal
+from enum import Enum
 from typing import Protocol
 
 from xtalflow.domain import (
+    CrystalImage,
+    CalibrationMethod,
+    ImageCalibration,
     ImageFilter,
     PlateImages,
     PlateFormat,
@@ -12,8 +18,10 @@ from xtalflow.domain import (
     ReviewPreferences,
     ReviewProgress,
     ReviewSession,
+    TargetPoint,
     plate_format_by_id,
 )
+from xtalflow.domain.fragment_screening import CrystalTarget, SelectedCrystal
 
 from .review_controller import ReviewController
 from .review_port import ReviewPersistenceError
@@ -27,6 +35,43 @@ class ProjectReviewStatistics:
     target_points: int
     reviewed_without_targets: int
     unreviewed_images: int
+
+
+class TargetValidationIssue(str, Enum):
+    CALIBRATION_MISSING = "calibration_missing"
+    CALIBRATION_UNCONFIRMED = "calibration_unconfirmed"
+    OUTSIDE_WELL = "outside_well"
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectTargetSummary:
+    image_set_id: str
+    image: CrystalImage
+    target_number: int
+    target: TargetPoint
+    calibration: ImageCalibration | None
+
+    @property
+    def validation_issues(self) -> tuple[TargetValidationIssue, ...]:
+        calibration = self.calibration
+        if calibration is None:
+            return (TargetValidationIssue.CALIBRATION_MISSING,)
+        issues: list[TargetValidationIssue] = []
+        if not calibration.confirmed:
+            issues.append(TargetValidationIssue.CALIBRATION_UNCONFIRMED)
+        normalized_distance = (
+            ((self.target.x_px - calibration.center_x_px) / calibration.radius_x_px)
+            ** 2
+            + ((self.target.y_px - calibration.center_y_px) / calibration.radius_y_px)
+            ** 2
+        )
+        if normalized_distance > 1:
+            issues.append(TargetValidationIssue.OUTSIDE_WELL)
+        return tuple(issues)
+
+    @property
+    def is_ready(self) -> bool:
+        return not self.validation_issues
 
 
 class ImageRepositoryPort(Protocol):
@@ -248,6 +293,150 @@ class ProjectController:
             reviewed_without,
             total - reviewed,
         )
+
+    def project_target_summaries(self) -> tuple[ProjectTargetSummary, ...]:
+        project = self._require_active_project()
+        summaries: list[ProjectTargetSummary] = []
+        for image_set in project.active_image_sets:
+            plate = self._load_image_set_plate(image_set)
+            if (
+                project.active_image_set_id == image_set.id
+                and self.review_controller is not None
+            ):
+                session = self.review_controller.session
+                scoped_store = self.review_controller.store
+            else:
+                session, _, _, scoped_store = self._load_review_material(
+                    image_set, plate
+                )
+            for image in plate.images:
+                targets = session.targets_for(image)
+                if not targets:
+                    continue
+                calibration = (
+                    scoped_store.load_calibration(image.image_key)
+                    if scoped_store is not None
+                    else None
+                )
+                summaries.extend(
+                    ProjectTargetSummary(
+                        image_set.id, image, number, target, calibration
+                    )
+                    for number, target in enumerate(targets, start=1)
+                )
+        return tuple(
+            sorted(summaries, key=lambda summary: summary.target.selected_at)
+        )
+
+    def selected_crystals_for_plan(self) -> tuple[SelectedCrystal, ...]:
+        """Return calibrated target images in first-selection order."""
+        project = self._require_active_project()
+        image_sets = {item.id: item for item in project.active_image_sets}
+        grouped: dict[str, list[ProjectTargetSummary]] = {}
+        for summary in self.project_target_summaries():
+            if not summary.is_ready:
+                raise ValueError(
+                    "all targets need confirmed, valid well calibration before planning"
+                )
+            grouped.setdefault(summary.image.image_key, []).append(summary)
+
+        crystals: list[SelectedCrystal] = []
+        for summaries in grouped.values():
+            first = summaries[0]
+            image_set = image_sets[first.image_set_id]
+            plate_format = plate_format_by_id(image_set.plate_format_id)
+            if plate_format is None:
+                raise ValueError("all target image sets need a supported plate format")
+            address = str(
+                plate_format.address_for(
+                    first.image.well_number, first.image.drop_number
+                )
+            )
+            targets = []
+            for summary in summaries:
+                calibration = summary.calibration
+                if calibration is None:  # guarded by is_ready; keeps typing explicit
+                    raise ValueError("target calibration is missing")
+                x_mm, y_mm = calibration.pixel_to_mm(
+                    summary.target.x_px, summary.target.y_px
+                )
+                targets.append(
+                    CrystalTarget(
+                        summary.target.id,
+                        Decimal(str(x_mm)),
+                        Decimal(str(y_mm)),
+                        summary.target.selected_at,
+                    )
+                )
+            crystals.append(
+                SelectedCrystal(
+                    first.image.image_key,
+                    first.image.plate_code,
+                    address,
+                    tuple(targets),
+                    plate_format.id,
+                )
+            )
+        return tuple(crystals)
+
+    def valid_unconfirmed_automatic_calibration_count(self) -> int:
+        return len(self._valid_unconfirmed_automatic_calibrations())
+
+    def confirm_valid_automatic_calibrations(self) -> int:
+        """Confirm only automatic wells whose selected targets are all in bounds."""
+        candidates = self._valid_unconfirmed_automatic_calibrations()
+        if not candidates:
+            return 0
+        if self.workspace_store is None:
+            raise ReviewPersistenceError(
+                "bulk calibration confirmation requires a persistent project database"
+            )
+        for image_set_id, calibration in candidates:
+            confirmed = replace(
+                calibration, confirmed=True, updated_at=datetime.now(UTC)
+            )
+            self.workspace_store.scoped_to(image_set_id).save_calibration(confirmed)
+        return len(candidates)
+
+    def _valid_unconfirmed_automatic_calibrations(
+        self,
+    ) -> tuple[tuple[str, ImageCalibration], ...]:
+        grouped: dict[tuple[str, str], list[ProjectTargetSummary]] = {}
+        for summary in self.project_target_summaries():
+            grouped.setdefault(
+                (summary.image_set_id, summary.image.image_key), []
+            ).append(summary)
+        candidates: list[tuple[str, ImageCalibration]] = []
+        for (image_set_id, _), summaries in grouped.items():
+            calibration = summaries[0].calibration
+            if (
+                calibration is not None
+                and calibration.method is CalibrationMethod.AUTO_CIRCLE
+                and not calibration.confirmed
+                and all(
+                    summary.validation_issues
+                    == (TargetValidationIssue.CALIBRATION_UNCONFIRMED,)
+                    for summary in summaries
+                )
+            ):
+                candidates.append((image_set_id, calibration))
+        return tuple(candidates)
+
+    def remove_project_targets(self, target_ids: tuple[str, ...]) -> int:
+        unique_ids = tuple(dict.fromkeys(target_ids))
+        if not unique_ids:
+            return 0
+        summaries = self.project_target_summaries()
+        existing_ids = {summary.target.id for summary in summaries}
+        unknown = set(unique_ids) - existing_ids
+        if unknown:
+            raise ValueError("one or more selected targets no longer exist")
+        if self.workspace_store is not None:
+            self.workspace_store.delete_targets(unique_ids)
+        if self.review_controller is not None:
+            for target_id in unique_ids:
+                self.review_controller.session.remove_target(target_id)
+        return len(unique_ids)
 
     def _load_image_set_plate(self, image_set: ProjectImageSet) -> PlateImages:
         plate_format = plate_format_by_id(image_set.plate_format_id)

@@ -1,5 +1,6 @@
 from pathlib import Path
 import sqlite3
+from datetime import UTC, datetime
 
 import pytest
 
@@ -14,6 +15,7 @@ from xtalflow.domain import (
 )
 from xtalflow.infrastructure.review_migrations import LATEST_SCHEMA_VERSION
 from xtalflow.infrastructure import SQLiteReviewStore
+from xtalflow.domain.plan_lifecycle import PlanningDraft, PlanRevision, WorksheetExportEvent
 
 
 def test_sqlite_store_replaces_and_restores_image_snapshot(tmp_path: Path) -> None:
@@ -73,6 +75,64 @@ def test_old_required_count_column_is_migrated_to_auto_advance(tmp_path: Path) -
     assert restored[1].auto_advance_target_count == 10
     version = store._connection.execute("PRAGMA user_version").fetchone()[0]
     assert version == LATEST_SCHEMA_VERSION
+    store.close()
+
+
+def test_fragment_library_import_is_content_deduplicated_and_reloadable(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "library.csv"
+    csv_path.write_text(
+        "Vendor,Library,No,ID,Formula,MW,Smile,Conc_mM,Solvent,Plate_ID,Plate_well\n"
+        "Vendor,Lib,8,CMP-8,C2H6O,46.07,CCO,100,DMSO,SRC-1,A01\n",
+        encoding="utf-8",
+    )
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+
+    first = store.import_fragment_library(csv_path)
+    second = store.import_fragment_library(csv_path)
+    restored = store.load_fragment_library(first.id)
+
+    assert first == second
+    assert len(store.list_fragment_libraries()) == 1
+    assert first.display_name == "library.csv · 1 rows"
+    assert restored.fragments[0].number == "8"
+    assert restored.fragments[0].compound_id == "CMP-8"
+    store.close()
+
+
+def test_planning_draft_revision_and_export_lifecycle(tmp_path: Path) -> None:
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    now = datetime.now(UTC)
+    project = Project("project-1", "Test", now, now)
+    store.save_project(project)
+    draft = PlanningDraft(
+        "plan-1", project.id, "fragment_screening", "Fragment Screening #1",
+        "/libraries/main.csv", "1-8", "BRD4", "25.0", "selection", now, now,
+    )
+    store.save_planning_draft(draft)
+
+    restored = store.load_planning_drafts(project.id)
+    assert restored == (draft,)
+
+    first = store.finalize_plan_revision(
+        PlanRevision("revision-1", draft.id, 0, "FragSC-202607-BRD4-01", "{\"v\":1}", "jjh", now)
+    )
+    second = store.finalize_plan_revision(
+        PlanRevision("revision-2", draft.id, 0, "FragSC-202607-BRD4-02", "{\"v\":2}", "jjh", now)
+    )
+    assert (first.revision, second.revision) == (1, 2)
+    assert store.list_plan_revisions(draft.id) == (first, second)
+    assert store.reserved_experiment_ids() == {
+        "FragSC-202607-BRD4-01", "FragSC-202607-BRD4-02"
+    }
+
+    export = WorksheetExportEvent(
+        "export-1", second.id, "jjh", now, "succeeded",
+        "/echo/file.csv", "/shifter1/file.csv", "/shifter2/file.csv",
+    )
+    store.record_worksheet_export(export)
+    assert store.list_worksheet_exports(second.id) == (export,)
     store.close()
 
 

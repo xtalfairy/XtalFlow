@@ -50,3 +50,4 @@ htmlcov/
 
 # Local RMServer image fixtures (large, potentially sensitive)
 tests/fixtures/rmserver/
+tests/runtime/

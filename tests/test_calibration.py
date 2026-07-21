@@ -10,9 +10,10 @@ from xtalflow.infrastructure import (
     RockMakerImageRepository,
     SQLiteReviewStore,
 )
+from xtalflow.settings import DEFAULT_SETTINGS
 
 
-FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "rmserver"
+FIXTURE_ROOT = DEFAULT_SETTINGS.rmserver_root
 
 
 def test_three_point_circle_and_physical_coordinate_conversion() -> None:
@@ -53,6 +54,24 @@ def test_calibration_is_persisted_per_project_image_set(tmp_path: Path) -> None:
     assert restored == saved
     assert restored.method is CalibrationMethod.MANUAL_THREE_POINT
     assert restored.confirmed
+    store.close()
+
+
+def test_automatic_calibration_can_be_explicitly_confirmed(tmp_path: Path) -> None:
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    project = Project.create("Confirmation")
+    image_set = project.add_image_set("1070", 5947, "profileID_1", "image")
+    store.save_project(project)
+    scoped = store.scoped_to(image_set.id)
+    service = WellCalibrationService(OpenCVWellDetector(), 2.77, scoped)
+    automatic = ImageCalibration.automatic("image", 100, 100, 50, 0.9, 2.77)
+    service.save(automatic)
+
+    confirmed = service.confirm(automatic)
+
+    assert confirmed.confirmed
+    assert confirmed.method is CalibrationMethod.AUTO_CIRCLE
+    assert scoped.load_calibration("image") == confirmed
     store.close()
 
 

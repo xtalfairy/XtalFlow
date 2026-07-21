@@ -2,12 +2,47 @@ from pathlib import Path
 
 import pytest
 
-from xtalflow.application import ProjectController, ReviewPersistenceError
-from xtalflow.domain import ImageFilter, SWISSCI_MIDI_3_LENS
+from dataclasses import replace
+
+from xtalflow.application import (
+    ProjectController,
+    ProjectTargetSummary,
+    ReviewPersistenceError,
+    TargetValidationIssue,
+)
+from xtalflow.domain import (
+    CrystalImage,
+    ImageCalibration,
+    ImageFilter,
+    SWISSCI_MIDI_3_LENS,
+    TargetPoint,
+)
 from xtalflow.infrastructure import RockMakerImageRepository, SQLiteReviewStore
+from xtalflow.settings import DEFAULT_SETTINGS
 
 
-FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "rmserver"
+FIXTURE_ROOT = DEFAULT_SETTINGS.rmserver_root
+
+
+def test_target_validation_reports_calibration_and_boundary_problems() -> None:
+    image = CrystalImage("1070", 1, 1, 1, "profileID_1", Path("image.jpg"))
+    inside = TargetPoint("inside", image.image_key, 100, 100)
+    outside = TargetPoint("outside", image.image_key, 151, 100)
+    automatic = ImageCalibration.automatic("image", 100, 100, 50, 0.9, 2.77)
+
+    missing = ProjectTargetSummary("set", image, 1, inside, None)
+    unconfirmed = ProjectTargetSummary("set", image, 1, inside, automatic)
+    outside_well = ProjectTargetSummary(
+        "set", image, 1, outside, replace(automatic, confirmed=True)
+    )
+
+    assert missing.validation_issues == (
+        TargetValidationIssue.CALIBRATION_MISSING,
+    )
+    assert unconfirmed.validation_issues == (
+        TargetValidationIssue.CALIBRATION_UNCONFIRMED,
+    )
+    assert outside_well.validation_issues == (TargetValidationIssue.OUTSIDE_WELL,)
 
 
 @pytest.mark.requires_rmserver_fixture
@@ -120,4 +155,30 @@ def test_failed_cross_plate_activation_keeps_original_plate(tmp_path: Path) -> N
 
     assert workspace.active_project.active_image_set_id == first.id
     assert workspace.review_controller.plate.plate_code == "1070"
+    store.close()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_target_summary_preserves_selection_order_instead_of_well_order(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    workspace = ProjectController(RockMakerImageRepository(FIXTURE_ROOT), store)
+    workspace.create_project("Selection order")
+    workspace.add_latest_image_set("1070", SWISSCI_MIDI_3_LENS)
+    review = workspace.review_controller
+
+    review.move_to(3)
+    first_selected_key = review.current_image.image_key
+    review.add_target(10, 10, 100, 100)
+    review.move_to(0)
+    second_selected_key = review.current_image.image_key
+    review.add_target(20, 20, 100, 100)
+
+    summaries = workspace.project_target_summaries()
+    assert [summary.image.image_key for summary in summaries] == [
+        first_selected_key,
+        second_selected_key,
+    ]
     store.close()

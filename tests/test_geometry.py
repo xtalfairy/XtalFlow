@@ -24,3 +24,16 @@ def test_aspect_fit_rejects_clicks_in_letterbox() -> None:
 def test_aspect_fit_requires_positive_dimensions() -> None:
     with pytest.raises(ValueError):
         AspectFitTransform(0, 1000, 1000, 800)
+
+
+def test_zoom_and_pan_preserve_coordinate_round_trip() -> None:
+    transform = AspectFitTransform(1200, 1000, 1000, 800, 3.0, 120, -80)
+
+    viewport_point = transform.image_to_viewport(600, 500)
+    assert transform.viewport_to_image(*viewport_point) == pytest.approx((600, 500))
+    assert transform.scale == pytest.approx(2.4)
+
+
+def test_zoom_must_not_be_smaller_than_fit_scale() -> None:
+    with pytest.raises(ValueError):
+        AspectFitTransform(1200, 1000, 1000, 800, 0.5)

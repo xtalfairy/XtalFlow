@@ -9,6 +9,9 @@ class AspectFitTransform:
     image_height: int
     viewport_width: int
     viewport_height: int
+    zoom: float = 1.0
+    pan_x: float = 0.0
+    pan_y: float = 0.0
 
     def __post_init__(self) -> None:
         if min(
@@ -18,10 +21,12 @@ class AspectFitTransform:
             self.viewport_height,
         ) <= 0:
             raise ValueError("image and viewport dimensions must be positive")
+        if self.zoom < 1:
+            raise ValueError("zoom must be at least one")
 
     @property
     def scale(self) -> float:
-        return min(
+        return self.zoom * min(
             self.viewport_width / self.image_width,
             self.viewport_height / self.image_height,
         )
@@ -36,11 +41,11 @@ class AspectFitTransform:
 
     @property
     def offset_x(self) -> float:
-        return (self.viewport_width - self.rendered_width) / 2
+        return (self.viewport_width - self.rendered_width) / 2 + self.pan_x
 
     @property
     def offset_y(self) -> float:
-        return (self.viewport_height - self.rendered_height) / 2
+        return (self.viewport_height - self.rendered_height) / 2 + self.pan_y
 
     def image_to_viewport(self, x_px: float, y_px: float) -> tuple[float, float]:
         return self.offset_x + x_px * self.scale, self.offset_y + y_px * self.scale

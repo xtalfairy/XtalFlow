@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from math import hypot, isfinite
 from uuid import uuid4
@@ -81,6 +81,7 @@ class TargetPoint:
     image_key: str
     x_px: float
     y_px: float
+    selected_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def __post_init__(self) -> None:
         if not self.id:
@@ -91,6 +92,8 @@ class TargetPoint:
             raise ValueError("target coordinates must be finite")
         if self.x_px < 0 or self.y_px < 0:
             raise ValueError("target coordinates must be non-negative")
+        if self.selected_at.tzinfo is None:
+            raise ValueError("target selection time must include a timezone")
 
 
 class ReviewSession:
@@ -112,7 +115,9 @@ class ReviewSession:
             raise ValueError("image dimensions must be positive")
         if not (0 <= x_px < image_width and 0 <= y_px < image_height):
             raise ValueError("target must be inside the image")
-        target = TargetPoint(str(uuid4()), image.image_key, x_px, y_px)
+        target = TargetPoint(
+            str(uuid4()), image.image_key, x_px, y_px, datetime.now(UTC)
+        )
         self._targets_by_image.setdefault(image.image_key, []).append(target)
         return target
 
@@ -172,6 +177,17 @@ class ReviewSession:
         if not targets:
             self._targets_by_image.pop(image.image_key, None)
         return nearest
+
+    def remove_target(self, target_id: str) -> TargetPoint | None:
+        for image_key, targets in tuple(self._targets_by_image.items()):
+            target = next((item for item in targets if item.id == target_id), None)
+            if target is None:
+                continue
+            targets.remove(target)
+            if not targets:
+                self._targets_by_image.pop(image_key, None)
+            return target
+        return None
 
     @property
     def target_count(self) -> int:

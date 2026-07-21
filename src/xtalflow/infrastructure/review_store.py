@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
+from hashlib import sha256
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
 from xtalflow.application import ReviewPersistenceError
@@ -13,6 +15,16 @@ from xtalflow.domain import (
     ReviewPreferences,
     ReviewProgress,
     TargetPoint,
+)
+from xtalflow.domain.fragment_screening import Fragment, FragmentLibrary
+from xtalflow.domain.plan_lifecycle import (
+    PlanningDraft,
+    PlanRevision,
+    WorksheetExportEvent,
+)
+from xtalflow.infrastructure.fragment_library_csv import (
+    FragmentLibraryCatalogEntry,
+    load_fragment_library as load_fragment_library_csv,
 )
 from xtalflow.infrastructure.review_migrations import migrate_review_database
 
@@ -103,13 +115,17 @@ class SQLiteReviewStore:
         placeholders = ",".join("?" for _ in image_keys)
         try:
             rows = self._connection.execute(
-                f"SELECT target_id, image_key, x_px, y_px FROM target_point "
-                f"WHERE image_key IN ({placeholders}) ORDER BY rowid",
+                f"SELECT target_id, image_key, x_px, y_px, selected_at "
+                f"FROM target_point WHERE image_key IN ({placeholders}) "
+                f"ORDER BY selected_at, rowid",
                 image_keys,
             ).fetchall()
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not load image targets") from error
-        return tuple(TargetPoint(*row) for row in rows)
+        return tuple(
+            TargetPoint(row[0], row[1], row[2], row[3], datetime.fromisoformat(row[4]))
+            for row in rows
+        )
 
     def load_reviewed_images(self, image_keys: tuple[str, ...]) -> tuple[str, ...]:
         return ()
@@ -121,8 +137,18 @@ class SQLiteReviewStore:
             "DELETE FROM target_point WHERE image_key = ?", (image_key,)
         )
         self._connection.executemany(
-            "INSERT INTO target_point(target_id, image_key, x_px, y_px) VALUES (?, ?, ?, ?)",
-            ((target.id, target.image_key, target.x_px, target.y_px) for target in targets),
+            "INSERT INTO target_point(target_id, image_key, x_px, y_px, selected_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                (
+                    target.id,
+                    target.image_key,
+                    target.x_px,
+                    target.y_px,
+                    target.selected_at.isoformat(),
+                )
+                for target in targets
+            ),
         )
 
     def _upsert_review_state(
@@ -155,6 +181,149 @@ class SQLiteReviewStore:
         if not self._closed:
             self._connection.close()
             self._closed = True
+
+    def import_fragment_library(
+        self, path: Path | str
+    ) -> FragmentLibraryCatalogEntry:
+        source = Path(path)
+        library = load_fragment_library_csv(source)
+        try:
+            digest = sha256(source.read_bytes()).hexdigest()
+        except OSError as error:
+            raise ReviewPersistenceError(
+                f"could not read fragment library: {source}"
+            ) from error
+        existing = next(
+            (
+                item
+                for item in self.list_fragment_libraries()
+                if item.sha256 == digest
+            ),
+            None,
+        )
+        if existing is not None:
+            return existing
+        imported_at = datetime.now(UTC)
+        entry = FragmentLibraryCatalogEntry(
+            digest,
+            source.name,
+            digest,
+            imported_at,
+            len(library.fragments),
+        )
+        try:
+            with self._connection:
+                self._connection.execute(
+                    """
+                    INSERT INTO fragment_library_import(
+                        library_import_id, file_name, sha256, imported_at, row_count
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        entry.id,
+                        entry.file_name,
+                        entry.sha256,
+                        entry.imported_at.isoformat(),
+                        entry.row_count,
+                    ),
+                )
+                self._connection.executemany(
+                    """
+                    INSERT INTO fragment_library_entry(
+                        library_import_id, row_number, vendor, library_name,
+                        compound_number, compound_id, formula, molecular_weight,
+                        smiles, concentration_mm, solvent, source_plate, source_well
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        (
+                            entry.id,
+                            row_number,
+                            fragment.vendor,
+                            fragment.library,
+                            fragment.number,
+                            fragment.compound_id,
+                            fragment.formula,
+                            str(fragment.molecular_weight),
+                            fragment.smiles,
+                            str(fragment.concentration_mm),
+                            fragment.solvent,
+                            fragment.source_plate,
+                            fragment.source_well,
+                        )
+                        for row_number, fragment in enumerate(
+                            library.fragments, start=1
+                        )
+                    ),
+                )
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError(
+                "could not import fragment library"
+            ) from error
+        return entry
+
+    def list_fragment_libraries(self) -> tuple[FragmentLibraryCatalogEntry, ...]:
+        try:
+            rows = self._connection.execute(
+                """
+                SELECT library_import_id, file_name, sha256, imported_at, row_count
+                FROM fragment_library_import
+                ORDER BY imported_at DESC, file_name
+                """
+            ).fetchall()
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError(
+                "could not list fragment libraries"
+            ) from error
+        return tuple(
+            FragmentLibraryCatalogEntry(
+                row[0], row[1], row[2], datetime.fromisoformat(row[3]), row[4]
+            )
+            for row in rows
+        )
+
+    def load_fragment_library(self, library_import_id: str) -> FragmentLibrary:
+        try:
+            metadata = self._connection.execute(
+                """
+                SELECT file_name FROM fragment_library_import
+                WHERE library_import_id = ?
+                """,
+                (library_import_id,),
+            ).fetchone()
+            rows = self._connection.execute(
+                """
+                SELECT vendor, library_name, compound_number, compound_id,
+                       formula, molecular_weight, smiles, concentration_mm,
+                       solvent, source_plate, source_well
+                FROM fragment_library_entry
+                WHERE library_import_id = ? ORDER BY row_number
+                """,
+                (library_import_id,),
+            ).fetchall()
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError(
+                "could not load fragment library"
+            ) from error
+        if metadata is None or not rows:
+            raise ValueError("fragment library does not exist")
+        fragments = tuple(
+            Fragment(
+                row[0],
+                row[1],
+                row[2],
+                row[3],
+                row[4],
+                Decimal(row[5]),
+                row[6],
+                Decimal(row[7]),
+                row[8],
+                row[9],
+                row[10],
+            )
+            for row in rows
+        )
+        return FragmentLibrary(Path(metadata[0]).stem, fragments)
 
     def save_project(self, project: Project) -> None:
         try:
@@ -267,6 +436,26 @@ class SQLiteReviewStore:
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not count image-set targets") from error
 
+    def delete_targets(self, target_ids: tuple[str, ...]) -> None:
+        if not target_ids:
+            return
+        placeholders = ",".join("?" for _ in target_ids)
+        try:
+            with self._connection:
+                self._connection.execute(
+                    f"DELETE FROM image_set_target_point "
+                    f"WHERE target_id IN ({placeholders})",
+                    target_ids,
+                )
+                # Imported standalone rows must also be removed or migration would
+                # restore them the next time the database is opened.
+                self._connection.execute(
+                    f"DELETE FROM target_point WHERE target_id IN ({placeholders})",
+                    target_ids,
+                )
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError("could not delete selected targets") from error
+
     def save_last_open_project(self, project_id: str) -> None:
         try:
             with self._connection:
@@ -288,6 +477,120 @@ class SQLiteReviewStore:
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not load active project") from error
         return row[0] if row else None
+
+    def save_planning_draft(self, draft: PlanningDraft) -> None:
+        try:
+            with self._connection:
+                self._connection.execute(
+                    """
+                    INSERT INTO planning_draft(
+                        plan_id, project_id, plan_type, name, library_id,
+                        library_rows, protein, volume_nl, assignment_order,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(plan_id) DO UPDATE SET
+                        name=excluded.name, library_id=excluded.library_id,
+                        library_rows=excluded.library_rows, protein=excluded.protein,
+                        volume_nl=excluded.volume_nl,
+                        assignment_order=excluded.assignment_order,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        draft.id, draft.project_id, draft.plan_type, draft.name,
+                        draft.library_id, draft.library_rows, draft.protein,
+                        draft.volume_nl, draft.assignment_order,
+                        draft.created_at.isoformat(), draft.updated_at.isoformat(),
+                    ),
+                )
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError("could not save planning draft") from error
+
+    def load_planning_drafts(self, project_id: str) -> tuple[PlanningDraft, ...]:
+        try:
+            rows = self._connection.execute(
+                """SELECT plan_id, project_id, plan_type, name, library_id,
+                          library_rows, protein, volume_nl, assignment_order,
+                          created_at, updated_at
+                   FROM planning_draft WHERE project_id = ?
+                   ORDER BY created_at, plan_id""",
+                (project_id,),
+            ).fetchall()
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError("could not load planning drafts") from error
+        return tuple(
+            PlanningDraft(*row[:9], datetime.fromisoformat(row[9]), datetime.fromisoformat(row[10]))
+            for row in rows
+        )
+
+    def finalize_plan_revision(self, revision: PlanRevision) -> PlanRevision:
+        try:
+            with self._connection:
+                next_number = self._connection.execute(
+                    "SELECT COALESCE(MAX(revision_number), 0) + 1 FROM plan_revision WHERE plan_id = ?",
+                    (revision.plan_id,),
+                ).fetchone()[0]
+                saved = PlanRevision(
+                    revision.id, revision.plan_id, next_number,
+                    revision.experiment_id, revision.snapshot_json,
+                    revision.finalized_by, revision.finalized_at,
+                )
+                self._connection.execute(
+                    "INSERT INTO plan_revision VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        saved.id, saved.plan_id, saved.revision, saved.experiment_id,
+                        saved.snapshot_json, saved.finalized_by,
+                        saved.finalized_at.isoformat(),
+                    ),
+                )
+                return saved
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError("could not finalize plan revision") from error
+
+    def list_plan_revisions(self, plan_id: str) -> tuple[PlanRevision, ...]:
+        rows = self._connection.execute(
+            """SELECT revision_id, plan_id, revision_number, experiment_id,
+                      snapshot_json, finalized_by, finalized_at
+               FROM plan_revision WHERE plan_id = ? ORDER BY revision_number""",
+            (plan_id,),
+        ).fetchall()
+        return tuple(
+            PlanRevision(*row[:6], datetime.fromisoformat(row[6])) for row in rows
+        )
+
+    def reserved_experiment_ids(self) -> set[str]:
+        try:
+            rows = self._connection.execute(
+                "SELECT DISTINCT experiment_id FROM plan_revision"
+            ).fetchall()
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError("could not list experiment ids") from error
+        return {row[0] for row in rows}
+
+    def record_worksheet_export(self, event: WorksheetExportEvent) -> None:
+        try:
+            with self._connection:
+                self._connection.execute(
+                    "INSERT INTO worksheet_export_event VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        event.id, event.revision_id, event.username,
+                        event.exported_at.isoformat(), event.status, event.echo_path,
+                        event.shifter1_path, event.shifter2_path, event.error_message,
+                    ),
+                )
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError("could not record worksheet export") from error
+
+    def list_worksheet_exports(self, revision_id: str) -> tuple[WorksheetExportEvent, ...]:
+        rows = self._connection.execute(
+            """SELECT export_id, revision_id, username, exported_at, status,
+                      echo_path, shifter1_path, shifter2_path, error_message
+               FROM worksheet_export_event WHERE revision_id = ? ORDER BY exported_at""",
+            (revision_id,),
+        ).fetchall()
+        return tuple(
+            WorksheetExportEvent(row[0], row[1], row[2], datetime.fromisoformat(row[3]), *row[4:])
+            for row in rows
+        )
 
 
 class SQLiteImageSetReviewStore:
@@ -328,9 +631,16 @@ class SQLiteImageSetReviewStore:
                     (self.image_set_id, image_key),
                 )
                 self._connection.executemany(
-                    "INSERT INTO image_set_target_point VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO image_set_target_point VALUES (?, ?, ?, ?, ?, ?)",
                     (
-                        (target.id, self.image_set_id, target.image_key, target.x_px, target.y_px)
+                        (
+                            target.id,
+                            self.image_set_id,
+                            target.image_key,
+                            target.x_px,
+                            target.y_px,
+                            target.selected_at.isoformat(),
+                        )
                         for target in targets
                     ),
                 )
@@ -386,14 +696,17 @@ class SQLiteImageSetReviewStore:
         placeholders = ",".join("?" for _ in image_keys)
         try:
             rows = self._connection.execute(
-                f"SELECT target_id, image_key, x_px, y_px "
+                f"SELECT target_id, image_key, x_px, y_px, selected_at "
                 f"FROM image_set_target_point WHERE image_set_id = ? "
-                f"AND image_key IN ({placeholders}) ORDER BY rowid",
+                f"AND image_key IN ({placeholders}) ORDER BY selected_at, rowid",
                 (self.image_set_id, *image_keys),
             ).fetchall()
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not load image-set targets") from error
-        return tuple(TargetPoint(*row) for row in rows)
+        return tuple(
+            TargetPoint(row[0], row[1], row[2], row[3], datetime.fromisoformat(row[4]))
+            for row in rows
+        )
 
     def load_reviewed_images(self, image_keys: tuple[str, ...]) -> tuple[str, ...]:
         if not image_keys:

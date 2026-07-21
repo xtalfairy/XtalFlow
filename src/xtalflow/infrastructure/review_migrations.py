@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import UTC, datetime, timedelta
 
 
-LATEST_SCHEMA_VERSION = 9
+LATEST_SCHEMA_VERSION = 12
 IMPORTED_PROJECT_ID = "imported-standalone-reviews"
 LEGACY_PLATE_FORMAT_ID = "swissci-midi-3-lens-hr3-194"
 LEGACY_PLATE_FORMAT_VERSION = 1
@@ -19,10 +20,19 @@ def migrate_review_database(connection: sqlite3.Connection) -> None:
                 target_id TEXT PRIMARY KEY,
                 image_key TEXT NOT NULL,
                 x_px REAL NOT NULL,
-                y_px REAL NOT NULL
+                y_px REAL NOT NULL,
+                selected_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00'
             )
             """
         )
+        target_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(target_point)")
+        }
+        if "selected_at" not in target_columns:
+            connection.execute(
+                "ALTER TABLE target_point ADD COLUMN selected_at TEXT NOT NULL "
+                "DEFAULT '1970-01-01T00:00:00+00:00'"
+            )
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS review_plan (
@@ -57,7 +67,13 @@ def migrate_review_database(connection: sqlite3.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS target_point_image_key ON target_point(image_key)"
         )
         _create_project_schema(connection)
+        _create_fragment_library_schema(connection)
+        _create_planning_schema(connection)
+        if starting_version < 10:
+            _assign_legacy_selection_times(connection, "target_point")
         _import_standalone_reviews(connection)
+        if starting_version < 10:
+            _assign_legacy_selection_times(connection, "image_set_target_point")
         connection.execute(
             """
             UPDATE project_image_set
@@ -85,6 +101,90 @@ def migrate_review_database(connection: sqlite3.Connection) -> None:
                 """
             )
         connection.execute(f"PRAGMA user_version = {LATEST_SCHEMA_VERSION}")
+
+
+def _create_planning_schema(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS planning_draft (
+            plan_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
+            plan_type TEXT NOT NULL,
+            name TEXT NOT NULL,
+            library_id TEXT,
+            library_rows TEXT NOT NULL,
+            protein TEXT NOT NULL,
+            volume_nl TEXT NOT NULL,
+            assignment_order TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS plan_revision (
+            revision_id TEXT PRIMARY KEY,
+            plan_id TEXT NOT NULL REFERENCES planning_draft(plan_id) ON DELETE CASCADE,
+            revision_number INTEGER NOT NULL CHECK(revision_number > 0),
+            experiment_id TEXT NOT NULL,
+            snapshot_json TEXT NOT NULL,
+            finalized_by TEXT NOT NULL,
+            finalized_at TEXT NOT NULL,
+            UNIQUE(plan_id, revision_number)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS worksheet_export_event (
+            export_id TEXT PRIMARY KEY,
+            revision_id TEXT NOT NULL REFERENCES plan_revision(revision_id),
+            username TEXT NOT NULL,
+            exported_at TEXT NOT NULL,
+            status TEXT NOT NULL,
+            echo_path TEXT,
+            shifter1_path TEXT,
+            shifter2_path TEXT,
+            error_message TEXT
+        )
+        """
+    )
+
+
+def _create_fragment_library_schema(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fragment_library_import (
+            library_import_id TEXT PRIMARY KEY,
+            file_name TEXT NOT NULL,
+            sha256 TEXT NOT NULL UNIQUE,
+            imported_at TEXT NOT NULL,
+            row_count INTEGER NOT NULL CHECK(row_count > 0)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fragment_library_entry (
+            library_import_id TEXT NOT NULL
+                REFERENCES fragment_library_import(library_import_id) ON DELETE CASCADE,
+            row_number INTEGER NOT NULL CHECK(row_number > 0),
+            vendor TEXT NOT NULL,
+            library_name TEXT NOT NULL,
+            compound_number TEXT NOT NULL,
+            compound_id TEXT NOT NULL,
+            formula TEXT NOT NULL,
+            molecular_weight TEXT NOT NULL,
+            smiles TEXT NOT NULL,
+            concentration_mm TEXT NOT NULL,
+            solvent TEXT NOT NULL,
+            source_plate TEXT NOT NULL,
+            source_well TEXT NOT NULL,
+            PRIMARY KEY(library_import_id, row_number)
+        )
+        """
+    )
 
 
 def _create_project_schema(connection: sqlite3.Connection) -> None:
@@ -151,10 +251,19 @@ def _create_project_schema(connection: sqlite3.Connection) -> None:
             image_set_id TEXT NOT NULL REFERENCES project_image_set(image_set_id),
             image_key TEXT NOT NULL,
             x_px REAL NOT NULL,
-            y_px REAL NOT NULL
+            y_px REAL NOT NULL,
+            selected_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00'
         )
         """
     )
+    target_columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(image_set_target_point)")
+    }
+    if "selected_at" not in target_columns:
+        connection.execute(
+            "ALTER TABLE image_set_target_point ADD COLUMN selected_at TEXT NOT NULL "
+            "DEFAULT '1970-01-01T00:00:00+00:00'"
+        )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS image_set_target_image "
         "ON image_set_target_point(image_set_id, image_key)"
@@ -198,7 +307,8 @@ def _import_standalone_reviews(connection: sqlite3.Connection) -> None:
         """
     ).fetchall()
     target_rows = connection.execute(
-        "SELECT target_id, image_key, x_px, y_px FROM target_point"
+        "SELECT target_id, image_key, x_px, y_px, selected_at "
+        "FROM target_point ORDER BY selected_at, rowid"
     ).fetchall()
     if not state_rows and not target_rows:
         return
@@ -220,7 +330,7 @@ def _import_standalone_reviews(connection: sqlite3.Connection) -> None:
             created,
             updated,
         )
-    for _, image_key, _, _ in target_rows:
+    for _, image_key, _, _, _ in target_rows:
         parts = image_key.split(":", 4)
         if len(parts) != 5:
             continue
@@ -257,11 +367,12 @@ def _import_standalone_reviews(connection: sqlite3.Connection) -> None:
             (image_set_id, count, current, created, updated),
         )
         prefix = f"{plate_code}:{batch_id}:"
-        for target_id, image_key, x_px, y_px in target_rows:
+        for target_id, image_key, x_px, y_px, selected_at in target_rows:
             if image_key.startswith(prefix) and image_key.endswith(f":{profile}"):
                 connection.execute(
-                    "INSERT OR IGNORE INTO image_set_target_point VALUES (?, ?, ?, ?, ?)",
-                    (target_id, image_set_id, image_key, x_px, y_px),
+                    "INSERT OR IGNORE INTO image_set_target_point "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (target_id, image_set_id, image_key, x_px, y_px, selected_at),
                 )
 
     first_image_set = connection.execute(
@@ -275,3 +386,21 @@ def _import_standalone_reviews(connection: sqlite3.Connection) -> None:
             "AND active_image_set_id IS NULL",
             (first_image_set[0], IMPORTED_PROJECT_ID),
         )
+
+
+def _assign_legacy_selection_times(
+    connection: sqlite3.Connection, table_name: str
+) -> None:
+    epoch = "1970-01-01T00:00:00+00:00"
+    rows = connection.execute(
+        f"SELECT rowid FROM {table_name} WHERE selected_at = ? ORDER BY rowid",
+        (epoch,),
+    ).fetchall()
+    base = datetime(1970, 1, 1, tzinfo=UTC)
+    connection.executemany(
+        f"UPDATE {table_name} SET selected_at = ? WHERE rowid = ?",
+        (
+            ((base + timedelta(microseconds=index)).isoformat(), row[0])
+            for index, row in enumerate(rows, start=1)
+        ),
+    )

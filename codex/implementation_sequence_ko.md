@@ -211,6 +211,10 @@ plate 경계 이동을 피한다. `WITH_TARGETS`, `WITHOUT_TARGETS`, `UNVISITED`
 - 선택한 plate format과 drop/lens가 pixel-to-mm 변환의 물리 지름을 공급
 - 검출 원과 중심 `(0, 0)`을 이미지 위에 overlay
 - 세 경계점을 이용한 수동 원 보정 및 우클릭 취소
+- 자동 검출 calibration은 `Accept Well` 승인 전까지 unconfirmed로 유지
+- 수동 3-point calibration은 즉시 confirmed로 저장
+- Target Summary에서 calibration missing, unconfirmed, well 경계 밖 target을 경고하고 `Warnings only`로 필터
+- calibration이 confirmed이고 target이 well 내부인 경우에만 `Ready`로 판정
 - calibration 중 클릭은 target selection과 완전히 분리
 - image-set/image별 center, radius, diameter, method, confidence, confirmed 상태를 저장하고 plate format은 schema v8에 저장
 - target은 원본 pixel 좌표를 유지하고 `ImageCalibration.pixel_to_mm()`에서 물리 좌표 계산

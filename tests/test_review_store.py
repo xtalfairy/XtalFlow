@@ -5,9 +5,12 @@ import pytest
 
 from xtalflow.domain import (
     CrystalImage,
+    Project,
     ReviewPreferences,
     ReviewProgress,
     ReviewSession,
+    TargetPoint,
+    SWISSCI_MIDI_3_LENS,
 )
 from xtalflow.infrastructure.review_migrations import LATEST_SCHEMA_VERSION
 from xtalflow.infrastructure import SQLiteReviewStore
@@ -100,4 +103,100 @@ def test_checkpoint_rolls_back_targets_when_progress_write_fails(tmp_path: Path)
         )
 
     assert store.load_images((image.image_key,)) == (original,)
+    store.close()
+
+
+def test_same_physical_image_set_is_isolated_between_projects(tmp_path: Path) -> None:
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    first_project = Project.create("First")
+    second_project = Project.create("Second")
+    first_set = first_project.add_image_set("1070", 5947, "profileID_1", "image")
+    second_set = second_project.add_image_set("1070", 5947, "profileID_1", "image")
+    store.save_project(first_project)
+    store.save_project(second_project)
+    target = TargetPoint("target-1", "image", 10, 20)
+    progress = ReviewProgress.create("1070", 5947, "profileID_1", "image")
+    preferences = ReviewPreferences(3)
+
+    store.scoped_to(first_set.id).save_checkpoint(
+        "image", (target,), progress, preferences
+    )
+
+    assert store.scoped_to(first_set.id).load_images(("image",)) == (target,)
+    assert store.scoped_to(second_set.id).load_images(("image",)) == ()
+    store.close()
+
+
+def test_reviewed_images_are_scoped_and_restored(tmp_path: Path) -> None:
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    project = Project.create("Review status")
+    image_set = project.add_image_set("1070", 5947, "profileID_1", "first")
+    store.save_project(project)
+    scoped = store.scoped_to(image_set.id)
+    progress = ReviewProgress.create("1070", 5947, "profileID_1", "second")
+
+    scoped.save_checkpoint("first", (), progress, ReviewPreferences(1), True)
+
+    assert scoped.load_reviewed_images(("first", "second")) == ("first",)
+    store.close()
+
+
+def test_standalone_targets_are_imported_into_a_project(tmp_path: Path) -> None:
+    database_path = tmp_path / "reviews.sqlite3"
+    connection = sqlite3.connect(database_path)
+    connection.execute(
+        "CREATE TABLE target_point(target_id TEXT PRIMARY KEY, image_key TEXT, x_px REAL, y_px REAL)"
+    )
+    connection.execute(
+        "INSERT INTO target_point VALUES ('t1', '1070:5947:1:1:profileID_1', 10, 20)"
+    )
+    connection.commit()
+    connection.close()
+
+    store = SQLiteReviewStore(database_path)
+    imported = next(project for project in store.load_projects() if project.name.startswith("Imported"))
+    image_set = imported.active_image_sets[0]
+
+    assert image_set.source_key == ("1070", 5947, "profileID_1")
+    assert image_set.plate_format_id == SWISSCI_MIDI_3_LENS.id
+    assert len(
+        store.scoped_to(image_set.id).load_images(("1070:5947:1:1:profileID_1",))
+    ) == 1
+    store.close()
+
+
+def test_schema_v9_assigns_all_existing_image_sets_to_three_lens(tmp_path: Path) -> None:
+    database_path = tmp_path / "reviews.sqlite3"
+    connection = sqlite3.connect(database_path)
+    connection.executescript(
+        """
+        CREATE TABLE project (
+            project_id TEXT PRIMARY KEY, name TEXT NOT NULL,
+            active_image_set_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE project_image_set (
+            image_set_id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+            plate_code TEXT NOT NULL, batch_id INTEGER NOT NULL, profile TEXT NOT NULL,
+            display_order INTEGER NOT NULL, active_image_key TEXT NOT NULL,
+            created_at TEXT NOT NULL, archived_at TEXT,
+            plate_format_id TEXT, plate_format_version INTEGER
+        );
+        INSERT INTO project VALUES (
+            'p1', 'Legacy', 's1', '2026-01-01T00:00:00+00:00',
+            '2026-01-01T00:00:00+00:00'
+        );
+        INSERT INTO project_image_set VALUES (
+            's1', 'p1', '1070', 5947, 'profileID_1', 0, 'image',
+            '2026-01-01T00:00:00+00:00', NULL, NULL, NULL
+        );
+        PRAGMA user_version = 8;
+        """
+    )
+    connection.close()
+
+    store = SQLiteReviewStore(database_path)
+    image_set = store.load_projects()[0].active_image_sets[0]
+
+    assert image_set.plate_format_id == SWISSCI_MIDI_3_LENS.id
+    assert image_set.plate_format_version == SWISSCI_MIDI_3_LENS.version
     store.close()

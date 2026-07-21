@@ -128,3 +128,23 @@ def test_underscored_plate_directory_takes_precedence_when_both_exist(tmp_path: 
     plate = RockMakerImageRepository(tmp_path).load_plate("1070")
 
     assert plate.batch_id == 2
+
+
+def test_specific_batch_can_be_pinned_and_reloaded(tmp_path: Path) -> None:
+    for batch_id in (1, 2):
+        profile = (
+            tmp_path
+            / "70"
+            / "plateID_1070"
+            / f"batchID_{batch_id}"
+            / "wellNum_1"
+            / "profileID_1"
+        )
+        profile.mkdir(parents=True)
+        (profile / f"d1_r{batch_id}_ef.jpg").touch()
+    repository = RockMakerImageRepository(tmp_path)
+
+    assert repository.available_batches("1070") == (1, 2)
+    assert repository.available_profiles("1070", 1) == ("profileID_1",)
+    assert repository.load_plate_batch("1070", 1).batch_id == 1
+    assert repository.load_plate("1070").batch_id == 2

@@ -75,6 +75,60 @@ class RockMakerImageRepository:
         batch_id, images = max(candidates, key=lambda item: item[0])
         return PlateImages(code, batch_id, profile, images)
 
+    def available_batches(self, plate_code: str | int) -> tuple[int, ...]:
+        code = str(plate_code).strip()
+        plate_dir = self.plate_directory(code)
+        if not plate_dir.is_dir():
+            raise PlateImagesNotFoundError(f"plate directory does not exist: {plate_dir}")
+        return tuple(
+            sorted(
+                int(match.group(1))
+                for batch_dir in plate_dir.iterdir()
+                if batch_dir.is_dir()
+                and (match := self._BATCH_PATTERN.fullmatch(batch_dir.name))
+            )
+        )
+
+    def load_plate_batch(
+        self,
+        plate_code: str | int,
+        batch_id: int,
+        profile: str = "profileID_1",
+    ) -> PlateImages:
+        code = str(plate_code).strip()
+        plate_dir = self.plate_directory(code)
+        if batch_id < 0:
+            raise ValueError("batch_id must be non-negative")
+        batch_dir = plate_dir / f"batchID_{batch_id}"
+        if not batch_dir.is_dir():
+            raise PlateImagesNotFoundError(
+                f"batch directory does not exist: {batch_dir}"
+            )
+        images = self._images_in_batch(code, batch_id, batch_dir, profile)
+        if not images:
+            raise PlateImagesNotFoundError(
+                f"no original images for plate {code}, batch {batch_id}, profile {profile}"
+            )
+        return PlateImages(code, batch_id, profile, images)
+
+    def available_profiles(
+        self, plate_code: str | int, batch_id: int
+    ) -> tuple[str, ...]:
+        code = str(plate_code).strip()
+        batch_dir = self.plate_directory(code) / f"batchID_{batch_id}"
+        if not batch_dir.is_dir():
+            raise PlateImagesNotFoundError(
+                f"batch directory does not exist: {batch_dir}"
+            )
+        profiles = {
+            profile_dir.name
+            for well_dir in batch_dir.iterdir()
+            if well_dir.is_dir() and self._WELL_PATTERN.fullmatch(well_dir.name)
+            for profile_dir in well_dir.iterdir()
+            if profile_dir.is_dir() and profile_dir.name.startswith("profileID_")
+        }
+        return tuple(sorted(profiles))
+
     def _images_in_batch(
         self,
         plate_code: str,

@@ -20,4 +20,7 @@ class ReviewStorePort(Protocol):
         targets: tuple[TargetPoint, ...],
         progress: ReviewProgress,
         preferences: ReviewPreferences,
+        mark_reviewed: bool = False,
     ) -> None: ...
+
+    def load_reviewed_images(self, image_keys: tuple[str, ...]) -> tuple[str, ...]: ...

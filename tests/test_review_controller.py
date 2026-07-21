@@ -6,6 +6,7 @@ from xtalflow.application import ReviewController
 from xtalflow.application import ReviewPersistenceError
 from xtalflow.domain import (
     CrystalImage,
+    ImageFilter,
     PlateImages,
     ReviewPreferences,
     ReviewProgress,
@@ -15,8 +16,8 @@ from xtalflow.domain import (
 
 def controller(auto_advance_count: int = 2) -> ReviewController:
     images = tuple(
-        CrystalImage("1070", 5947, 1, drop, "profileID_1", Path(f"{drop}.jpg"))
-        for drop in (1, 2)
+        CrystalImage("1070", 5947, well, 1, "profileID_1", Path(f"{well}.jpg"))
+        for well in (1, 2)
     )
     plate = PlateImages("1070", 5947, "profileID_1", images)
     progress = ReviewProgress.create(
@@ -43,6 +44,43 @@ def test_controller_navigation_updates_progress() -> None:
     assert review.progress.current_image_key == review.current_image.image_key
     assert not review.move_next()
     assert review.move_previous()
+
+
+def test_review_filters_distinguish_unreviewed_and_reviewed_without_targets() -> None:
+    review = controller()
+
+    assert review.move_next()
+    assert review.session.is_reviewed(review.plate.images[0])
+    assert not review.session.is_reviewed(review.current_image)
+
+    review.change_image_filter(ImageFilter.UNREVIEWED)
+    assert review.filtered_indices == (1,)
+    assert not review.can_move_previous
+
+    review.change_image_filter(ImageFilter.WITHOUT_TARGETS)
+    assert review.image_index == 0
+    assert review.filtered_indices == (0, 1)
+
+
+def test_target_filter_uses_live_session_before_checkpoint() -> None:
+    review = controller()
+    review.add_target(10, 10, 100, 100)
+
+    review.change_image_filter(ImageFilter.WITH_TARGETS)
+
+    assert review.filtered_indices == (0,)
+    assert review.image_index == 0
+
+
+def test_move_to_well_uses_first_drop_and_marks_outgoing_reviewed() -> None:
+    review = controller()
+
+    assert review.move_to_well(2)
+    assert review.current_image.well_number == 2
+    assert review.session.is_reviewed(review.plate.images[0])
+
+    with pytest.raises(ValueError):
+        review.move_to_well(999)
 
 
 def test_auto_advance_preference_does_not_limit_actual_targets() -> None:

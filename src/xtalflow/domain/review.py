@@ -4,8 +4,16 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from math import hypot, isfinite
 from uuid import uuid4
+from enum import Enum
 
 from .imaging import CrystalImage
+
+
+class ImageFilter(str, Enum):
+    ALL = "all"
+    WITH_TARGETS = "with_targets"
+    WITHOUT_TARGETS = "without_targets"
+    UNREVIEWED = "unreviewed"
 
 
 @dataclass(slots=True)
@@ -90,6 +98,7 @@ class ReviewSession:
 
     def __init__(self) -> None:
         self._targets_by_image: dict[str, list[TargetPoint]] = {}
+        self._reviewed_image_keys: set[str] = set()
 
     def add_target(
         self,
@@ -120,6 +129,25 @@ class ReviewSession:
         for target in targets:
             restored.setdefault(target.image_key, []).append(target)
         self._targets_by_image = restored
+
+    def restore_reviewed(self, image_keys: tuple[str, ...]) -> None:
+        self._reviewed_image_keys = set(image_keys)
+
+    def mark_reviewed(self, image: CrystalImage | str) -> None:
+        image_key = image.image_key if isinstance(image, CrystalImage) else image
+        self._reviewed_image_keys.add(image_key)
+
+    def unmark_reviewed(self, image: CrystalImage | str) -> None:
+        image_key = image.image_key if isinstance(image, CrystalImage) else image
+        self._reviewed_image_keys.discard(image_key)
+
+    def is_reviewed(self, image: CrystalImage | str) -> bool:
+        image_key = image.image_key if isinstance(image, CrystalImage) else image
+        return image_key in self._reviewed_image_keys
+
+    @property
+    def reviewed_count(self) -> int:
+        return len(self._reviewed_image_keys)
 
     def remove_nearest(
         self,

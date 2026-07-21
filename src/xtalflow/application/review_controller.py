@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from xtalflow.domain import (
     CrystalImage,
+    ImageFilter,
     PlateImages,
     ReviewPreferences,
     ReviewProgress,
@@ -28,6 +29,7 @@ class ReviewController:
         self.session = session
         self.store = store
         self.has_unsaved_changes = False
+        self.image_filter = ImageFilter.ALL
         self._index_by_key = {
             image.image_key: index for index, image in enumerate(plate.images)
         }
@@ -45,17 +47,76 @@ class ReviewController:
 
     @property
     def can_move_previous(self) -> bool:
-        return self.image_index > 0
+        return self._destination(-1) is not None
 
     @property
     def can_move_next(self) -> bool:
-        return self.image_index < len(self.plate.images) - 1
+        return self._destination(1) is not None
 
     def move_previous(self) -> bool:
-        return self.move_to(self.image_index - 1)
+        destination = self._destination(-1)
+        return destination is not None and self.move_to(destination)
 
     def move_next(self) -> bool:
-        return self.move_to(self.image_index + 1)
+        destination = self._destination(1)
+        return destination is not None and self.move_to(destination)
+
+    def change_image_filter(self, image_filter: ImageFilter) -> bool:
+        self.image_filter = image_filter
+        if self._matches_filter(self.image_index):
+            return False
+        candidates = self.filtered_indices
+        if not candidates:
+            return False
+        next_index = next((index for index in candidates if index > self.image_index), None)
+        return self.move_to(next_index if next_index is not None else candidates[0])
+
+    def move_to_well(self, well_number: int) -> bool:
+        destination = next(
+            (
+                index
+                for index, image in enumerate(self.plate.images)
+                if image.well_number == well_number
+            ),
+            None,
+        )
+        if destination is None:
+            raise ValueError(f"well {well_number} is not available in this image set")
+        if destination == self.image_index:
+            return False
+        return self.move_to(destination)
+
+    @property
+    def filtered_indices(self) -> tuple[int, ...]:
+        return tuple(
+            index
+            for index in range(len(self.plate.images))
+            if self._matches_filter(index)
+        )
+
+    @property
+    def current_matches_filter(self) -> bool:
+        return self._matches_filter(self.image_index)
+
+    def _matches_filter(self, image_index: int) -> bool:
+        image = self.plate.images[image_index]
+        target_count = self.session.target_count_for(image)
+        if self.image_filter is ImageFilter.WITH_TARGETS:
+            return target_count > 0
+        if self.image_filter is ImageFilter.WITHOUT_TARGETS:
+            return self.session.is_reviewed(image) and target_count == 0
+        if self.image_filter is ImageFilter.UNREVIEWED:
+            return not self.session.is_reviewed(image)
+        return True
+
+    def _destination(self, direction: int) -> int | None:
+        candidates = self.filtered_indices
+        if direction < 0:
+            return next(
+                (index for index in reversed(candidates) if index < self.image_index),
+                None,
+            )
+        return next((index for index in candidates if index > self.image_index), None)
 
     def move_to(self, image_index: int) -> bool:
         if not (0 <= image_index < len(self.plate.images)):
@@ -65,6 +126,8 @@ class ReviewController:
         previous_updated_at = self.progress.updated_at
         outgoing_image = self.current_image
         outgoing_targets = self.current_targets
+        was_reviewed = self.session.is_reviewed(outgoing_image)
+        self.session.mark_reviewed(outgoing_image)
         self.image_index = image_index
         self.progress.move_to(self.current_image.image_key)
         try:
@@ -74,12 +137,15 @@ class ReviewController:
                     outgoing_targets,
                     self.progress,
                     self.preferences,
+                    True,
                 )
                 self.has_unsaved_changes = False
         except ReviewPersistenceError:
             self.image_index = previous_index
             self.progress.current_image_key = previous_key
             self.progress.updated_at = previous_updated_at
+            if not was_reviewed:
+                self.session.unmark_reviewed(outgoing_image)
             raise
         return True
 
@@ -114,15 +180,24 @@ class ReviewController:
             self.preferences.auto_advance_target_count = previous_count
             raise
 
-    def checkpoint_current(self) -> None:
+    def checkpoint_current(self, mark_reviewed: bool = False) -> None:
+        was_reviewed = self.session.is_reviewed(self.current_image)
+        if mark_reviewed:
+            self.session.mark_reviewed(self.current_image)
         if self.store is not None:
-            self.store.save_checkpoint(
-                self.current_image.image_key,
-                self.current_targets,
-                self.progress,
-                self.preferences,
-            )
-            self.has_unsaved_changes = False
+            try:
+                self.store.save_checkpoint(
+                    self.current_image.image_key,
+                    self.current_targets,
+                    self.progress,
+                    self.preferences,
+                    mark_reviewed,
+                )
+                self.has_unsaved_changes = False
+            except ReviewPersistenceError:
+                if mark_reviewed and not was_reviewed:
+                    self.session.unmark_reviewed(self.current_image)
+                raise
 
     def persist_state(self) -> None:
         if self.store is not None:

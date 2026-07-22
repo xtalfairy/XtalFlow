@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import sqlite3
+import json
+from dataclasses import dataclass
 from hashlib import sha256
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from uuid import NAMESPACE_URL, uuid5
 
 from xtalflow.application import ReviewPersistenceError
 from xtalflow.domain import (
@@ -37,6 +40,14 @@ from xtalflow.infrastructure.fragment_library_csv import (
 from xtalflow.infrastructure.review_migrations import migrate_review_database
 
 
+@dataclass(frozen=True)
+class PlanningProjectMigrationReport:
+    migrated: int
+    skipped_existing: int
+    legacy_drafts_without_revision: int
+    invalid_snapshots: tuple[tuple[str, str], ...]
+
+
 class SQLiteReviewStore:
     """Persist one authoritative target snapshot per logical image."""
 
@@ -48,10 +59,68 @@ class SQLiteReviewStore:
             self._connection = sqlite3.connect(self.database_path)
             self._connection.execute("PRAGMA foreign_keys = ON")
             migrate_review_database(self._connection)
+            self.planning_project_migration = (
+                self._migrate_finalized_planning_projects()
+            )
         except (OSError, sqlite3.Error) as error:
             raise ReviewPersistenceError(
                 f"cannot open review database: {self.database_path}"
             ) from error
+
+    def _migrate_finalized_planning_projects(
+        self,
+    ) -> PlanningProjectMigrationReport:
+        """Copy recoverable legacy plan snapshots into the new aggregate."""
+        rows = self._connection.execute(
+            """SELECT draft.plan_id, draft.name, draft.plan_type,
+                      draft.created_at, draft.updated_at,
+                      revision.snapshot_json
+               FROM planning_draft AS draft
+               JOIN plan_revision AS revision
+                 ON revision.plan_id = draft.plan_id
+               WHERE revision.revision_number = (
+                   SELECT MAX(latest.revision_number)
+                   FROM plan_revision AS latest
+                   WHERE latest.plan_id = draft.plan_id
+               )
+               ORDER BY draft.created_at, draft.plan_id"""
+        ).fetchall()
+        existing_ids = {
+            row[0] for row in self._connection.execute(
+                "SELECT project_id FROM experiment_project"
+            ).fetchall()
+        }
+        draft_count = self._connection.execute(
+            "SELECT COUNT(*) FROM planning_draft"
+        ).fetchone()[0]
+        migrated = 0
+        skipped = 0
+        invalid: list[tuple[str, str]] = []
+        for row in rows:
+            plan_id = row[0]
+            if plan_id in existing_ids:
+                skipped += 1
+                continue
+            try:
+                project = _project_from_legacy_snapshot(*row)
+                self.save_experiment_project(project)
+            except (
+                KeyError,
+                TypeError,
+                ValueError,
+                json.JSONDecodeError,
+                ReviewPersistenceError,
+            ) as error:
+                invalid.append((plan_id, str(error)))
+                continue
+            existing_ids.add(plan_id)
+            migrated += 1
+        return PlanningProjectMigrationReport(
+            migrated,
+            skipped,
+            max(draft_count - len(rows), 0),
+            tuple(invalid),
+        )
 
     def save_review_state(
         self, progress: ReviewProgress, preferences: ReviewPreferences
@@ -893,6 +962,112 @@ class SQLiteReviewStore:
             )
             for row in rows
         )
+
+
+def _project_from_legacy_snapshot(
+    plan_id: str,
+    name: str,
+    plan_type_value: str,
+    created_at_value: str,
+    updated_at_value: str,
+    snapshot_json: str,
+) -> ExperimentProject:
+    payload = json.loads(snapshot_json)
+    if not isinstance(payload, dict):
+        raise ValueError("snapshot root must be an object")
+    plan_type = PlanType(plan_type_value)
+    snapshot_type = payload.get("plan_type")
+    if snapshot_type != plan_type.value:
+        raise ValueError(
+            f"snapshot plan type {snapshot_type!r} does not match {plan_type.value!r}"
+        )
+    if plan_type is PlanType.FRAGMENT_SCREENING:
+        source_items = payload["assignments"]
+    else:
+        source_items = payload["selections"]
+    if not isinstance(source_items, list) or not source_items:
+        raise ValueError("snapshot contains no selected wells")
+
+    grouped: dict[str, dict] = {}
+    for item in source_items:
+        image_key = str(item["image_key"])
+        if plan_type is PlanType.FRAGMENT_SCREENING:
+            targets = item["targets"]
+        else:
+            targets = [item["target"]]
+        entry = grouped.setdefault(
+            image_key,
+            {
+                "image_key": image_key,
+                "image_path": str(item.get("image_path") or ""),
+                "plate": str(item["plate"]),
+                "well": str(item["well"]),
+                "plate_format_id": str(item.get("plate_format_id") or ""),
+                "targets": [],
+            },
+        )
+        entry["targets"].extend(targets)
+
+    selection_id = str(uuid5(NAMESPACE_URL, f"xtalflow:{plan_id}:selection"))
+    wells: list[SelectedWell] = []
+    for well_order, entry in enumerate(grouped.values(), start=1):
+        well_id = str(
+            uuid5(NAMESPACE_URL, f"xtalflow:{plan_id}:well:{entry['image_key']}")
+        )
+        positions: list[SoakingPosition] = []
+        for position_order, target in enumerate(entry["targets"], start=1):
+            selected_at = datetime.fromisoformat(str(target["selected_at"]))
+            source_target_id = str(target["id"])
+            positions.append(
+                SoakingPosition(
+                    str(uuid5(
+                        NAMESPACE_URL,
+                        f"xtalflow:{plan_id}:position:{source_target_id}:"
+                        f"{position_order}",
+                    )),
+                    well_id,
+                    source_target_id,
+                    position_order,
+                    Decimal(str(target["x_mm"])),
+                    Decimal(str(target["y_mm"])),
+                    selected_at,
+                )
+            )
+        if not positions:
+            raise ValueError(f"{entry['image_key']} contains no soaking positions")
+        wells.append(
+            SelectedWell(
+                id=well_id,
+                crystal_selection_id=selection_id,
+                image_key=entry["image_key"],
+                plate_code=entry["plate"],
+                well_address=entry["well"],
+                selection_order=well_order,
+                selected_at=min(position.selected_at for position in positions),
+                soaking_positions=tuple(positions),
+                image_path=entry["image_path"],
+                plate_format_id=entry["plate_format_id"],
+            )
+        )
+    created_at = datetime.fromisoformat(created_at_value)
+    updated_at = datetime.fromisoformat(updated_at_value)
+    selection = CrystalSelection(
+        selection_id, plan_id, tuple(wells), created_at, updated_at
+    )
+    return ExperimentProject(
+        plan_id,
+        name,
+        selection,
+        ExperimentPlan(
+            str(uuid5(NAMESPACE_URL, f"xtalflow:{plan_id}:plan")),
+            plan_id,
+            plan_type,
+            created_at,
+            updated_at,
+        ),
+        created_at,
+        updated_at,
+    )
 
 
 class SQLiteImageSetReviewStore:

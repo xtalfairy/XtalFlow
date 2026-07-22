@@ -1,5 +1,6 @@
 from pathlib import Path
 import sqlite3
+import json
 from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
@@ -93,6 +94,77 @@ def test_experiment_project_selected_wells_round_trip(tmp_path: Path) -> None:
         LATEST_SCHEMA_VERSION
     )
     store.close()
+
+
+def test_finalized_legacy_plan_migrates_to_selected_well_project(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "reviews.sqlite3"
+    store = SQLiteReviewStore(database_path)
+    now = datetime.now(timezone.utc)
+    workspace = Project("workspace", "Workspace", now, now)
+    store.save_project(workspace)
+    draft = PlanningDraft(
+        "legacy-plan", workspace.id, "raw_crystal", "Legacy Raw", None, "",
+        "BRD4", "0", "selection", now, now, "RawCrystal-202607-BRD4-01",
+    )
+    store.save_planning_draft(draft)
+    snapshot = json.dumps({
+        "schema": 1,
+        "plan_type": "raw_crystal",
+        "protein": "BRD4",
+        "assignment_order": "selection",
+        "selections": [
+            {
+                "image_key": "image-key",
+                "image_path": "/rmserver/image.jpg",
+                "plate": "2069",
+                "well": "A04a",
+                "plate_format_id": SWISSCI_MIDI_3_LENS.id,
+                "target": {
+                    "id": "target-1",
+                    "x_mm": "0.1",
+                    "y_mm": "-0.2",
+                    "selected_at": now.isoformat(),
+                },
+            },
+            {
+                "image_key": "image-key",
+                "image_path": "/rmserver/image.jpg",
+                "plate": "2069",
+                "well": "A04a",
+                "plate_format_id": SWISSCI_MIDI_3_LENS.id,
+                "target": {
+                    "id": "target-2",
+                    "x_mm": "0.3",
+                    "y_mm": "0.4",
+                    "selected_at": now.isoformat(),
+                },
+            },
+        ],
+    })
+    store.finalize_plan_revision(
+        PlanRevision(
+            "legacy-revision", draft.id, 0, draft.experiment_id,
+            snapshot, "jjh", now,
+        )
+    )
+    store.close()
+
+    migrated = SQLiteReviewStore(database_path)
+    project = migrated.load_experiment_project(draft.id)
+
+    assert migrated.planning_project_migration.migrated == 1
+    assert project is not None
+    assert len(project.crystal_selection.wells) == 1
+    assert len(project.crystal_selection.wells[0].soaking_positions) == 2
+    migrated.close()
+
+    reopened = SQLiteReviewStore(database_path)
+    assert reopened.planning_project_migration.migrated == 0
+    assert reopened.planning_project_migration.skipped_existing == 1
+    assert len(reopened.load_experiment_projects()) == 1
+    reopened.close()
 
 
 def test_old_required_count_column_is_migrated_to_auto_advance(tmp_path: Path) -> None:

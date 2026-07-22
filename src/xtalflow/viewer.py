@@ -1513,6 +1513,33 @@ class ViewerWindow(QMainWindow):
         self.well_input.editingFinished.connect(self._go_to_entered_well)
         self._update_navigation()
         self._initialize_projects()
+        self._show_planning_migration_status()
+
+    def _show_planning_migration_status(self) -> None:
+        if self.review_store is None:
+            return
+        report = self.review_store.planning_project_migration
+        details: list[str] = []
+        if report.migrated:
+            details.append(
+                f"Migrated {report.migrated} finalized legacy project(s)"
+            )
+        if report.legacy_drafts_without_revision:
+            details.append(
+                f"{report.legacy_drafts_without_revision} legacy draft(s) still "
+                "need selection review"
+            )
+        if report.invalid_snapshots:
+            details.append(
+                f"{len(report.invalid_snapshots)} invalid finalized snapshot(s) "
+                "left unchanged"
+            )
+            details.extend(
+                f"{plan_id}: {error}"
+                for plan_id, error in report.invalid_snapshots
+            )
+        if details:
+            self.status_message_label.show_message(" · ".join(details))
 
     def _open_fragment_screening(self) -> None:
         crystals = self._crystals_for_new_plan("fragment plan")

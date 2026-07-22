@@ -29,7 +29,7 @@ from xtalflow.domain.fragment_screening import (
 )
 from xtalflow.application import ReviewPersistenceError
 from xtalflow.infrastructure import RockMakerImageRepository, SQLiteReviewStore
-from xtalflow.viewer import FragmentScreeningDialog, ViewerWindow
+from xtalflow.viewer import FragmentScreeningDialog, PlateSourceDialog, ViewerWindow
 from xtalflow.viewer import main
 from xtalflow.settings import DEFAULT_SETTINGS
 from xtalflow.infrastructure.user_preferences import JsonUserPreferencesStore
@@ -1126,6 +1126,30 @@ def test_project_filter_jumps_to_matching_image_on_another_plate(tmp_path: Path)
     app.processEvents()
 
 
+def test_plate_source_dialog_defaults_to_latest_batch_and_profile() -> None:
+    app = QApplication.instance() or QApplication([])
+
+    class Repository:
+        def available_batches(self, plate_code):
+            return (7, 12)
+
+        def available_profiles(self, plate_code, batch_id):
+            return ("profileID_2", "profileID_10")
+
+    dialog = PlateSourceDialog(Repository(), "1070")
+
+    assert dialog.batch_id == 12
+    assert dialog.profile == "profileID_10"
+    assert dialog.load_latest_for_all.isChecked()
+    assert not dialog.batch_input.isEnabled()
+    assert not dialog.profile_input.isEnabled()
+    dialog.load_latest_for_all.setChecked(False)
+    assert dialog.batch_input.isEnabled()
+    assert dialog.profile_input.isEnabled()
+    dialog.close()
+    app.processEvents()
+
+
 @pytest.mark.requires_rmserver_fixture
 @pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
 def test_comma_separated_plate_codes_add_multiple_image_sets(
@@ -1137,10 +1161,14 @@ def test_comma_separated_plate_codes_add_multiple_image_sets(
         SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
     )
 
-    def choose_first(*args):
-        return args[3][0], True
+    shown_dialogs = []
 
-    monkeypatch.setattr(QInputDialog, "getItem", choose_first)
+    def choose_latest_for_all(dialog):
+        shown_dialogs.append(dialog.plate_code)
+        dialog.load_latest_for_all.setChecked(True)
+        return dialog.Accepted
+
+    monkeypatch.setattr(PlateSourceDialog, "exec_", choose_latest_for_all)
     window.plate_input.setText("1070, 1100, 1070")
     window.plate_format_input.setCurrentIndex(
         window.plate_format_input.findData(SWISSCI_MIDI_3_LENS)
@@ -1152,6 +1180,7 @@ def test_comma_separated_plate_codes_add_multiple_image_sets(
         "1100",
     ]
     assert window.controller.plate.plate_code == "1100"
+    assert shown_dialogs == ["1070"]
     window.close()
     app.processEvents()
 

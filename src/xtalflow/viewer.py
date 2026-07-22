@@ -1163,6 +1163,91 @@ class FragmentScreeningDialog(QDialog):
     def current_plan(self):
         return self.editor.current_plan
 
+
+class PlateSourceDialog(QDialog):
+    """Choose one RockMaker batch/profile pair without serial pop-up dialogs."""
+
+    def __init__(
+        self,
+        repository: RockMakerImageRepository,
+        plate_code: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.repository = repository
+        self.plate_code = plate_code
+        self.setWindowTitle(f"Load plate {plate_code}")
+        self.batch_input = QComboBox()
+        self.profile_input = QComboBox()
+        self.load_latest_for_all = QCheckBox("Load latest for all plates")
+        self.load_latest_for_all.setToolTip(
+            "Use the latest available batch and profile for this and all remaining "
+            "plate codes without showing another selection window."
+        )
+        for batch_id in reversed(repository.available_batches(plate_code)):
+            self.batch_input.addItem(str(batch_id), batch_id)
+        if self.batch_input.count() == 0:
+            raise PlateImagesNotFoundError(
+                f"no batches found for plate {plate_code}"
+            )
+        self.batch_input.currentIndexChanged.connect(self._refresh_profiles)
+        self.load_latest_for_all.toggled.connect(self._latest_mode_changed)
+        self._refresh_profiles()
+        self.load_latest_for_all.setChecked(True)
+
+        batch_row = QHBoxLayout()
+        batch_row.addWidget(QLabel("Batch:"))
+        batch_row.addWidget(self.batch_input, 1)
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(QLabel("Profile:"))
+        profile_row.addWidget(self.profile_input, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout = QVBoxLayout()
+        layout.addWidget(QLabel(f"Plate {plate_code}"))
+        layout.addLayout(batch_row)
+        layout.addLayout(profile_row)
+        layout.addWidget(self.load_latest_for_all)
+        layout.addWidget(buttons)
+        self.setLayout(layout)
+
+    @property
+    def batch_id(self) -> int:
+        return int(self.batch_input.currentData())
+
+    @property
+    def profile(self) -> str:
+        return str(self.profile_input.currentData())
+
+    def _refresh_profiles(self) -> None:
+        batch_id = self.batch_input.currentData()
+        self.profile_input.clear()
+        if batch_id is None:
+            return
+        profiles = self.repository.available_profiles(self.plate_code, int(batch_id))
+        if not profiles:
+            raise PlateImagesNotFoundError(
+                f"no profiles found for plate {self.plate_code}, batch {batch_id}"
+            )
+        for profile in sorted(profiles, key=_natural_name_key, reverse=True):
+            self.profile_input.addItem(profile, profile)
+
+    def _latest_mode_changed(self, enabled: bool) -> None:
+        if enabled:
+            self.batch_input.setCurrentIndex(0)
+            self.profile_input.setCurrentIndex(0)
+        self.batch_input.setEnabled(not enabled)
+        self.profile_input.setEnabled(not enabled)
+
+
+def _natural_name_key(value: str) -> tuple:
+    return tuple(
+        int(part) if part.isdigit() else part.casefold()
+        for part in re.split(r"(\d+)", value)
+    )
+
+
 class ViewerWindow(QMainWindow):
     def __init__(
         self,
@@ -3067,8 +3152,15 @@ class ViewerWindow(QMainWindow):
             )
             if not plate_codes:
                 raise ValueError("enter at least one plate code")
+            load_latest_for_all = False
             for plate_code in plate_codes:
-                if not self._choose_and_add_plate(plate_code, plate_format):
+                if load_latest_for_all:
+                    self._add_latest_plate(plate_code, plate_format)
+                    continue
+                accepted, load_latest_for_all = self._choose_and_add_plate(
+                    plate_code, plate_format
+                )
+                if not accepted:
                     return
             self._adopt_active_review()
             self._sync_project_widgets()
@@ -3077,40 +3169,31 @@ class ViewerWindow(QMainWindow):
 
     def _choose_and_add_plate(
         self, plate_code: str, plate_format: PlateFormat
-    ) -> bool:
+    ) -> tuple[bool, bool]:
+        dialog = PlateSourceDialog(self.repository, plate_code, self)
+        if dialog.exec_() != QDialog.Accepted:
+            return False, False
+        self.project_controller.add_pinned_image_set(
+            plate_code, dialog.batch_id, dialog.profile, plate_format
+        )
+        return True, dialog.load_latest_for_all.isChecked()
+
+    def _add_latest_plate(
+        self, plate_code: str, plate_format: PlateFormat
+    ) -> None:
         batches = self.repository.available_batches(plate_code)
         if not batches:
             raise PlateImagesNotFoundError(f"no batches found for plate {plate_code}")
-        batch_text, accepted = QInputDialog.getItem(
-            self,
-            f"Add plate {plate_code}",
-            f"Plate {plate_code} batch:",
-            [str(batch) for batch in reversed(batches)],
-            0,
-            False,
-        )
-        if not accepted:
-            return False
-        batch_id = int(batch_text)
+        batch_id = batches[-1]
         profiles = self.repository.available_profiles(plate_code, batch_id)
         if not profiles:
             raise PlateImagesNotFoundError(
                 f"no profiles found for plate {plate_code}, batch {batch_id}"
             )
-        profile, accepted = QInputDialog.getItem(
-            self,
-            f"Add plate {plate_code}",
-            f"Plate {plate_code} profile:",
-            list(profiles),
-            0,
-            False,
-        )
-        if not accepted:
-            return False
+        profile = max(profiles, key=_natural_name_key)
         self.project_controller.add_pinned_image_set(
             plate_code, batch_id, profile, plate_format
         )
-        return True
 
     def load_plate(
         self, plate_code: str, plate_format: PlateFormat, profile: str = "profileID_1"

@@ -204,6 +204,17 @@ class SQLiteReviewStore:
             for row in project_rows
         )
 
+    def load_experiment_project(
+        self, project_id: str
+    ) -> ExperimentProject | None:
+        return next(
+            (
+                project for project in self.load_experiment_projects()
+                if project.id == project_id
+            ),
+            None,
+        )
+
     def save_checkpoint(
         self,
         image_key: str,

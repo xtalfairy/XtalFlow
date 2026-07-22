@@ -4,6 +4,7 @@ from .crystal_selection import (
     SelectedWell,
     SoakingPosition,
     crystal_selection_from_selected_crystals,
+    selected_crystals_from_crystal_selection,
 )
 from .experiment_project import ExperimentPlan, ExperimentProject, PlanType
 from .imaging import CrystalImage, PlateImages
@@ -46,4 +47,5 @@ __all__ = [
     "TargetPoint",
     "PlanType",
     "crystal_selection_from_selected_crystals",
+    "selected_crystals_from_crystal_selection",
 ]

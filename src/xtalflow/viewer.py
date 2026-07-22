@@ -72,6 +72,11 @@ from xtalflow.domain import (
     PlateImages,
     TargetPoint,
     plate_format_by_id,
+    ExperimentPlan,
+    ExperimentProject,
+    PlanType,
+    crystal_selection_from_selected_crystals,
+    selected_crystals_from_crystal_selection,
 )
 from xtalflow.domain.fragment_screening import (
     AssignmentOrder,
@@ -1631,13 +1636,23 @@ class ViewerWindow(QMainWindow):
             raise ValueError("no project is open")
         existing = self._planning_drafts.setdefault(project.id, [])
         name = restored.name if restored else f"Fragment Screening #{len(existing) + 1}"
+        plan_id = restored.id if restored else str(uuid4())
+        owned_project = (
+            self.review_store.load_experiment_project(plan_id)
+            if self.review_store is not None else None
+        )
+        if owned_project is not None:
+            crystals = selected_crystals_from_crystal_selection(
+                owned_project.crystal_selection
+            )
         editor = FragmentScreeningEditor(library, crystals, self.plan_stack)
-        editor.plan_id = restored.id if restored else str(uuid4())
+        editor.plan_id = plan_id
         editor.project_id = project.id
         editor.plan_name = name
         editor.plan_created_at = restored.created_at if restored else datetime.now(timezone.utc)
         editor.last_revision = None
         editor.last_revision_snapshot = None
+        editor.selection_snapshot_owned = owned_project is not None or restored is None
         editor.autosave_timer = QTimer(editor)
         editor.autosave_timer.setSingleShot(True)
         editor.autosave_timer.setInterval(750)
@@ -1684,6 +1699,9 @@ class ViewerWindow(QMainWindow):
         self.plan_list.setCurrentRow(self.plan_list.count() - 1)
         self.main_tabs.setCurrentIndex(self.planning_tab_index)
         if restored is None:
+            self._save_selection_snapshot(
+                editor, crystals, PlanType.FRAGMENT_SCREENING
+            )
             self._persist_planning_draft(editor)
         else:
             revisions = self.review_store.list_plan_revisions(editor.plan_id) if self.review_store else ()
@@ -1715,13 +1733,23 @@ class ViewerWindow(QMainWindow):
             raise ValueError("no project is open")
         existing = self._planning_drafts.setdefault(project.id, [])
         name = restored.name if restored else f"Raw Crystal Plan #{sum(isinstance(item[1], RawCrystalEditor) for item in existing) + 1}"
+        plan_id = restored.id if restored else str(uuid4())
+        owned_project = (
+            self.review_store.load_experiment_project(plan_id)
+            if self.review_store is not None else None
+        )
+        if owned_project is not None:
+            crystals = selected_crystals_from_crystal_selection(
+                owned_project.crystal_selection
+            )
         editor = RawCrystalEditor(crystals, self.plan_stack)
-        editor.plan_id = restored.id if restored else str(uuid4())
+        editor.plan_id = plan_id
         editor.project_id = project.id
         editor.plan_name = name
         editor.plan_created_at = restored.created_at if restored else datetime.now(timezone.utc)
         editor.last_revision = None
         editor.last_revision_snapshot = None
+        editor.selection_snapshot_owned = owned_project is not None or restored is None
         editor.autosave_timer = QTimer(editor)
         editor.autosave_timer.setSingleShot(True)
         editor.autosave_timer.setInterval(750)
@@ -1757,6 +1785,7 @@ class ViewerWindow(QMainWindow):
         self.plan_list.setCurrentRow(self.plan_list.count() - 1)
         self.main_tabs.setCurrentIndex(self.planning_tab_index)
         if restored is None:
+            self._save_selection_snapshot(editor, crystals, PlanType.RAW_CRYSTAL)
             self._persist_raw_crystal_draft(editor)
         elif self.review_store is not None:
             revisions = self.review_store.list_plan_revisions(editor.plan_id)
@@ -1778,6 +1807,40 @@ class ViewerWindow(QMainWindow):
         editor.webdb_upload_button.setEnabled(False)
         self._set_plan_list_status(editor, "Draft")
         editor.autosave_timer.start()
+
+    def _save_selection_snapshot(
+        self,
+        editor,
+        crystals: tuple[SelectedCrystal, ...],
+        plan_type: PlanType,
+    ) -> None:
+        if self.review_store is None:
+            return
+        timestamp = editor.plan_created_at
+        selection = crystal_selection_from_selected_crystals(
+            editor.plan_id,
+            crystals,
+            created_at=timestamp,
+        )
+        owned_project = ExperimentProject(
+            editor.plan_id,
+            editor.plan_name,
+            selection,
+            ExperimentPlan(
+                f"{editor.plan_id}:plan",
+                editor.plan_id,
+                plan_type,
+                timestamp,
+                timestamp,
+            ),
+            timestamp,
+            timestamp,
+        )
+        try:
+            self.review_store.save_experiment_project(owned_project)
+        except ReviewPersistenceError as error:
+            editor.selection_snapshot_owned = False
+            self._show_persistence_error(error)
 
     def _persist_raw_crystal_draft(self, editor: RawCrystalEditor) -> None:
         if self.review_store is None:
@@ -2375,6 +2438,8 @@ class ViewerWindow(QMainWindow):
             return
         editor = self.plan_stack.currentWidget()
         if not isinstance(editor, (FragmentScreeningEditor, RawCrystalEditor)):
+            return
+        if getattr(editor, "selection_snapshot_owned", False):
             return
         try:
             crystals = self.project_controller.selected_crystals_for_plan()

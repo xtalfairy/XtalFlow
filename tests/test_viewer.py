@@ -358,6 +358,41 @@ def test_raw_webdb_preview_is_populated_without_mxlive_configuration(
     app.processEvents()
 
 
+def test_new_plan_owns_selection_snapshot_when_review_targets_change(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store)
+    selected_at = datetime.now(timezone.utc)
+    original = SelectedCrystal(
+        "original-image", "2069", "A04a",
+        (CrystalTarget("original-target", Decimal(0), Decimal(0), selected_at),),
+        SWISSCI_MIDI_3_LENS.id,
+    )
+    replacement = SelectedCrystal(
+        "replacement-image", "2070", "B02c",
+        (CrystalTarget("replacement-target", Decimal(0), Decimal(0), selected_at),),
+        SWISSCI_MIDI_3_LENS.id,
+    )
+    window._add_raw_crystal_plan((original,))
+    editor = window.plan_stack.currentWidget()
+    monkeypatch.setattr(
+        window.project_controller,
+        "selected_crystals_for_plan",
+        lambda: (replacement,),
+    )
+
+    window._main_tab_changed(window.planning_tab_index)
+
+    assert editor.crystals == (original,)
+    owned = store.load_experiment_project(editor.plan_id)
+    assert owned is not None
+    assert owned.crystal_selection.wells[0].image_key == "original-image"
+    window.close()
+    app.processEvents()
+
+
 def test_only_finalized_raw_revision_can_be_uploaded_and_is_audited(
     tmp_path: Path, monkeypatch
 ) -> None:

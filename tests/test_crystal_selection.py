@@ -9,6 +9,7 @@ from xtalflow.domain import (
     PlanType,
     SWISSCI_MIDI_3_LENS,
     crystal_selection_from_selected_crystals,
+    selected_crystals_from_crystal_selection,
 )
 from xtalflow.domain.crystal_workflow import CrystalTarget, SelectedCrystal
 
@@ -42,6 +43,12 @@ def test_click_targets_become_one_selected_well_with_soaking_positions() -> None
     assert well.image_path == "/rmserver/image.jpg"
     assert [position.position_order for position in well.soaking_positions] == [1, 2]
     assert [position.source_target_id for position in well.soaking_positions] == [
+        "target-1", "target-2"
+    ]
+    restored = selected_crystals_from_crystal_selection(selection)
+    assert restored[0].image_key == "image"
+    assert restored[0].destination_well == "A04a"
+    assert [target.target_id for target in restored[0].targets] == [
         "target-1", "target-2"
     ]
 

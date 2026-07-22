@@ -6,7 +6,7 @@ from decimal import Decimal
 import re
 from uuid import uuid4
 
-from .crystal_workflow import SelectedCrystal
+from .crystal_workflow import CrystalTarget, SelectedCrystal
 
 
 _WELL_PATTERN = re.compile(r"^[A-H]\d{2}[a-z]$")
@@ -146,4 +146,29 @@ def crystal_selection_from_selected_crystals(
     timestamp = created_at or min(well.selected_at for well in wells)
     return CrystalSelection(
         resolved_selection_id, project_id, tuple(wells), timestamp, timestamp
+    )
+
+
+def selected_crystals_from_crystal_selection(
+    selection: CrystalSelection,
+) -> tuple[SelectedCrystal, ...]:
+    """Adapt an owned snapshot back to plan engines during the transition."""
+    return tuple(
+        SelectedCrystal(
+            well.image_key,
+            well.plate_code,
+            well.well_address,
+            tuple(
+                CrystalTarget(
+                    position.source_target_id,
+                    position.x_mm,
+                    position.y_mm,
+                    position.selected_at,
+                )
+                for position in well.soaking_positions
+            ),
+            well.plate_format_id,
+            well.image_path,
+        )
+        for well in sorted(selection.wells, key=lambda item: item.selection_order)
     )

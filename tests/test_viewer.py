@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import QApplication, QInputDialog, QMessageBox
 from xtalflow.domain import (
     PLATE_FORMATS,
     ImageFilter,
+    PlanType,
     ReviewSession,
     SWISSCI_MIDI_3_LENS,
     SWISSCI_MRC_2_WELL,
@@ -32,6 +33,7 @@ from xtalflow.viewer import FragmentScreeningDialog, ViewerWindow
 from xtalflow.viewer import main
 from xtalflow.settings import DEFAULT_SETTINGS
 from xtalflow.infrastructure.user_preferences import JsonUserPreferencesStore
+from xtalflow.domain.plan_lifecycle import PlanningDraft
 
 
 FIXTURE_ROOT = DEFAULT_SETTINGS.rmserver_root
@@ -422,6 +424,52 @@ def test_new_plan_owns_selection_snapshot_when_review_targets_change(
     owned = store.load_experiment_project(editor.plan_id)
     assert owned is not None
     assert owned.crystal_selection.wells[0].image_key == "original-image"
+    window.close()
+    app.processEvents()
+
+
+def test_legacy_draft_requires_explicit_selection_adoption(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store)
+    now = datetime.now(timezone.utc)
+    workspace_id = window.project_controller.active_project.id
+    draft = PlanningDraft(
+        "legacy-draft", workspace_id, "raw_crystal", "Legacy Draft", None,
+        "", "BRD4", "0", "selection", now, now,
+    )
+    original = SelectedCrystal(
+        "original", "2069", "A01a",
+        (CrystalTarget("old", Decimal(0), Decimal(0), now),),
+        SWISSCI_MIDI_3_LENS.id,
+    )
+    adopted = SelectedCrystal(
+        "adopted", "2070", "B02c",
+        (CrystalTarget("new", Decimal("0.1"), Decimal("0.2"), now),),
+        SWISSCI_MIDI_3_LENS.id,
+    )
+    store.save_planning_draft(draft)
+    window._add_raw_crystal_plan((original,), restored=draft)
+    editor = window.plan_stack.currentWidget()
+    monkeypatch.setattr(
+        window.project_controller,
+        "selected_crystals_for_plan",
+        lambda: (adopted,),
+    )
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes
+    )
+
+    assert not editor.adopt_selection_button.isHidden()
+    assert not editor.selection_snapshot_owned
+    window._adopt_legacy_selection(editor, PlanType.RAW_CRYSTAL)
+
+    assert editor.selection_snapshot_owned
+    assert editor.selection.wells[0].image_key == "adopted"
+    assert store.load_experiment_project(editor.plan_id) is not None
+    assert editor.adopt_selection_button.isHidden()
     window.close()
     app.processEvents()
 

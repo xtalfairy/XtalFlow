@@ -482,6 +482,7 @@ class FragmentScreeningEditor(QWidget):
     finalize_requested = pyqtSignal()
     draft_changed = pyqtSignal()
     webdb_upload_requested = pyqtSignal()
+    adopt_selection_requested = pyqtSignal()
 
     def __init__(
         self,
@@ -527,6 +528,8 @@ class FragmentScreeningEditor(QWidget):
         self._experiment_id_provider: Callable[[str], str] | None = None
         self.save_worksheets_button = QPushButton("Save Worksheets…")
         self.finalize_button = QPushButton("Finalize Plan")
+        self.adopt_selection_button = QPushButton("Adopt Current Selection…")
+        self.adopt_selection_button.hide()
         self.lifecycle_label = QLabel("Draft · not saved")
         self.save_worksheets_button.setEnabled(False)
         self.error_label = QLabel()
@@ -589,6 +592,7 @@ class FragmentScreeningEditor(QWidget):
         experiment_controls.addWidget(self.protein_input)
         experiment_controls.addWidget(self.experiment_id_label, 1)
         experiment_controls.addWidget(self.lifecycle_label)
+        experiment_controls.addWidget(self.adopt_selection_button)
         experiment_controls.addWidget(self.finalize_button)
         experiment_controls.addWidget(self.save_worksheets_button)
         library_controls = QHBoxLayout()
@@ -618,6 +622,9 @@ class FragmentScreeningEditor(QWidget):
         )
         self.finalize_button.clicked.connect(self.finalize_requested.emit)
         self.webdb_upload_button.clicked.connect(self.webdb_upload_requested.emit)
+        self.adopt_selection_button.clicked.connect(
+            self.adopt_selection_requested.emit
+        )
         if initial_library is not None:
             self.set_library_choices(
                 ((
@@ -810,6 +817,7 @@ class RawCrystalEditor(QWidget):
     finalize_requested = pyqtSignal()
     draft_changed = pyqtSignal()
     webdb_upload_requested = pyqtSignal()
+    adopt_selection_requested = pyqtSignal()
 
     def __init__(
         self,
@@ -836,6 +844,8 @@ class RawCrystalEditor(QWidget):
         self.experiment_id_label = QLabel("Experiment ID: —")
         self.lifecycle_label = QLabel("Draft · not saved")
         self.finalize_button = QPushButton("Finalize Plan")
+        self.adopt_selection_button = QPushButton("Adopt Current Selection…")
+        self.adopt_selection_button.hide()
         self.save_worksheet_button = QPushButton("Save SHIFTER Worksheet…")
         self.save_worksheet_button.setEnabled(False)
         self.error_label = QLabel()
@@ -880,6 +890,7 @@ class RawCrystalEditor(QWidget):
         controls.addWidget(self.order_input)
         controls.addWidget(self.experiment_id_label, 1)
         controls.addWidget(self.lifecycle_label)
+        controls.addWidget(self.adopt_selection_button)
         controls.addWidget(self.finalize_button)
         controls.addWidget(self.save_worksheet_button)
         layout = QVBoxLayout()
@@ -894,6 +905,9 @@ class RawCrystalEditor(QWidget):
         self.finalize_button.clicked.connect(self.finalize_requested.emit)
         self.save_worksheet_button.clicked.connect(self.save_worksheet_requested.emit)
         self.webdb_upload_button.clicked.connect(self.webdb_upload_requested.emit)
+        self.adopt_selection_button.clicked.connect(
+            self.adopt_selection_requested.emit
+        )
         self.refresh_plan()
 
     def set_experiment_id_provider(self, provider: Callable[[str], str]) -> None:
@@ -1763,6 +1777,11 @@ class ViewerWindow(QMainWindow):
                 selected_editor
             )
         )
+        editor.adopt_selection_requested.connect(
+            lambda selected_editor=editor: self._adopt_legacy_selection(
+                selected_editor, PlanType.FRAGMENT_SCREENING
+            )
+        )
         editor.draft_changed.connect(
             lambda selected_editor=editor: self._planning_draft_changed(selected_editor)
         )
@@ -1789,6 +1808,12 @@ class ViewerWindow(QMainWindow):
                 else:
                     editor.lifecycle_label.setText("Draft · restored with changes")
                     self._set_plan_list_status(editor, "Draft")
+            if owned_project is None:
+                editor.adopt_selection_button.show()
+                editor.lifecycle_label.setText(
+                    "Legacy Draft · selection needs review"
+                )
+                self._set_plan_list_status(editor, "Legacy · Review selection")
 
     def _planning_draft_changed(self, editor: FragmentScreeningEditor) -> None:
         if not hasattr(editor, "autosave_timer"):
@@ -1854,6 +1879,11 @@ class ViewerWindow(QMainWindow):
         editor.webdb_upload_requested.connect(
             lambda selected_editor=editor: self._upload_raw_labworks(selected_editor)
         )
+        editor.adopt_selection_requested.connect(
+            lambda selected_editor=editor: self._adopt_legacy_selection(
+                selected_editor, PlanType.RAW_CRYSTAL
+            )
+        )
         editor.save_worksheet_requested.connect(
             lambda selected_editor=editor: self._save_raw_crystal_worksheet(selected_editor)
         )
@@ -1878,6 +1908,12 @@ class ViewerWindow(QMainWindow):
                 else:
                     editor.lifecycle_label.setText("Draft · restored with changes")
                     self._set_plan_list_status(editor, "Draft")
+            if owned_project is None:
+                editor.adopt_selection_button.show()
+                editor.lifecycle_label.setText(
+                    "Legacy Draft · selection needs review"
+                )
+                self._set_plan_list_status(editor, "Legacy · Review selection")
 
     def _raw_crystal_draft_changed(self, editor: RawCrystalEditor) -> None:
         if not hasattr(editor, "autosave_timer"):
@@ -1887,14 +1923,51 @@ class ViewerWindow(QMainWindow):
         self._set_plan_list_status(editor, "Draft")
         editor.autosave_timer.start()
 
+    def _adopt_legacy_selection(self, editor, plan_type: PlanType) -> None:
+        try:
+            crystals = self.project_controller.selected_crystals_for_plan()
+            if not crystals:
+                raise ValueError("select at least one well first")
+        except (ValueError, PlateImagesNotFoundError, ReviewPersistenceError) as error:
+            QMessageBox.warning(self, "Cannot adopt selection", str(error))
+            return
+        well_count = len(crystals)
+        position_count = sum(len(crystal.targets) for crystal in crystals)
+        if QMessageBox.question(
+            self,
+            "Adopt current selection",
+            f"Replace this legacy draft's unfixed selection with the current "
+            f"{well_count} selected well(s) and {position_count} soaking "
+            "position(s)?\n\nFuture Image Review changes will not alter it.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        ) != QMessageBox.Yes:
+            return
+        selection = crystal_selection_from_selected_crystals(
+            editor.plan_id,
+            crystals,
+            created_at=editor.plan_created_at,
+        )
+        editor.set_selection(selection)
+        if not self._save_selection_snapshot(editor, selection, plan_type):
+            return
+        editor.selection_snapshot_owned = True
+        editor.adopt_selection_button.hide()
+        editor.lifecycle_label.setText("Draft · selection fixed")
+        self._set_plan_list_status(editor, "Draft · Selection fixed")
+        if isinstance(editor, FragmentScreeningEditor):
+            self._persist_planning_draft(editor)
+        else:
+            self._persist_raw_crystal_draft(editor)
+
     def _save_selection_snapshot(
         self,
         editor,
         selection: CrystalSelection,
         plan_type: PlanType,
-    ) -> None:
+    ) -> bool:
         if self.review_store is None:
-            return
+            return True
         timestamp = editor.plan_created_at
         owned_project = ExperimentProject(
             editor.plan_id,
@@ -1915,6 +1988,8 @@ class ViewerWindow(QMainWindow):
         except ReviewPersistenceError as error:
             editor.selection_snapshot_owned = False
             self._show_persistence_error(error)
+            return False
+        return True
 
     def _persist_raw_crystal_draft(self, editor: RawCrystalEditor) -> None:
         if self.review_store is None:

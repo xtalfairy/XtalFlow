@@ -225,6 +225,15 @@ def test_planning_tab_lists_libraries_from_designated_directory(
     assert not window.plan_list_empty_label.isVisible()
     assert editor.library_input.currentText() == "library.csv · 1 rows"
     assert editor.table.item(0, 4).text() == "CMP-8"
+    webdb_columns = {
+        editor.webdb_table.horizontalHeaderItem(index).text(): index
+        for index in range(editor.webdb_table.columnCount())
+    }
+    assert editor.webdb_table.rowCount() == 1
+    assert editor.webdb_table.item(0, webdb_columns["expri_id"]).text() == (
+        "Pending finalization"
+    )
+    assert editor.webdb_table.item(0, webdb_columns["protein_name"]).text() == ""
     window.close()
     app.processEvents()
 
@@ -254,13 +263,13 @@ def test_raw_crystal_plan_has_shifter_preview_without_echo(tmp_path: Path) -> No
     window._persist_raw_crystal_draft(editor)
 
     assert editor.current_plan is not None
-    assert editor.shifter_table.rowCount() == 2
+    assert editor.shifter_table.rowCount() == 1
     assert editor.summary_table.horizontalHeaderItem(3).text() == "Position"
     assert editor.summary_table.item(0, 3).text() == "1"
     assert editor.summary_table.item(1, 3).text() == "2"
     assert editor.summary_table.item(0, 3).data(Qt.UserRole) == "target"
     assert editor.preview_tabs.tabText(2) == "WebDB"
-    assert editor.webdb_table.rowCount() == 2
+    assert editor.webdb_table.rowCount() == 1
     columns = {
         editor.webdb_table.horizontalHeaderItem(index).text(): index
         for index in range(editor.webdb_table.columnCount())
@@ -277,6 +286,74 @@ def test_raw_crystal_plan_has_shifter_preview_without_echo(tmp_path: Path) -> No
     assert not hasattr(editor, "echo_table")
     drafts = store.load_planning_drafts(window.project_controller.active_project.id)
     assert drafts[-1].plan_type == "raw_crystal"
+    window.close()
+    app.processEvents()
+
+
+def test_draft_plan_can_be_deleted_from_planning_sidebar(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store)
+    crystal = SelectedCrystal(
+        "image", "1070", "A01a",
+        (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
+        SWISSCI_MIDI_3_LENS.id,
+    )
+    window._add_raw_crystal_plan((crystal,))
+    plan_id = window.plan_stack.currentWidget().plan_id
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes
+    )
+
+    window._delete_selected_draft_plan()
+    app.processEvents()
+
+    assert window.plan_list.count() == 0
+    assert window.plan_stack.currentIndex() == 0
+    assert all(
+        draft.id != plan_id
+        for draft in store.load_planning_drafts(
+            window.project_controller.active_project.id
+        )
+    )
+    window.close()
+    app.processEvents()
+
+
+def test_raw_webdb_preview_is_populated_without_mxlive_configuration(
+    tmp_path: Path,
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    invalid_config = tmp_path / "invalid.toml"
+    invalid_config.write_text("[mxlive\n", encoding="utf-8")
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(
+        RockMakerImageRepository(tmp_path),
+        store,
+        settings=replace(DEFAULT_SETTINGS, mxlive_config_path=invalid_config),
+    )
+    crystal = SelectedCrystal(
+        "image-key", "1070", "A01a",
+        (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
+        SWISSCI_MIDI_3_LENS.id,
+        "/rmserver/image.jpg",
+    )
+
+    window._add_raw_crystal_plan((crystal,))
+    editor = window.plan_stack.currentWidget()
+    columns = {
+        editor.webdb_table.horizontalHeaderItem(index).text(): index
+        for index in range(editor.webdb_table.columnCount())
+    }
+
+    assert editor.webdb_table.rowCount() == 1
+    assert editor.webdb_table.item(0, columns["expri_id"]).text() == (
+        "Pending finalization"
+    )
+    assert editor.webdb_table.item(0, columns["plate_code"]).text() == "1070"
+    assert "preview records" in editor.webdb_status_label.text()
     window.close()
     app.processEvents()
 

@@ -16,6 +16,18 @@ class RawCrystalPlan:
     selections: tuple[RawCrystalSelection, ...]
     assignment_order: AssignmentOrder
 
+    @property
+    def crystals(self) -> tuple[SelectedCrystal, ...]:
+        """Return each selected image/drop once in the plan's chosen order."""
+        ordered: list[SelectedCrystal] = []
+        seen: set[str] = set()
+        for selection in self.selections:
+            if selection.crystal.image_key in seen:
+                continue
+            seen.add(selection.crystal.image_key)
+            ordered.append(selection.crystal)
+        return tuple(ordered)
+
 
 def build_raw_crystal_plan(
     crystals: tuple[SelectedCrystal, ...],

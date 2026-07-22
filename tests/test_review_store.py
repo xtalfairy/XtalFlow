@@ -1,6 +1,7 @@
 from pathlib import Path
 import sqlite3
 from datetime import datetime, timezone
+from uuid import uuid4
 
 import pytest
 
@@ -142,6 +143,51 @@ def test_planning_draft_revision_and_export_lifecycle(tmp_path: Path) -> None:
     )
     store.record_webdb_upload(upload)
     assert store.list_webdb_uploads(second.id) == (upload,)
+
+
+def test_only_planning_plan_with_upload_history_is_protected_from_deletion(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    now = datetime.now(timezone.utc)
+    project = Project(str(uuid4()), "Deletion", now, now)
+    store.save_project(project)
+    removable = PlanningDraft(
+        "draft-only", project.id, "raw_crystal", "Draft only", None, "", "",
+        "0", "selection", now, now,
+    )
+    finalized = PlanningDraft(
+        "finalized", project.id, "raw_crystal", "Finalized", None, "", "",
+        "0", "selection", now, now,
+    )
+    uploaded = PlanningDraft(
+        "uploaded", project.id, "raw_crystal", "Uploaded", None, "", "",
+        "0", "selection", now, now,
+    )
+    store.save_planning_draft(removable)
+    store.save_planning_draft(finalized)
+    store.save_planning_draft(uploaded)
+    store.finalize_plan_revision(
+        PlanRevision("revision", finalized.id, 0, "RawCrystal-01", "{}", "jjh", now)
+    )
+    uploaded_revision = store.finalize_plan_revision(
+        PlanRevision("uploaded-revision", uploaded.id, 0, "RawCrystal-02", "{}", "jjh", now)
+    )
+    store.record_webdb_upload(WebDBUploadEvent(
+        "uploaded-event", uploaded_revision.id, "jjh", "jjh",
+        "https://mxlive.example/upload_labworks/BL-5C/", now, "succeeded",
+        1, "[]", "{}", None,
+    ))
+
+    store.delete_planning_draft(removable.id)
+    store.delete_planning_draft(finalized.id)
+    assert store.planning_plan_has_upload_history(uploaded.id)
+    with pytest.raises(ValueError, match="upload history"):
+        store.delete_planning_draft(uploaded.id)
+
+    assert [draft.id for draft in store.load_planning_drafts(project.id)] == [
+        uploaded.id
+    ]
     store.close()
 
 

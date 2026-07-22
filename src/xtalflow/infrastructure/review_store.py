@@ -532,6 +532,56 @@ class SQLiteReviewStore:
             for row in rows
         )
 
+    def delete_planning_draft(self, plan_id: str) -> None:
+        """Delete a plan unless an MxLive upload attempt must be audited."""
+        try:
+            with self._connection:
+                upload_count = self._connection.execute(
+                    """SELECT COUNT(*)
+                       FROM webdb_upload_event AS upload
+                       JOIN plan_revision AS revision
+                         ON revision.revision_id = upload.revision_id
+                       WHERE revision.plan_id = ?""",
+                    (plan_id,),
+                ).fetchone()[0]
+                if upload_count:
+                    raise ValueError(
+                        "a plan with MxLive upload history cannot be deleted"
+                    )
+                self._connection.execute(
+                    """DELETE FROM worksheet_export_event
+                       WHERE revision_id IN (
+                           SELECT revision_id FROM plan_revision WHERE plan_id = ?
+                       )""",
+                    (plan_id,),
+                )
+                self._connection.execute(
+                    "DELETE FROM plan_revision WHERE plan_id = ?", (plan_id,)
+                )
+                self._connection.execute(
+                    "DELETE FROM planning_draft WHERE plan_id = ?", (plan_id,)
+                )
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError("could not delete planning draft") from error
+
+    def planning_plan_has_upload_history(self, plan_id: str) -> bool:
+        try:
+            row = self._connection.execute(
+                """SELECT EXISTS(
+                       SELECT 1
+                       FROM webdb_upload_event AS upload
+                       JOIN plan_revision AS revision
+                         ON revision.revision_id = upload.revision_id
+                       WHERE revision.plan_id = ?
+                   )""",
+                (plan_id,),
+            ).fetchone()
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError(
+                "could not inspect planning upload history"
+            ) from error
+        return bool(row[0])
+
     def finalize_plan_revision(self, revision: PlanRevision) -> PlanRevision:
         try:
             with self._connection:

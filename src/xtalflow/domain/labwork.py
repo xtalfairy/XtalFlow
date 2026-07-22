@@ -75,23 +75,22 @@ def build_fragment_labworks(
     username: str, account_id: str,
 ) -> tuple[LabworkRecord, ...]:
     records: list[LabworkRecord] = []
-    for assignment in plan.assignments:
-        for transfer in assignment.transfers:
-            records.append(LabworkRecord(
-                username, experiment_id, protein_name,
-                _mxlive_plate_type(assignment.crystal.plate_format_id),
-                assignment.crystal.destination_plate,
-                assignment.crystal.image_path or assignment.crystal.image_key,
-                assignment.crystal.destination_well,
-                transfer.target.x_mm, transfer.target.y_mm, len(records) + 1,
-                assignment.fragment.source_plate,
-                assignment.fragment.source_well,
-                transfer.volume_nl,
-                assignment.fragment.compound_id,
-                assignment.fragment.smiles,
-                account_id,
-                "Uploaded by XtalFlow · Fragment Screening",
-            ))
+    for index, assignment in enumerate(plan.assignments, start=1):
+        records.append(LabworkRecord(
+            username, experiment_id, protein_name,
+            _mxlive_plate_type(assignment.crystal.plate_format_id),
+            assignment.crystal.destination_plate,
+            assignment.crystal.image_path or assignment.crystal.image_key,
+            assignment.crystal.destination_well,
+            Decimal("0"), Decimal("0"), index,
+            assignment.fragment.source_plate,
+            assignment.fragment.source_well,
+            assignment.total_volume_nl,
+            assignment.fragment.compound_id,
+            assignment.fragment.smiles,
+            account_id,
+            "Uploaded by XtalFlow · Fragment Screening",
+        ))
     return tuple(records)
 
 
@@ -102,12 +101,12 @@ def build_raw_crystal_labworks(
     return tuple(
         LabworkRecord(
             username, experiment_id, protein_name,
-            _mxlive_plate_type(selection.crystal.plate_format_id),
-            selection.crystal.destination_plate,
-            selection.crystal.image_path or selection.crystal.image_key,
-            selection.crystal.destination_well, selection.target.x_mm,
-            selection.target.y_mm, index, "", "", Decimal("0"), "", "",
+            _mxlive_plate_type(crystal.plate_format_id),
+            crystal.destination_plate,
+            crystal.image_path or crystal.image_key,
+            crystal.destination_well, Decimal("0"), Decimal("0"), index,
+            "", "", Decimal("0"), "", "",
             account_id, "Uploaded by XtalFlow · Raw Crystal Plan",
         )
-        for index, selection in enumerate(plan.selections, start=1)
+        for index, crystal in enumerate(plan.crystals, start=1)
     )

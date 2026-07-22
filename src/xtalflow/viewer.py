@@ -732,24 +732,15 @@ class FragmentScreeningEditor(QWidget):
         self.draft_changed.emit()
 
     def _refresh_webdb_preview(self) -> None:
-        account = self.mxlive_account
-        if account is None:
-            self.webdb_table.setRowCount(0)
-            self.webdb_status_label.setText("MxLive account: not configured")
-            return
-        if self.current_plan is None or not self.current_experiment_id:
-            self.webdb_table.setRowCount(0)
-            _set_webdb_account_status(self.webdb_status_label, account, 0)
-            return
-        records = build_fragment_labworks(
+        _refresh_labwork_preview(
+            self.webdb_table,
+            self.webdb_status_label,
             self.current_plan,
-            experiment_id=self.current_experiment_id,
-            protein_name=self.protein_input.text().strip(),
-            username=account.username,
-            account_id=account.account_id,
+            self.current_experiment_id,
+            self.protein_input.text(),
+            self.mxlive_account,
+            build_fragment_labworks,
         )
-        _populate_webdb_table(self.webdb_table, records)
-        _set_webdb_account_status(self.webdb_status_label, account, len(records))
 
     def restore_draft(self, draft: PlanningDraft) -> None:
         widgets = (self.library_input, self.rows_input, self.protein_input,
@@ -959,24 +950,50 @@ class RawCrystalEditor(QWidget):
         self.draft_changed.emit()
 
     def _refresh_webdb_preview(self) -> None:
-        account = self.mxlive_account
-        if account is None:
-            self.webdb_table.setRowCount(0)
-            self.webdb_status_label.setText("MxLive account: not configured")
-            return
-        if self.current_plan is None or not self.current_experiment_id:
-            self.webdb_table.setRowCount(0)
-            _set_webdb_account_status(self.webdb_status_label, account, 0)
-            return
-        records = build_raw_crystal_labworks(
+        _refresh_labwork_preview(
+            self.webdb_table,
+            self.webdb_status_label,
             self.current_plan,
-            experiment_id=self.current_experiment_id,
-            protein_name=self.protein_input.text().strip(),
-            username=account.username,
-            account_id=account.account_id,
+            self.current_experiment_id,
+            self.protein_input.text(),
+            self.mxlive_account,
+            build_raw_crystal_labworks,
         )
-        _populate_webdb_table(self.webdb_table, records)
-        _set_webdb_account_status(self.webdb_status_label, account, len(records))
+
+
+def _refresh_labwork_preview(
+    table: QTableWidget,
+    status_label: QLabel,
+    plan,
+    experiment_id: str | None,
+    protein_name: str,
+    account: MxLiveAccount | None,
+    record_builder: Callable,
+) -> None:
+    """Populate a plan's WebDB preview independently of upload readiness."""
+    if plan is None:
+        table.setRowCount(0)
+        if account is None:
+            status_label.setText("MxLive account: not configured")
+        else:
+            _set_webdb_account_status(status_label, account, 0)
+        return
+    username = account.username if account is not None else getpass.getuser()
+    account_id = account.account_id if account is not None else username
+    records = record_builder(
+        plan,
+        experiment_id=experiment_id or "Pending finalization",
+        protein_name=protein_name.strip(),
+        username=username,
+        account_id=account_id,
+    )
+    _populate_webdb_table(table, records)
+    if account is None:
+        status_label.setText(
+            f"MxLive account: not configured · {len(records)} preview records"
+        )
+    else:
+        _set_webdb_account_status(status_label, account, len(records))
 
 
 def _populate_webdb_table(table: QTableWidget, records: tuple) -> None:
@@ -1256,6 +1273,7 @@ class ViewerWindow(QMainWindow):
         self.plan_list = QListWidget()
         self.plan_list.setMinimumWidth(210)
         self.plan_list.setToolTip("Draft and finalized plans in the active project")
+        self.plan_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.new_plan_button = QPushButton("+ New Plan")
         self.plan_list_empty_label = QLabel(
             "No plans yet.\nCreate a plan to begin."
@@ -1361,7 +1379,10 @@ class ViewerWindow(QMainWindow):
         self.target_summary_button.clicked.connect(self.target_summary_dock.show)
         self.new_plan_button.clicked.connect(self._show_new_plan_menu)
         self.plan_list.currentRowChanged.connect(
-            lambda row: self.plan_stack.setCurrentIndex(max(0, row + 1))
+            self._planning_row_changed
+        )
+        self.plan_list.customContextMenuRequested.connect(
+            self._show_plan_context_menu
         )
         self.main_tabs.currentChanged.connect(self._main_tab_changed)
         self.target_summary_dock.visibilityChanged.connect(
@@ -1531,6 +1552,74 @@ class ViewerWindow(QMainWindow):
             )
         )
 
+    def _planning_row_changed(self, row: int) -> None:
+        self.plan_stack.setCurrentIndex(max(0, row + 1))
+
+    def _show_plan_context_menu(self, position: QPoint) -> None:
+        row = self.plan_list.indexAt(position).row()
+        if row < 0:
+            return
+        self.plan_list.setCurrentRow(row)
+        menu = QMenu(self.plan_list)
+        delete_action = menu.addAction("Delete Plan…")
+        project = self.project_controller.active_project
+        drafts = self._planning_drafts.get(project.id, []) if project else []
+        if row >= len(drafts):
+            delete_action.setEnabled(False)
+        else:
+            _, editor = drafts[row]
+            try:
+                has_uploads = (
+                    self.review_store is not None
+                    and self.review_store.planning_plan_has_upload_history(
+                        editor.plan_id
+                    )
+                )
+            except ReviewPersistenceError as error:
+                has_uploads = True
+                delete_action.setToolTip(str(error))
+            delete_action.setEnabled(not has_uploads)
+            if has_uploads and not delete_action.toolTip():
+                delete_action.setToolTip(
+                    "Plans with MxLive upload history cannot be deleted"
+                )
+        delete_action.triggered.connect(self._delete_selected_draft_plan)
+        menu.exec_(self.plan_list.viewport().mapToGlobal(position))
+
+    def _delete_selected_draft_plan(self) -> None:
+        project = self.project_controller.active_project
+        row = self.plan_list.currentRow()
+        drafts = self._planning_drafts.get(project.id, []) if project else []
+        if row < 0 or row >= len(drafts):
+            return
+        name, editor = drafts[row]
+        answer = QMessageBox.question(
+            self,
+            "Delete draft plan",
+            f"Permanently delete draft '{name}'?\n\nThis cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        if hasattr(editor, "autosave_timer"):
+            editor.autosave_timer.stop()
+        if self.review_store is not None:
+            try:
+                self.review_store.delete_planning_draft(editor.plan_id)
+            except (ValueError, ReviewPersistenceError) as error:
+                QMessageBox.warning(self, "Cannot delete plan", str(error))
+                return
+        drafts.pop(row)
+        self.plan_list.takeItem(row)
+        self.plan_stack.removeWidget(editor)
+        editor.deleteLater()
+        if self.plan_list.count() == 0:
+            self.plan_list_empty_label.show()
+            self.plan_stack.setCurrentIndex(0)
+        else:
+            self.plan_list.setCurrentRow(min(row, self.plan_list.count() - 1))
+
     def _add_fragment_plan(
         self,
         library: FragmentLibrary | None,
@@ -1568,7 +1657,10 @@ class ViewerWindow(QMainWindow):
         if self.mxlive_account is not None:
             editor.set_mxlive_account(self.mxlive_account)
         elif self.mxlive_configuration_error:
-            editor.webdb_status_label.setText(self.mxlive_configuration_error)
+            editor.webdb_status_label.setText(
+                f"{self.mxlive_configuration_error} · "
+                f"{editor.webdb_table.rowCount()} preview records"
+            )
         editor.save_worksheets_requested.connect(
             lambda selected_editor=editor: self._save_fragment_worksheets(
                 selected_editor
@@ -1642,7 +1734,10 @@ class ViewerWindow(QMainWindow):
         if self.mxlive_account is not None:
             editor.set_mxlive_account(self.mxlive_account)
         elif self.mxlive_configuration_error:
-            editor.webdb_status_label.setText(self.mxlive_configuration_error)
+            editor.webdb_status_label.setText(
+                f"{self.mxlive_configuration_error} · "
+                f"{editor.webdb_table.rowCount()} preview records"
+            )
         editor.draft_changed.connect(
             lambda selected_editor=editor: self._raw_crystal_draft_changed(selected_editor)
         )

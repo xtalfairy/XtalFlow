@@ -39,7 +39,7 @@ def test_raw_crystal_plan_can_sort_by_plate_and_well() -> None:
     assert build_shifter_worksheet(plan)[0].plate_id == "2069"
 
 
-def test_each_target_becomes_one_raw_crystal_shifter_row() -> None:
+def test_multiple_soaking_positions_share_one_raw_crystal_shifter_row() -> None:
     now = datetime.now(timezone.utc)
     crystal = SelectedCrystal(
         "image", "2069", "A01a",
@@ -56,4 +56,5 @@ def test_each_target_becomes_one_raw_crystal_shifter_row() -> None:
     assert [item.target.target_id for item in plan.selections] == [
         "target-1", "target-2"
     ]
-    assert len(build_shifter_worksheet(plan)) == 2
+    assert len(plan.crystals) == 1
+    assert len(build_shifter_worksheet(plan)) == 1

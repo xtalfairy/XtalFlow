@@ -126,7 +126,7 @@ def build_shifter_worksheet(
     plan: FragmentScreenPlan | RawCrystalPlan,
 ) -> tuple[ShifterWorksheetRow, ...]:
     if isinstance(plan, RawCrystalPlan):
-        crystals = tuple(selection.crystal for selection in plan.selections)
+        crystals = plan.crystals
     else:
         crystals = tuple(assignment.crystal for assignment in plan.assignments)
     return build_shifter_worksheet_for_crystals(crystals)

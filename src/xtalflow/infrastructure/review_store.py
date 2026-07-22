@@ -155,27 +155,26 @@ class SQLiteReviewStore:
     def _upsert_review_state(
         self, progress: ReviewProgress, preferences: ReviewPreferences
     ) -> None:
+        values = (
+            progress.plan_key, progress.plate_code, progress.batch_id,
+            progress.profile, preferences.auto_advance_target_count,
+            progress.current_image_key, progress.created_at.isoformat(),
+            progress.updated_at.isoformat(),
+        )
         self._connection.execute(
             """
-            INSERT INTO review_plan(
+            INSERT OR IGNORE INTO review_plan(
                 plan_key, plate_code, batch_id, profile, auto_advance_target_count,
                 current_image_key, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(plan_key) DO UPDATE SET
-                auto_advance_target_count = excluded.auto_advance_target_count,
-                current_image_key = excluded.current_image_key,
-                updated_at = excluded.updated_at
             """,
-            (
-                progress.plan_key,
-                progress.plate_code,
-                progress.batch_id,
-                progress.profile,
-                preferences.auto_advance_target_count,
-                progress.current_image_key,
-                progress.created_at.isoformat(),
-                progress.updated_at.isoformat(),
-            ),
+            values,
+        )
+        self._connection.execute(
+            """UPDATE review_plan SET auto_advance_target_count = ?,
+                      current_image_key = ?, updated_at = ?
+               WHERE plan_key = ?""",
+            (values[4], values[5], values[7], values[0]),
         )
 
     def close(self) -> None:
@@ -329,53 +328,54 @@ class SQLiteReviewStore:
     def save_project(self, project: Project) -> None:
         try:
             with self._connection:
+                project_values = (
+                    project.id, project.name, project.active_image_set_id,
+                    project.created_at.isoformat(), project.updated_at.isoformat(),
+                )
                 self._connection.execute(
                     """
-                    INSERT INTO project(project_id, name, active_image_set_id, created_at, updated_at)
+                    INSERT OR IGNORE INTO project(
+                        project_id, name, active_image_set_id, created_at, updated_at
+                    )
                     VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(project_id) DO UPDATE SET
-                        name = excluded.name,
-                        active_image_set_id = excluded.active_image_set_id,
-                        updated_at = excluded.updated_at
                     """,
-                    (
-                        project.id,
-                        project.name,
-                        project.active_image_set_id,
-                        project.created_at.isoformat(),
-                        project.updated_at.isoformat(),
-                    ),
+                    project_values,
+                )
+                self._connection.execute(
+                    """UPDATE project SET name = ?, active_image_set_id = ?,
+                              updated_at = ? WHERE project_id = ?""",
+                    (project_values[1], project_values[2], project_values[4],
+                     project_values[0]),
                 )
                 for image_set in project.image_sets:
+                    image_set_values = (
+                        image_set.id, image_set.project_id, image_set.plate_code,
+                        image_set.batch_id, image_set.profile,
+                        image_set.display_order, image_set.active_image_key,
+                        image_set.created_at.isoformat(),
+                        image_set.archived_at.isoformat()
+                        if image_set.archived_at else None,
+                        image_set.plate_format_id, image_set.plate_format_version,
+                    )
                     self._connection.execute(
                         """
-                        INSERT INTO project_image_set(
+                        INSERT OR IGNORE INTO project_image_set(
                             image_set_id, project_id, plate_code, batch_id, profile,
                             display_order, active_image_key, created_at, archived_at,
                             plate_format_id, plate_format_version
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(image_set_id) DO UPDATE SET
-                            display_order = excluded.display_order,
-                            active_image_key = excluded.active_image_key,
-                            archived_at = excluded.archived_at,
-                            plate_format_id = excluded.plate_format_id,
-                            plate_format_version = excluded.plate_format_version
                         """,
-                        (
-                            image_set.id,
-                            image_set.project_id,
-                            image_set.plate_code,
-                            image_set.batch_id,
-                            image_set.profile,
-                            image_set.display_order,
-                            image_set.active_image_key,
-                            image_set.created_at.isoformat(),
-                            image_set.archived_at.isoformat()
-                            if image_set.archived_at
-                            else None,
-                            image_set.plate_format_id,
-                            image_set.plate_format_version,
-                        ),
+                        image_set_values,
+                    )
+                    self._connection.execute(
+                        """UPDATE project_image_set
+                           SET display_order = ?, active_image_key = ?,
+                               archived_at = ?, plate_format_id = ?,
+                               plate_format_version = ?
+                           WHERE image_set_id = ?""",
+                        (image_set_values[5], image_set_values[6],
+                         image_set_values[8], image_set_values[9],
+                         image_set_values[10], image_set_values[0]),
                     )
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not save project") from error
@@ -461,11 +461,13 @@ class SQLiteReviewStore:
         try:
             with self._connection:
                 self._connection.execute(
-                    """
-                    INSERT INTO app_state(state_key, state_value) VALUES ('last_project_id', ?)
-                    ON CONFLICT(state_key) DO UPDATE SET state_value = excluded.state_value
-                    """,
+                    "INSERT OR IGNORE INTO app_state(state_key, state_value) "
+                    "VALUES ('last_project_id', ?)",
                     (project_id,),
+                )
+                self._connection.execute(
+                    "UPDATE app_state SET state_value = ? "
+                    "WHERE state_key = 'last_project_id'", (project_id,)
                 )
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not save active project") from error
@@ -482,26 +484,29 @@ class SQLiteReviewStore:
     def save_planning_draft(self, draft: PlanningDraft) -> None:
         try:
             with self._connection:
+                values = (
+                    draft.id, draft.project_id, draft.plan_type, draft.name,
+                    draft.library_id, draft.library_rows, draft.protein,
+                    draft.volume_nl, draft.assignment_order,
+                    draft.created_at.isoformat(), draft.updated_at.isoformat(),
+                )
                 self._connection.execute(
                     """
-                    INSERT INTO planning_draft(
+                    INSERT OR IGNORE INTO planning_draft(
                         plan_id, project_id, plan_type, name, library_id,
                         library_rows, protein, volume_nl, assignment_order,
                         created_at, updated_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(plan_id) DO UPDATE SET
-                        name=excluded.name, library_id=excluded.library_id,
-                        library_rows=excluded.library_rows, protein=excluded.protein,
-                        volume_nl=excluded.volume_nl,
-                        assignment_order=excluded.assignment_order,
-                        updated_at=excluded.updated_at
                     """,
-                    (
-                        draft.id, draft.project_id, draft.plan_type, draft.name,
-                        draft.library_id, draft.library_rows, draft.protein,
-                        draft.volume_nl, draft.assignment_order,
-                        draft.created_at.isoformat(), draft.updated_at.isoformat(),
-                    ),
+                    values,
+                )
+                self._connection.execute(
+                    """UPDATE planning_draft
+                       SET name = ?, library_id = ?, library_rows = ?,
+                           protein = ?, volume_nl = ?, assignment_order = ?,
+                           updated_at = ? WHERE plan_id = ?""",
+                    (values[3], values[4], values[5], values[6], values[7],
+                     values[8], values[10], values[0]),
                 )
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not save planning draft") from error
@@ -679,14 +684,20 @@ class SQLiteImageSetReviewStore:
                 )
                 self._upsert_state(progress, preferences)
                 if mark_reviewed:
+                    reviewed_at = datetime.now(timezone.utc).isoformat()
                     self._connection.execute(
                         """
-                        INSERT INTO image_set_image_review(image_set_id, image_key, reviewed_at)
+                        INSERT OR IGNORE INTO image_set_image_review(
+                            image_set_id, image_key, reviewed_at
+                        )
                         VALUES (?, ?, ?)
-                        ON CONFLICT(image_set_id, image_key) DO UPDATE SET
-                            reviewed_at = excluded.reviewed_at
                         """,
-                        (self.image_set_id, image_key, datetime.now(timezone.utc).isoformat()),
+                        (self.image_set_id, image_key, reviewed_at),
+                    )
+                    self._connection.execute(
+                        """UPDATE image_set_image_review SET reviewed_at = ?
+                           WHERE image_set_id = ? AND image_key = ?""",
+                        (reviewed_at, self.image_set_id, image_key),
                     )
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not save image-set checkpoint") from error
@@ -758,37 +769,31 @@ class SQLiteImageSetReviewStore:
     def save_calibration(self, calibration: ImageCalibration) -> None:
         try:
             with self._connection:
+                values = (
+                    self.image_set_id, calibration.image_key,
+                    calibration.center_x_px, calibration.center_y_px,
+                    calibration.radius_x_px, calibration.radius_y_px,
+                    calibration.physical_diameter_mm, calibration.method.value,
+                    calibration.confidence, int(calibration.confirmed),
+                    calibration.updated_at.isoformat(),
+                )
                 self._connection.execute(
                     """
-                    INSERT INTO image_set_image_calibration(
+                    INSERT OR IGNORE INTO image_set_image_calibration(
                         image_set_id, image_key, center_x_px, center_y_px,
                         radius_x_px, radius_y_px, physical_diameter_mm,
                         method, confidence, confirmed, updated_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(image_set_id, image_key) DO UPDATE SET
-                        center_x_px = excluded.center_x_px,
-                        center_y_px = excluded.center_y_px,
-                        radius_x_px = excluded.radius_x_px,
-                        radius_y_px = excluded.radius_y_px,
-                        physical_diameter_mm = excluded.physical_diameter_mm,
-                        method = excluded.method,
-                        confidence = excluded.confidence,
-                        confirmed = excluded.confirmed,
-                        updated_at = excluded.updated_at
                     """,
-                    (
-                        self.image_set_id,
-                        calibration.image_key,
-                        calibration.center_x_px,
-                        calibration.center_y_px,
-                        calibration.radius_x_px,
-                        calibration.radius_y_px,
-                        calibration.physical_diameter_mm,
-                        calibration.method.value,
-                        calibration.confidence,
-                        int(calibration.confirmed),
-                        calibration.updated_at.isoformat(),
-                    ),
+                    values,
+                )
+                self._connection.execute(
+                    """UPDATE image_set_image_calibration
+                       SET center_x_px = ?, center_y_px = ?, radius_x_px = ?,
+                           radius_y_px = ?, physical_diameter_mm = ?, method = ?,
+                           confidence = ?, confirmed = ?, updated_at = ?
+                       WHERE image_set_id = ? AND image_key = ?""",
+                    (*values[2:], values[0], values[1]),
                 )
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not save image calibration") from error
@@ -824,24 +829,25 @@ class SQLiteImageSetReviewStore:
     def _upsert_state(
         self, progress: ReviewProgress, preferences: ReviewPreferences
     ) -> None:
+        values = (
+            self.image_set_id, preferences.auto_advance_target_count,
+            progress.current_image_key, progress.created_at.isoformat(),
+            progress.updated_at.isoformat(),
+        )
         self._connection.execute(
             """
-            INSERT INTO image_set_review_state(
+            INSERT OR IGNORE INTO image_set_review_state(
                 image_set_id, auto_advance_target_count, current_image_key,
                 created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(image_set_id) DO UPDATE SET
-                auto_advance_target_count = excluded.auto_advance_target_count,
-                current_image_key = excluded.current_image_key,
-                updated_at = excluded.updated_at
             """,
-            (
-                self.image_set_id,
-                preferences.auto_advance_target_count,
-                progress.current_image_key,
-                progress.created_at.isoformat(),
-                progress.updated_at.isoformat(),
-            ),
+            values,
+        )
+        self._connection.execute(
+            """UPDATE image_set_review_state
+               SET auto_advance_target_count = ?, current_image_key = ?,
+                   updated_at = ? WHERE image_set_id = ?""",
+            (values[1], values[2], values[4], values[0]),
         )
         self._connection.execute(
             "UPDATE project_image_set SET active_image_key = ? WHERE image_set_id = ?",

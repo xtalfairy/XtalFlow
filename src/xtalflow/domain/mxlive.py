@@ -12,6 +12,18 @@ class MxLiveWriteError(RuntimeError):
     """MxLive rejected or could not safely accept an upload."""
 
 
+class MxLivePartialWriteError(MxLiveWriteError):
+    """Some records were accepted before a later record failed."""
+
+    def __init__(self, completed_count: int, total_count: int, cause: str) -> None:
+        self.completed_count = completed_count
+        self.total_count = total_count
+        super().__init__(
+            f"MxLive accepted {completed_count} of {total_count} records before "
+            f"the upload failed ({cause}); do not retry until WebDB is reviewed"
+        )
+
+
 @dataclass(frozen=True)
 class MxLiveLabwork:
     experiment_id: str

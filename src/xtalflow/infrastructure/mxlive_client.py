@@ -15,6 +15,7 @@ from xtalflow.domain.mxlive import (
     MxLiveLabwork,
     MxLiveReadError,
     MxLiveSample,
+    MxLivePartialWriteError,
     MxLiveWriteError,
 )
 
@@ -219,18 +220,30 @@ class LegacyMxLiveWriteClient:
             raise ValueError("at least one labwork record is required")
         if not all(isinstance(record, Mapping) for record in records):
             raise ValueError("labwork records must be mappings")
-        signed_user = quote(self.signer.sign(self.username), safe=":=_-")
-        url = (
-            f"{self.base_url}/api/v2/{signed_user}/upload_labworks/"
-            f"{quote(self.beamline)}/"
-        )
-        response = self.transport.post_msgpack(
-            url, list(records), timeout_seconds=self.timeout_seconds,
-            ca_bundle=self.ca_bundle,
-        )
-        if not isinstance(response, Mapping):
-            raise MxLiveWriteError("MxLive upload response must be an object")
-        return response
+        responses: list[Mapping[str, Any]] = []
+        for record in records:
+            signed_user = quote(self.signer.sign(self.username), safe=":=_-")
+            url = (
+                f"{self.base_url}/api/v2/{signed_user}/upload_labworks/"
+                f"{quote(self.beamline)}/"
+            )
+            try:
+                response = self.transport.post_msgpack(
+                    url, dict(record), timeout_seconds=self.timeout_seconds,
+                    ca_bundle=self.ca_bundle,
+                )
+                if not isinstance(response, Mapping):
+                    raise MxLiveWriteError(
+                        "MxLive upload response must be an object"
+                    )
+            except MxLiveWriteError as error:
+                if responses:
+                    raise MxLivePartialWriteError(
+                        len(responses), len(records), str(error)
+                    ) from error
+                raise
+            responses.append(dict(response))
+        return {"uploaded_count": len(responses), "responses": responses}
 
 
 def _base62_encode(value: int) -> str:

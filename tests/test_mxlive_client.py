@@ -7,7 +7,9 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import dsa
 
-from xtalflow.domain.mxlive import MxLiveReadError, MxLiveWriteError
+from xtalflow.domain.mxlive import (
+    MxLivePartialWriteError, MxLiveReadError, MxLiveWriteError,
+)
 from xtalflow.infrastructure.mxlive_client import LegacyMxLiveReadClient, LegacyMxLiveWriteClient
 from xtalflow.infrastructure.mxlive_client import RequestsJsonTransport
 
@@ -141,8 +143,8 @@ def test_legacy_mxlive_writer_posts_labwork_list_to_signed_endpoint(
 
     response = client.upload_labworks(records)
 
-    assert response == {"created": 2}
-    assert transport.posted_payload == list(records)
+    assert response == {"uploaded_count": 1, "responses": [{"created": 2}]}
+    assert transport.posted_payload == records[0]
     assert transport.calls[0][0].startswith(
         "https://mxlive.example/api/v2/fbdd:"
     )
@@ -158,3 +160,47 @@ def test_writer_rejects_non_object_response(tmp_path: Path) -> None:
 
     with pytest.raises(MxLiveWriteError, match="must be an object"):
         client.upload_labworks(({"expri_id": "RawCrystal-1"},))
+
+
+def test_writer_posts_each_legacy_record_separately(tmp_path: Path) -> None:
+    transport = FakeTransport([{"id": 1}, {"id": 2}])
+    transport.posted_payloads = []
+    original_post = transport.post_msgpack
+
+    def capture(*args, **kwargs):
+        result = original_post(*args, **kwargs)
+        transport.posted_payloads.append(transport.posted_payload)
+        return result
+
+    transport.post_msgpack = capture
+    client = LegacyMxLiveWriteClient(
+        "https://mxlive.example", "BL-5C", "fbdd",
+        _key_file(tmp_path / "keys.dsa"), transport=transport,
+    )
+
+    result = client.upload_labworks(({"crystal_no": 1}, {"crystal_no": 2}))
+
+    assert transport.posted_payloads == [{"crystal_no": 1}, {"crystal_no": 2}]
+    assert result["uploaded_count"] == 2
+
+
+def test_writer_reports_partial_batch_without_suggesting_blind_retry(
+    tmp_path: Path,
+) -> None:
+    class PartialTransport(FakeTransport):
+        def post_msgpack(self, *args, **kwargs):
+            if not self.replies:
+                raise MxLiveWriteError("HTTP 500")
+            return super().post_msgpack(*args, **kwargs)
+
+    client = LegacyMxLiveWriteClient(
+        "https://mxlive.example", "BL-5C", "fbdd",
+        _key_file(tmp_path / "keys.dsa"),
+        transport=PartialTransport([{"id": 1}]),
+    )
+
+    with pytest.raises(MxLivePartialWriteError) as captured:
+        client.upload_labworks(({"crystal_no": 1}, {"crystal_no": 2}))
+
+    assert captured.value.completed_count == 1
+    assert "do not retry" in str(captured.value)

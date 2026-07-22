@@ -92,7 +92,7 @@ from xtalflow.domain.plan_lifecycle import (
     WebDBUploadEvent,
     WorksheetExportEvent,
 )
-from xtalflow.domain.mxlive import MxLiveWriteError
+from xtalflow.domain.mxlive import MxLivePartialWriteError, MxLiveWriteError
 from xtalflow.domain.worksheets import (
     ECHO_HEADER,
     SHIFTER_HEADER,
@@ -1861,12 +1861,21 @@ class ViewerWindow(QMainWindow):
             return
         if self.review_store is not None:
             prior = self.review_store.list_webdb_uploads(revision.id)
-            if any(event.status == "succeeded" for event in prior):
+            completed = next(
+                (event for event in reversed(prior)
+                 if event.status in ("succeeded", "partial")),
+                None,
+            )
+            if completed is not None:
+                state = (
+                    "Uploaded" if completed.status == "succeeded"
+                    else "Partial upload · review MxLive"
+                )
                 editor.webdb_status_label.setText(
-                    editor.webdb_status_label.text() + " · Uploaded"
+                    editor.webdb_status_label.text() + f" · {state}"
                 )
                 editor.webdb_upload_button.setToolTip(
-                    "This finalized revision has already been uploaded."
+                    "This revision is locked to prevent duplicate records."
                 )
                 return
         editor.webdb_upload_button.setEnabled(True)
@@ -1960,6 +1969,9 @@ class ViewerWindow(QMainWindow):
                 response, ensure_ascii=False, sort_keys=True, separators=(",", ":")
             )
             status = "succeeded"
+        except MxLivePartialWriteError as error:
+            status = "partial"
+            error_message = str(error)
         except (MxLiveWriteError, ValueError) as error:
             error_message = str(error)
         event = WebDBUploadEvent(
@@ -1983,6 +1995,12 @@ class ViewerWindow(QMainWindow):
             QMessageBox.information(
                 self, "WebDB upload complete",
                 f"Uploaded {len(records)} records for {revision.experiment_id}.",
+            )
+        elif status == "partial":
+            self._sync_webdb_upload_state(editor)
+            QMessageBox.critical(
+                self, "WebDB upload partially completed",
+                error_message or "Some records may have been uploaded.",
             )
         else:
             editor.webdb_status_label.setText(

@@ -80,7 +80,7 @@ def test_fragment_plan_dialog_previews_and_reassigns_by_plate_well() -> None:
 
     assert dialog.table.item(0, 0).text() == "1"
     assert dialog.table.item(0, 1).text() == "20"
-    assert dialog.table.item(0, 4).text() == "CMP-8"
+    assert dialog.table.item(0, 5).text() == "CMP-8"
     assert [
         dialog.editor.preview_tabs.tabText(index)
         for index in range(dialog.editor.preview_tabs.count())
@@ -91,7 +91,7 @@ def test_fragment_plan_dialog_previews_and_reassigns_by_plate_well() -> None:
         dialog.order_input.findData(AssignmentOrder.PLATE_WELL)
     )
     assert dialog.table.item(0, 1).text() == "3"
-    assert dialog.table.item(0, 4).text() == "CMP-8"
+    assert dialog.table.item(0, 5).text() == "CMP-8"
     dialog.rows_input.setText("2")
     assert dialog.current_plan is None
     assert "enough fragments" in dialog.error_label.text()
@@ -256,7 +256,7 @@ def test_planning_tab_lists_libraries_from_designated_directory(
     assert window.plan_list.count() == 1
     assert not window.plan_list_empty_label.isVisible()
     assert editor.library_input.currentText() == "library.csv · 1 rows"
-    assert editor.table.item(0, 4).text() == "CMP-8"
+    assert editor.table.item(0, 5).text() == "CMP-8"
     webdb_columns = {
         editor.webdb_table.horizontalHeaderItem(index).text(): index
         for index in range(editor.webdb_table.columnCount())
@@ -302,6 +302,7 @@ def test_raw_crystal_plan_has_shifter_preview_without_echo(tmp_path: Path) -> No
     assert editor.summary_table.item(0, 3).text() == "1"
     assert editor.summary_table.item(1, 3).text() == "2"
     assert editor.summary_table.item(0, 3).data(Qt.UserRole) == "target"
+    assert editor.summary_table.item(0, 4).text() == "Original"
     assert editor.preview_tabs.tabText(2) == "WebDB"
     assert editor.webdb_table.rowCount() == 1
     columns = {
@@ -320,6 +321,14 @@ def test_raw_crystal_plan_has_shifter_preview_without_echo(tmp_path: Path) -> No
     assert not hasattr(editor, "echo_table")
     drafts = store.load_planning_drafts(window.project_controller.active_project.id)
     assert drafts[-1].plan_type == "raw_crystal"
+
+    window._add_raw_crystal_plan((crystal,))
+    reused_editor = window.plan_stack.currentWidget()
+    assert reused_editor.summary_table.item(0, 4).text() == "Reused"
+    assert "Raw Crystal Project #1" in (
+        reused_editor.summary_table.item(0, 4).toolTip()
+    )
+    assert editor.summary_table.item(0, 4).text() == "Original"
     window.close()
     app.processEvents()
 
@@ -662,11 +671,11 @@ def test_target_summary_uses_hidden_right_dock_and_jumps_to_image(
     window.target_summary_table.setCurrentCell(0, 0)
     assert window.controller.current_image.image_key == target_image_key
     assert window.target_summary_table.hasFocus()
-    assert "Unconfirmed calibration" in window.target_summary_table.item(0, 7).text()
+    assert "Unconfirmed calibration" in window.target_summary_table.item(0, 6).text()
     assert window.accept_calibration_button.isEnabled()
     window.accept_calibration_button.click()
     assert window.current_calibration.confirmed
-    assert window.target_summary_table.item(0, 7).text() == "Ready"
+    assert window.target_summary_table.item(0, 6).text() == "Ready"
     assert not window.accept_calibration_button.isEnabled()
     QTest.keyClick(window.target_summary_table, Qt.Key_Down)
     assert window.target_summary_table.currentRow() == 1
@@ -675,7 +684,7 @@ def test_target_summary_uses_hidden_right_dock_and_jumps_to_image(
         window.target_summary_filter.findData("warnings")
     )
     assert window.target_summary_table.rowCount() == 1
-    assert "Unconfirmed calibration" in window.target_summary_table.item(0, 7).text()
+    assert "Unconfirmed calibration" in window.target_summary_table.item(0, 6).text()
     window.target_summary_filter.setCurrentIndex(
         window.target_summary_filter.findData("all")
     )

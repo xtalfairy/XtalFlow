@@ -1,7 +1,7 @@
 from pathlib import Path
 import sqlite3
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
 
@@ -87,7 +87,25 @@ def test_experiment_project_selected_wells_round_trip(tmp_path: Path) -> None:
 
     assert restored == (project,)
     assert len(restored[0].crystal_selection.wells[0].soaking_positions) == 2
-    usage = store.selected_well_usage(("image-key",))
+    assert store.prior_selected_well_usage(
+        "experiment-project", ("image-key",)
+    ) == {}
+    later = now + timedelta(seconds=1)
+    reused_selection = crystal_selection_from_selected_crystals(
+        "second-project", (source,), selection_id="second-selection"
+    )
+    reused_project = ExperimentProject(
+        "second-project",
+        "BRD4 follow-up",
+        reused_selection,
+        ExperimentPlan(
+            "second-plan", "second-project", PlanType.RAW_CRYSTAL, later, later
+        ),
+        later,
+        later,
+    )
+    store.save_experiment_project(reused_project)
+    usage = store.prior_selected_well_usage("second-project", ("image-key",))
     assert usage["image-key"][0].project_name == "BRD4 screen"
     assert usage["image-key"][0].status == "Draft"
     assert store._connection.execute("PRAGMA user_version").fetchone()[0] == (

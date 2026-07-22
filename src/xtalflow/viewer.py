@@ -76,6 +76,7 @@ from xtalflow.domain import (
     ExperimentPlan,
     ExperimentProject,
     PlanType,
+    SelectedWellUsage,
     crystal_selection_from_selected_crystals,
 )
 from xtalflow.domain.fragment_screening import (
@@ -534,11 +535,12 @@ class FragmentScreeningEditor(QWidget):
         self.save_worksheets_button.setEnabled(False)
         self.error_label = QLabel()
         self.error_label.setStyleSheet("color: #b00020")
-        self.table = QTableWidget(0, 7)
+        self.well_usage: dict[str, tuple[SelectedWellUsage, ...]] = {}
+        self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(
             (
                 "Order", "Plate", "Selected Well", "Soaking Positions",
-                "Fragment", "Source", "Total",
+                "Usage", "Fragment", "Source", "Total",
             )
         )
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -646,6 +648,14 @@ class FragmentScreeningEditor(QWidget):
         self.selection = selection
         self.refresh_plan()
 
+    def set_well_usage(
+        self, usage: dict[str, tuple[SelectedWellUsage, ...]]
+    ) -> None:
+        self.well_usage = usage
+        previous = self.blockSignals(True)
+        self.refresh_plan()
+        self.blockSignals(previous)
+
     def set_mxlive_account(self, account: MxLiveAccount) -> None:
         self.mxlive_account = account
         self.refresh_plan()
@@ -746,17 +756,26 @@ class FragmentScreeningEditor(QWidget):
         self.table.setRowCount(len(plan.assignments))
         for row, assignment in enumerate(plan.assignments):
             selected_well = assignment.selected_well
+            usage_label, usage_tooltip = _well_usage_display(
+                self.well_usage.get(selected_well.image_key, ())
+            )
             values = (
                 str(row + 1),
                 selected_well.plate_code,
                 selected_well.well_address,
                 str(len(selected_well.soaking_positions)),
+                usage_label,
                 assignment.fragment.compound_id,
                 f"{assignment.fragment.source_plate} / {assignment.fragment.source_well}",
                 f"{assignment.total_volume_nl} nL",
             )
             for column, value in enumerate(values):
-                self.table.setItem(row, column, QTableWidgetItem(value))
+                item = QTableWidgetItem(value)
+                if column == 4:
+                    item.setToolTip(usage_tooltip)
+                    if usage_tooltip:
+                        item.setForeground(QColor("#ef6c00"))
+                self.table.setItem(row, column, item)
         self._set_preview_rows(
             self.echo_table,
             tuple(row.values() for row in build_echo_worksheet(plan)),
@@ -850,9 +869,13 @@ class RawCrystalEditor(QWidget):
         self.save_worksheet_button.setEnabled(False)
         self.error_label = QLabel()
         self.error_label.setStyleSheet("color: #b00020")
-        self.summary_table = QTableWidget(0, 5)
+        self.well_usage: dict[str, tuple[SelectedWellUsage, ...]] = {}
+        self.summary_table = QTableWidget(0, 6)
         self.summary_table.setHorizontalHeaderLabels(
-            ("Order", "Plate", "Selected Well", "Soaking Position", "Selected at")
+            (
+                "Order", "Plate", "Selected Well", "Soaking Position",
+                "Usage", "Selected at",
+            )
         )
         self.shifter_table = QTableWidget(0, len(SHIFTER_HEADER))
         self.shifter_table.setHorizontalHeaderLabels(SHIFTER_HEADER)
@@ -924,6 +947,14 @@ class RawCrystalEditor(QWidget):
         self.selection = selection
         self.refresh_plan()
 
+    def set_well_usage(
+        self, usage: dict[str, tuple[SelectedWellUsage, ...]]
+    ) -> None:
+        self.well_usage = usage
+        previous = self.blockSignals(True)
+        self.refresh_plan()
+        self.blockSignals(previous)
+
     def set_mxlive_account(self, account: MxLiveAccount) -> None:
         self.mxlive_account = account
         self.refresh_plan()
@@ -989,9 +1020,13 @@ class RawCrystalEditor(QWidget):
         for row, selection in enumerate(plan.selections):
             selected_well = selection.selected_well
             position = selection.position
+            usage_label, usage_tooltip = _well_usage_display(
+                self.well_usage.get(selected_well.image_key, ())
+            )
             values = (
                 str(row + 1), selected_well.plate_code,
                 selected_well.well_address, str(position.position_order),
+                usage_label,
                 position.selected_at.isoformat(timespec="seconds"),
             )
             for column, value in enumerate(values):
@@ -1000,6 +1035,10 @@ class RawCrystalEditor(QWidget):
                     # Keep the persistence identity available to the UI without
                     # exposing an implementation UUID as an operator-facing value.
                     item.setData(Qt.UserRole, position.source_target_id)
+                if column == 4:
+                    item.setToolTip(usage_tooltip)
+                    if usage_tooltip:
+                        item.setForeground(QColor("#ef6c00"))
                 self.summary_table.setItem(row, column, item)
         FragmentScreeningEditor._set_preview_rows(
             self.shifter_table, tuple(row.values() for row in rows)
@@ -1018,6 +1057,19 @@ class RawCrystalEditor(QWidget):
             self.mxlive_account,
             build_raw_crystal_labworks,
         )
+
+
+def _well_usage_display(
+    usages: tuple[SelectedWellUsage, ...],
+) -> tuple[str, str]:
+    if not usages:
+        return "Original", ""
+    label = "Reused" if len(usages) == 1 else f"Reused · {len(usages)} projects"
+    tooltip = "Previously used by:\n" + "\n".join(
+        f"• {usage.project_name} · {usage.plan_type.value} · {usage.status}"
+        for usage in usages
+    )
+    return label, tooltip
 
 
 def _refresh_labwork_preview(
@@ -1380,7 +1432,7 @@ class ViewerWindow(QMainWindow):
         container.setLayout(layout)
         self.setCentralWidget(container)
 
-        self.target_summary_table = QTableWidget(0, 8)
+        self.target_summary_table = QTableWidget(0, 7)
         self.target_summary_table.setHorizontalHeaderLabels(
             (
                 "Plate",
@@ -1389,7 +1441,6 @@ class ViewerWindow(QMainWindow):
                 "X (mm)",
                 "Y (mm)",
                 "Calibration",
-                "Usage",
                 "Status",
             )
         )
@@ -1708,6 +1759,31 @@ class ViewerWindow(QMainWindow):
             self.plan_stack.setCurrentIndex(0)
         else:
             self.plan_list.setCurrentRow(min(row, self.plan_list.count() - 1))
+        self._refresh_project_well_usage()
+
+    def _set_editor_well_usage(self, editor) -> None:
+        if (
+            self.review_store is None
+            or not getattr(editor, "selection_snapshot_owned", False)
+        ):
+            editor.set_well_usage({})
+            return
+        image_keys = tuple(well.image_key for well in editor.selection.wells)
+        try:
+            usage = self.review_store.prior_selected_well_usage(
+                editor.plan_id, image_keys
+            )
+        except ReviewPersistenceError as error:
+            editor.error_label.setText(f"Reuse history unavailable: {error}")
+            return
+        editor.set_well_usage(usage)
+
+    def _refresh_project_well_usage(self) -> None:
+        project = self.project_controller.active_project
+        if project is None:
+            return
+        for _, editor in self._planning_drafts.get(project.id, []):
+            self._set_editor_well_usage(editor)
 
     def _add_fragment_plan(
         self,
@@ -1814,6 +1890,7 @@ class ViewerWindow(QMainWindow):
                     "Legacy Draft · selection needs review"
                 )
                 self._set_plan_list_status(editor, "Legacy · Review selection")
+        self._refresh_project_well_usage()
 
     def _planning_draft_changed(self, editor: FragmentScreeningEditor) -> None:
         if not hasattr(editor, "autosave_timer"):
@@ -1914,6 +1991,7 @@ class ViewerWindow(QMainWindow):
                     "Legacy Draft · selection needs review"
                 )
                 self._set_plan_list_status(editor, "Legacy · Review selection")
+        self._refresh_project_well_usage()
 
     def _raw_crystal_draft_changed(self, editor: RawCrystalEditor) -> None:
         if not hasattr(editor, "autosave_timer"):
@@ -1955,6 +2033,7 @@ class ViewerWindow(QMainWindow):
         editor.adopt_selection_button.hide()
         editor.lifecycle_label.setText("Draft · selection fixed")
         self._set_plan_list_status(editor, "Draft · Selection fixed")
+        self._refresh_project_well_usage()
         if isinstance(editor, FragmentScreeningEditor):
             self._persist_planning_draft(editor)
         else:
@@ -2080,6 +2159,7 @@ class ViewerWindow(QMainWindow):
         editor.lifecycle_label.setText(f"Finalized r{revision.revision}")
         self._set_plan_list_status(editor, f"Finalized r{revision.revision}")
         self._sync_webdb_upload_state(editor)
+        self._refresh_project_well_usage()
         return revision
 
     def _set_plan_list_status(self, editor: FragmentScreeningEditor, status: str) -> None:
@@ -2196,6 +2276,7 @@ class ViewerWindow(QMainWindow):
         editor.lifecycle_label.setText(f"Finalized r{revision.revision}")
         self._set_plan_list_status(editor, f"Finalized r{revision.revision}")
         self._sync_webdb_upload_state(editor)
+        self._refresh_project_well_usage()
         return revision
 
     def _sync_webdb_upload_state(self, editor) -> None:
@@ -2343,12 +2424,14 @@ class ViewerWindow(QMainWindow):
                 return
         if status == "succeeded":
             self._sync_webdb_upload_state(editor)
+            self._refresh_project_well_usage()
             QMessageBox.information(
                 self, "WebDB upload complete",
                 f"Uploaded {len(records)} records for {revision.experiment_id}.",
             )
         elif status == "partial":
             self._sync_webdb_upload_state(editor)
+            self._refresh_project_well_usage()
             QMessageBox.critical(
                 self, "WebDB upload partially completed",
                 error_message or "Some records may have been uploaded.",
@@ -3151,16 +3234,6 @@ class ViewerWindow(QMainWindow):
         )
         project = self.project_controller.active_project
         image_sets = {item.id: item for item in project.image_sets} if project else {}
-        usage_by_image: dict[str, tuple] = {}
-        if self.review_store is not None:
-            try:
-                usage_by_image = self.review_store.selected_well_usage(
-                    tuple({summary.image.image_key for summary in summaries})
-                )
-            except ReviewPersistenceError as error:
-                self.status_message_label.show_message(
-                    f"Project usage unavailable: {error}"
-                )
         self._refreshing_target_summary = True
         restored_row = None
         try:
@@ -3214,8 +3287,6 @@ class ViewerWindow(QMainWindow):
                     )
                     or "Ready"
                 )
-                usages = usage_by_image.get(summary.image.image_key, ())
-                usage_status = "New" if not usages else f"Used · {len(usages)} project(s)"
                 values = (
                     summary.image.plate_code,
                     well,
@@ -3223,25 +3294,16 @@ class ViewerWindow(QMainWindow):
                     x_mm,
                     y_mm,
                     calibration_status,
-                    usage_status,
                     validation_status,
                 )
                 tooltip = (
                     f"Pixel: ({summary.target.x_px:.1f}, {summary.target.y_px:.1f})\n"
                     f"{summary.image.path.resolve()}"
                 )
-                if usages:
-                    tooltip += "\n\nProject usage:\n" + "\n".join(
-                        f"• {usage.project_name} · "
-                        f"{usage.plan_type.value} · {usage.status}"
-                        for usage in usages
-                    )
                 for column, value in enumerate(values):
                     item = QTableWidgetItem(value)
                     item.setToolTip(tooltip)
-                    if column == 6 and usages:
-                        item.setForeground(QColor("#ef6c00"))
-                    if column == 7:
+                    if column == 6:
                         item.setForeground(
                             QColor("#2e7d32" if summary.is_ready else "#c62828")
                         )

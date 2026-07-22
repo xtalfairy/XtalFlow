@@ -285,10 +285,17 @@ class SQLiteReviewStore:
             None,
         )
 
-    def selected_well_usage(
-        self, image_keys: tuple[str, ...]
+    def prior_selected_well_usage(
+        self, current_project_id: str, image_keys: tuple[str, ...]
     ) -> dict[str, tuple[SelectedWellUsage, ...]]:
         if not image_keys:
+            return {}
+        current = self._connection.execute(
+            """SELECT created_at, project_id FROM experiment_project
+               WHERE project_id = ?""",
+            (current_project_id,),
+        ).fetchone()
+        if current is None:
             return {}
         placeholders = ",".join("?" for _ in image_keys)
         try:
@@ -316,8 +323,12 @@ class SQLiteReviewStore:
                     JOIN experiment_plan AS plan
                       ON plan.project_id = project.project_id
                     WHERE well.image_key IN ({placeholders})
+                      AND (
+                        project.created_at < ?
+                        OR (project.created_at = ? AND project.project_id < ?)
+                      )
                     ORDER BY project.created_at, project.project_id""",
-                image_keys,
+                (*image_keys, current[0], current[0], current_project_id),
             ).fetchall()
         except sqlite3.Error as error:
             raise ReviewPersistenceError(

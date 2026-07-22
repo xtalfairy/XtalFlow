@@ -380,12 +380,20 @@ class ProjectController:
             )
         return tuple(crystals)
 
-    def valid_unconfirmed_automatic_calibration_count(self) -> int:
-        return len(self._valid_unconfirmed_automatic_calibrations())
+    def valid_unconfirmed_automatic_calibration_count(
+        self, min_confidence: float = 0, image_set_id: str | None = None
+    ) -> int:
+        return len(self._valid_unconfirmed_automatic_calibrations(
+            min_confidence, image_set_id
+        ))
 
-    def confirm_valid_automatic_calibrations(self) -> int:
+    def confirm_valid_automatic_calibrations(
+        self, min_confidence: float = 0, image_set_id: str | None = None
+    ) -> int:
         """Confirm only automatic wells whose selected targets are all in bounds."""
-        candidates = self._valid_unconfirmed_automatic_calibrations()
+        candidates = self._valid_unconfirmed_automatic_calibrations(
+            min_confidence, image_set_id
+        )
         if not candidates:
             return 0
         if self.workspace_store is None:
@@ -400,7 +408,7 @@ class ProjectController:
         return len(candidates)
 
     def _valid_unconfirmed_automatic_calibrations(
-        self,
+        self, min_confidence: float = 0, only_image_set_id: str | None = None,
     ) -> tuple[tuple[str, ImageCalibration], ...]:
         grouped: dict[tuple[str, str], list[ProjectTargetSummary]] = {}
         for summary in self.project_target_summaries():
@@ -408,19 +416,25 @@ class ProjectController:
                 (summary.image_set_id, summary.image.image_key), []
             ).append(summary)
         candidates: list[tuple[str, ImageCalibration]] = []
-        for (image_set_id, _), summaries in grouped.items():
+        for (candidate_image_set_id, _), summaries in grouped.items():
+            if (
+                only_image_set_id is not None
+                and candidate_image_set_id != only_image_set_id
+            ):
+                continue
             calibration = summaries[0].calibration
             if (
                 calibration is not None
                 and calibration.method is CalibrationMethod.AUTO_CIRCLE
                 and not calibration.confirmed
+                and calibration.confidence >= min_confidence
                 and all(
                     summary.validation_issues
                     == (TargetValidationIssue.CALIBRATION_UNCONFIRMED,)
                     for summary in summaries
                 )
             ):
-                candidates.append((image_set_id, calibration))
+                candidates.append((candidate_image_set_id, calibration))
         return tuple(candidates)
 
     def remove_project_targets(self, target_ids: tuple[str, ...]) -> int:

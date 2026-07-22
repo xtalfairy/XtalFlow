@@ -26,6 +26,7 @@ from PyQt5.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QComboBox,
+    QCheckBox,
     QCompleter,
     QDockWidget,
     QDialog,
@@ -117,6 +118,10 @@ from xtalflow.infrastructure.mxlive_config import (
     MxLiveAccount,
     MxLiveConfigurationError,
     resolve_mxlive_account,
+)
+from xtalflow.infrastructure.user_preferences import (
+    JsonUserPreferencesStore,
+    UserPreferences,
 )
 from xtalflow.presentation import AspectFitTransform, ProjectImageSetListModel
 from xtalflow.settings import ApplicationSettings, DEFAULT_SETTINGS
@@ -1009,11 +1014,16 @@ class ViewerWindow(QMainWindow):
         review_store: SQLiteReviewStore | None = None,
         auto_advance_target_count: int = 1,
         settings: ApplicationSettings | None = None,
+        preferences_store: JsonUserPreferencesStore | None = None,
     ) -> None:
         super().__init__()
         self.repository = repository
         self.review_store = review_store
         self.settings = settings or DEFAULT_SETTINGS
+        self.preferences_store = preferences_store or JsonUserPreferencesStore()
+        self.user_preferences = self.preferences_store.load()
+        self._trusted_auto_well_image_sets: set[str] = set()
+        self._auto_well_opted_out_image_sets: set[str] = set()
         try:
             self.mxlive_account = resolve_mxlive_account(
                 self.settings.mxlive_config_path,
@@ -1122,6 +1132,21 @@ class ViewerWindow(QMainWindow):
         self.accept_calibration_button = QPushButton("Accept Well")
         self.accept_calibration_button.setEnabled(False)
         self.manual_calibration_button = QPushButton("Set Well (3 points)")
+        self.auto_confirm_plate_checkbox = QCheckBox("Auto-confirm this plate")
+        self.auto_confirm_plate_checkbox.setToolTip(
+            "Automatically confirm detected wells on this plate when confidence "
+            "meets the selected threshold. Plate trust lasts for this session."
+        )
+        self.auto_confirm_confidence_input = QSpinBox()
+        self.auto_confirm_confidence_input.setRange(0, 100)
+        self.auto_confirm_confidence_input.setValue(
+            self.user_preferences.auto_confirm_confidence_percent
+        )
+        self.auto_confirm_confidence_input.setPrefix("≥ ")
+        self.auto_confirm_confidence_input.setSuffix("%")
+        self.auto_confirm_confidence_input.setToolTip(
+            f"Saved per user in {self.preferences_store.path}"
+        )
         self.status_message_label = StatusMessageLabel()
         self.image_path_status = ImagePathStatusLabel()
 
@@ -1153,12 +1178,15 @@ class ViewerWindow(QMainWindow):
         image_info_controls.addWidget(self.fit_button)
         viewer_layout.addLayout(image_info_controls)
         viewer_layout.addWidget(self.review_summary_label)
-        calibration_controls = QHBoxLayout()
-        calibration_controls.addWidget(self.calibration_label, 1)
-        calibration_controls.addWidget(self.auto_calibration_button)
-        calibration_controls.addWidget(self.accept_calibration_button)
-        calibration_controls.addWidget(self.manual_calibration_button)
-        viewer_layout.addLayout(calibration_controls)
+        viewer_layout.addWidget(self.calibration_label)
+        calibration_actions = QHBoxLayout()
+        calibration_actions.addWidget(self.auto_confirm_plate_checkbox)
+        calibration_actions.addWidget(self.auto_confirm_confidence_input)
+        calibration_actions.addStretch()
+        calibration_actions.addWidget(self.auto_calibration_button)
+        calibration_actions.addWidget(self.accept_calibration_button)
+        calibration_actions.addWidget(self.manual_calibration_button)
+        viewer_layout.addLayout(calibration_actions)
         viewer_panel = QWidget()
         viewer_panel.setLayout(viewer_layout)
 
@@ -1377,6 +1405,12 @@ class ViewerWindow(QMainWindow):
             self._accept_current_calibration
         )
         self.manual_calibration_button.clicked.connect(self._start_manual_calibration)
+        self.auto_confirm_plate_checkbox.toggled.connect(
+            self._toggle_auto_confirm_for_active_plate
+        )
+        self.auto_confirm_confidence_input.valueChanged.connect(
+            self._change_auto_confirm_confidence
+        )
         self.image_filter_input.currentIndexChanged.connect(self._change_image_filter)
         self.well_input.returnPressed.connect(self._go_to_entered_well)
         self.well_input.editingFinished.connect(self._go_to_entered_well)
@@ -2480,9 +2514,24 @@ class ViewerWindow(QMainWindow):
             self.save_status_label.setText("Not loaded")
             self.image_path_status.set_image_path(None)
             self.accept_calibration_button.setEnabled(False)
+            self.auto_confirm_plate_checkbox.setEnabled(False)
+            self.auto_confirm_plate_checkbox.setChecked(False)
             self._update_navigation()
             return
         self.calibration_service = None
+        active_image_set = self.project_controller.active_image_set
+        if (
+            active_image_set is not None
+            and active_image_set.id not in self._auto_well_opted_out_image_sets
+        ):
+            self._trusted_auto_well_image_sets.add(active_image_set.id)
+        self.auto_confirm_plate_checkbox.blockSignals(True)
+        self.auto_confirm_plate_checkbox.setEnabled(active_image_set is not None)
+        self.auto_confirm_plate_checkbox.setChecked(
+            active_image_set is not None
+            and active_image_set.id in self._trusted_auto_well_image_sets
+        )
+        self.auto_confirm_plate_checkbox.blockSignals(False)
         self.auto_advance_input.blockSignals(True)
         self.auto_advance_input.setValue(
             self.controller.preferences.auto_advance_target_count
@@ -3087,6 +3136,20 @@ class ViewerWindow(QMainWindow):
             self.calibration_label.setText(f"Well calibration unavailable: {error}")
             self.accept_calibration_button.setEnabled(False)
             return
+        active_image_set = self.project_controller.active_image_set
+        should_auto_confirm = (
+            active_image_set is not None
+            and active_image_set.id in self._trusted_auto_well_image_sets
+            and calibration.method is CalibrationMethod.AUTO_CIRCLE
+            and not calibration.confirmed
+            and calibration.confidence
+            >= self.auto_confirm_confidence_input.value() / 100
+        )
+        if should_auto_confirm:
+            try:
+                calibration = self.calibration_service.confirm(calibration)
+            except ReviewPersistenceError as error:
+                self._show_persistence_error(error)
         self.current_calibration = calibration
         self.image_canvas.set_calibration(calibration)
         scale_um = calibration.physical_diameter_mm * 1000 / (
@@ -3105,6 +3168,53 @@ class ViewerWindow(QMainWindow):
         )
         self.accept_calibration_button.setEnabled(not calibration.confirmed)
         self._refresh_target_summary()
+
+    def _toggle_auto_confirm_for_active_plate(self, enabled: bool) -> None:
+        image_set = self.project_controller.active_image_set
+        if image_set is None:
+            return
+        if enabled:
+            self._auto_well_opted_out_image_sets.discard(image_set.id)
+            self._trusted_auto_well_image_sets.add(image_set.id)
+            try:
+                self.project_controller.confirm_valid_automatic_calibrations(
+                    self.auto_confirm_confidence_input.value() / 100,
+                    image_set.id,
+                )
+            except ReviewPersistenceError as error:
+                self._trusted_auto_well_image_sets.discard(image_set.id)
+                self.auto_confirm_plate_checkbox.blockSignals(True)
+                self.auto_confirm_plate_checkbox.setChecked(False)
+                self.auto_confirm_plate_checkbox.blockSignals(False)
+                self._show_persistence_error(error)
+                return
+            self._load_current_calibration()
+            self.status_message_label.show_message(
+                "Automatic well confirmation enabled for this plate", 4000
+            )
+        else:
+            self._trusted_auto_well_image_sets.discard(image_set.id)
+            self._auto_well_opted_out_image_sets.add(image_set.id)
+            self.status_message_label.show_message(
+                "Automatic well confirmation disabled for this plate", 3000
+            )
+        self._refresh_target_summary()
+
+    def _change_auto_confirm_confidence(self, percent: int) -> None:
+        preferences = UserPreferences(percent)
+        try:
+            self.preferences_store.save(preferences)
+        except OSError as error:
+            self.status_message_label.show_message(
+                f"Could not save user preferences: {error}", 5000
+            )
+            return
+        self.user_preferences = preferences
+        self.status_message_label.show_message(
+            f"Auto-confirm confidence saved at {percent}%", 3000
+        )
+        if self.auto_confirm_plate_checkbox.isChecked():
+            self._toggle_auto_confirm_for_active_plate(True)
 
     def _auto_detect_calibration(self) -> None:
         self._cancel_manual_calibration()

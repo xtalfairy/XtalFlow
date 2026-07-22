@@ -119,6 +119,18 @@ key_path = "/data/users/local_user/.config/mxdc/keys.dsa"
 매핑이 없으면 WebDB 미리보기만 가능하며 실제 업로드 준비 상태가 되지 않습니다.
 다른 위치의 설정은 뷰어 실행 시 `--mxlive-config`로 지정할 수 있습니다.
 
+### 사용자별 이미지 검토 설정
+
+이미지 아래의 자동 well 확정 신뢰도는 사용자별로 다음 파일에 저장됩니다.
+
+```text
+~/.config/xtalflow/preferences.json
+```
+
+`Auto-confirm this plate`는 plate를 불러올 때 기본으로 활성화됩니다. 저장된
+신뢰도 이상인 자동 검출 결과만 확정합니다. 사용자가 특정 plate에서 이 설정을
+끄면 같은 실행 세션 동안에는 plate를 전환해도 꺼진 상태를 유지합니다.
+
 MxLive v2는 서명된 username과 해당 사용자의 레거시 DSA key를 이용해
 인증합니다. 사용자별 key 위치는 다음과 같습니다.
 

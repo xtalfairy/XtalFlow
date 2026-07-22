@@ -30,6 +30,7 @@ from xtalflow.infrastructure import RockMakerImageRepository, SQLiteReviewStore
 from xtalflow.viewer import FragmentScreeningDialog, ViewerWindow
 from xtalflow.viewer import main
 from xtalflow.settings import DEFAULT_SETTINGS
+from xtalflow.infrastructure.user_preferences import JsonUserPreferencesStore
 
 
 FIXTURE_ROOT = DEFAULT_SETTINGS.rmserver_root
@@ -150,6 +151,26 @@ def test_status_bar_is_visible_before_navigation(tmp_path: Path) -> None:
     assert window.statusBar().isVisible()
     assert window.statusBar().height() > 0
     window.close()
+    app.processEvents()
+
+
+def test_auto_confirm_confidence_is_saved_per_user(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    preferences_path = tmp_path / ".config" / "xtalflow" / "preferences.json"
+    first = ViewerWindow(
+        RockMakerImageRepository(tmp_path),
+        preferences_store=JsonUserPreferencesStore(preferences_path),
+    )
+    first.auto_confirm_confidence_input.setValue(96)
+    first.close()
+
+    restored = ViewerWindow(
+        RockMakerImageRepository(tmp_path),
+        preferences_store=JsonUserPreferencesStore(preferences_path),
+    )
+    assert restored.auto_confirm_confidence_input.value() == 96
+    assert str(preferences_path) in restored.auto_confirm_confidence_input.toolTip()
+    restored.close()
     app.processEvents()
 
 
@@ -355,6 +376,8 @@ def test_target_summary_uses_hidden_right_dock_and_jumps_to_image(
         SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
     )
     window.load_plate("2070", SWISSCI_MRC_2_WELL)
+    window.auto_confirm_plate_checkbox.setChecked(False)
+    window._auto_detect_calibration()
     target_image_key = window.controller.current_image.image_key
     window.show()
     app.processEvents()
@@ -435,6 +458,8 @@ def test_valid_automatic_wells_can_be_confirmed_in_bulk(
         auto_advance_target_count=10,
     )
     window.load_plate("2070", SWISSCI_MRC_2_WELL)
+    window.auto_confirm_plate_checkbox.setChecked(False)
+    window._auto_detect_calibration()
     window._handle_image_click(600, 500, Qt.LeftButton)
     window._handle_image_click(610, 510, Qt.LeftButton)
 
@@ -454,6 +479,27 @@ def test_valid_automatic_wells_can_be_confirmed_in_bulk(
         window.project_controller.valid_unconfirmed_automatic_calibration_count()
         == 0
     )
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_trusted_plate_auto_confirms_well_above_user_threshold(
+    tmp_path: Path,
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        preferences_store=JsonUserPreferencesStore(tmp_path / "preferences.json"),
+    )
+    window.load_plate("2070", SWISSCI_MRC_2_WELL)
+    window.auto_confirm_confidence_input.setValue(50)
+    assert window.current_calibration is not None
+    assert window.auto_confirm_plate_checkbox.isChecked()
+    assert window.current_calibration.confirmed
+    assert "Confirmed" in window.calibration_label.text()
     window.close()
     app.processEvents()
 

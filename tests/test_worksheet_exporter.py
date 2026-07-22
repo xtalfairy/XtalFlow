@@ -144,9 +144,7 @@ def test_raw_crystal_export_writes_only_shifter_files(tmp_path: Path) -> None:
         create_missing_instrument_roots=True,
     )
     fragment = fragment_plan()
-    raw_plan = build_raw_crystal_plan(
-        tuple(assignment.crystal for assignment in fragment.assignments)
-    )
+    raw_plan = build_raw_crystal_plan(fragment.selection)
 
     result = WorksheetExporter(settings, "scientist").export_shifter(
         raw_plan, "RawCrystal-202607-BRD4-01"

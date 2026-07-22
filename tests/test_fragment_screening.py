@@ -52,7 +52,9 @@ def test_plan_assigns_fragments_in_crystal_selection_order() -> None:
         Decimal("10"),
     )
 
-    assert [item.crystal.image_key for item in plan.assignments] == ["first", "later"]
+    assert [item.selected_well.image_key for item in plan.assignments] == [
+        "first", "later"
+    ]
     assert [item.fragment.compound_id for item in plan.assignments] == ["CMP-1", "CMP-2"]
 
 
@@ -149,7 +151,7 @@ def test_plan_can_reassign_fragments_in_plate_and_well_order() -> None:
         AssignmentOrder.PLATE_WELL,
     )
 
-    assert [item.crystal.image_key for item in plan.assignments] == [
+    assert [item.selected_well.image_key for item in plan.assignments] == [
         "selected-third",
         "selected-second",
         "selected-first",

@@ -22,7 +22,9 @@ def test_raw_crystal_plan_defaults_to_target_selection_order() -> None:
 
     plan = build_raw_crystal_plan((second, first))
 
-    assert [item.crystal.image_key for item in plan.selections] == ["first", "second"]
+    assert [item.selected_well.image_key for item in plan.selections] == [
+        "first", "second"
+    ]
     assert len(build_shifter_worksheet(plan)) == 2
 
 
@@ -35,7 +37,9 @@ def test_raw_crystal_plan_can_sort_by_plate_and_well() -> None:
         (later_plate, earlier_plate), AssignmentOrder.PLATE_WELL
     )
 
-    assert [item.crystal.image_key for item in plan.selections] == ["earlier", "later"]
+    assert [item.selected_well.image_key for item in plan.selections] == [
+        "earlier", "later"
+    ]
     assert build_shifter_worksheet(plan)[0].plate_id == "2069"
 
 
@@ -53,8 +57,8 @@ def test_multiple_soaking_positions_share_one_raw_crystal_shifter_row() -> None:
 
     plan = build_raw_crystal_plan((crystal,))
 
-    assert [item.target.target_id for item in plan.selections] == [
+    assert [item.position.source_target_id for item in plan.selections] == [
         "target-1", "target-2"
     ]
-    assert len(plan.crystals) == 1
+    assert len(plan.selected_wells) == 1
     assert len(build_shifter_worksheet(plan)) == 1

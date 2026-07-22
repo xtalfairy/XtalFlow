@@ -76,12 +76,13 @@ def build_fragment_labworks(
 ) -> tuple[LabworkRecord, ...]:
     records: list[LabworkRecord] = []
     for index, assignment in enumerate(plan.assignments, start=1):
+        selected_well = assignment.selected_well
         records.append(LabworkRecord(
             username, experiment_id, protein_name,
-            _mxlive_plate_type(assignment.crystal.plate_format_id),
-            assignment.crystal.destination_plate,
-            assignment.crystal.image_path or assignment.crystal.image_key,
-            assignment.crystal.destination_well,
+            _mxlive_plate_type(selected_well.plate_format_id),
+            selected_well.plate_code,
+            selected_well.image_path or selected_well.image_key,
+            selected_well.well_address,
             Decimal("0"), Decimal("0"), index,
             assignment.fragment.source_plate,
             assignment.fragment.source_well,
@@ -101,12 +102,12 @@ def build_raw_crystal_labworks(
     return tuple(
         LabworkRecord(
             username, experiment_id, protein_name,
-            _mxlive_plate_type(crystal.plate_format_id),
-            crystal.destination_plate,
-            crystal.image_path or crystal.image_key,
-            crystal.destination_well, Decimal("0"), Decimal("0"), index,
+            _mxlive_plate_type(selected_well.plate_format_id),
+            selected_well.plate_code,
+            selected_well.image_path or selected_well.image_key,
+            selected_well.well_address, Decimal("0"), Decimal("0"), index,
             "", "", Decimal("0"), "", "",
             account_id, "Uploaded by XtalFlow · Raw Crystal Plan",
         )
-        for index, crystal in enumerate(plan.crystals, start=1)
+        for index, selected_well in enumerate(plan.selected_wells, start=1)
     )

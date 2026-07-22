@@ -8,7 +8,13 @@ from .crystal_workflow import (
     AssignmentOrder,
     CrystalTarget,
     SelectedCrystal,
-    order_crystals,
+)
+from .crystal_selection import (
+    CrystalSelection,
+    SelectedWell,
+    SoakingPosition,
+    crystal_selection_from_selected_crystals,
+    order_selected_wells,
 )
 
 
@@ -74,13 +80,13 @@ class FragmentLibrary:
 
 @dataclass(frozen=True)
 class FragmentTransfer:
-    target: CrystalTarget
+    position: SoakingPosition
     volume_nl: Decimal
 
 
 @dataclass(frozen=True)
 class FragmentAssignment:
-    crystal: SelectedCrystal
+    selected_well: SelectedWell
     fragment: Fragment
     transfers: tuple[FragmentTransfer, ...]
 
@@ -91,6 +97,7 @@ class FragmentAssignment:
 
 @dataclass(frozen=True)
 class FragmentScreenPlan:
+    selection: CrystalSelection
     library: FragmentLibrary
     assignments: tuple[FragmentAssignment, ...]
     volume_per_crystal_nl: Decimal
@@ -99,44 +106,51 @@ class FragmentScreenPlan:
 
 def build_fragment_screen_plan(
     library: FragmentLibrary,
-    crystals: tuple[SelectedCrystal, ...],
+    selection: CrystalSelection | tuple[SelectedCrystal, ...],
     volume_per_crystal_nl: Decimal,
     assignment_order: AssignmentOrder = AssignmentOrder.SELECTION,
 ) -> FragmentScreenPlan:
-    if not crystals:
-        raise ValueError("at least one selected crystal is required")
+    if isinstance(selection, tuple):
+        selection = crystal_selection_from_selected_crystals(
+            "legacy-fragment-plan", selection
+        )
     if volume_per_crystal_nl <= 0:
         raise ValueError("volume per crystal must be positive")
     units = volume_per_crystal_nl / TRANSFER_INCREMENT_NL
     if units != units.to_integral_value():
         raise ValueError("volume per crystal must use 2.5 nL increments")
-    if len(library.fragments) < len(crystals):
+    if len(library.fragments) < len(selection.wells):
         raise ValueError("the library does not contain enough fragments")
 
-    ordered_crystals = order_crystals(crystals, assignment_order)
+    ordered_wells = order_selected_wells(selection, assignment_order)
     assignments: list[FragmentAssignment] = []
     total_units = int(units)
-    selected_fragments = library.fragments[: len(ordered_crystals)]
-    for crystal, fragment in zip(ordered_crystals, selected_fragments):
-        target_count = len(crystal.targets)
-        if total_units < target_count:
+    selected_fragments = library.fragments[: len(ordered_wells)]
+    for selected_well, fragment in zip(ordered_wells, selected_fragments):
+        position_count = len(selected_well.soaking_positions)
+        if not position_count:
             raise ValueError(
-                f"{crystal.image_key} needs at least "
-                f"{target_count * TRANSFER_INCREMENT_NL} nL"
+                f"{selected_well.image_key} needs at least one soaking position"
             )
-        quota, remainder = divmod(total_units, target_count)
+        if total_units < position_count:
+            raise ValueError(
+                f"{selected_well.image_key} needs at least "
+                f"{position_count * TRANSFER_INCREMENT_NL} nL"
+            )
+        quota, remainder = divmod(total_units, position_count)
         transfers = tuple(
             FragmentTransfer(
-                target=target,
+                position=position,
                 volume_nl=TRANSFER_INCREMENT_NL
-                * (quota + (remainder if index == target_count - 1 else 0)),
+                * (quota + (remainder if index == position_count - 1 else 0)),
             )
-            for index, target in enumerate(crystal.targets)
+            for index, position in enumerate(selected_well.soaking_positions)
         )
-        assignments.append(FragmentAssignment(crystal, fragment, transfers))
+        assignments.append(FragmentAssignment(selected_well, fragment, transfers))
 
     return FragmentScreenPlan(
-        library, tuple(assignments), volume_per_crystal_nl, assignment_order
+        selection, library, tuple(assignments), volume_per_crystal_nl,
+        assignment_order,
     )
 
 
@@ -164,4 +178,3 @@ def parse_library_rows(expression: str, row_count: int) -> tuple[int, ...]:
     if len(selected) != len(set(selected)):
         raise ValueError("library row selection must not contain duplicates")
     return tuple(selected)
-

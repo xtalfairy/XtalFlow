@@ -6,7 +6,7 @@ from decimal import Decimal
 import re
 from uuid import uuid4
 
-from .crystal_workflow import CrystalTarget, SelectedCrystal
+from .crystal_workflow import AssignmentOrder, CrystalTarget, SelectedCrystal
 
 
 _WELL_PATTERN = re.compile(r"^[A-H]\d{2}[a-z]$")
@@ -171,4 +171,30 @@ def selected_crystals_from_crystal_selection(
             well.image_path,
         )
         for well in sorted(selection.wells, key=lambda item: item.selection_order)
+    )
+
+
+def order_selected_wells(
+    selection: CrystalSelection, assignment_order: AssignmentOrder
+) -> tuple[SelectedWell, ...]:
+    if assignment_order is AssignmentOrder.SELECTION:
+        return tuple(sorted(selection.wells, key=lambda well: well.selection_order))
+    if assignment_order is AssignmentOrder.PLATE_WELL:
+        return tuple(sorted(selection.wells, key=_selected_well_plate_key))
+    raise ValueError(f"unsupported assignment order: {assignment_order}")
+
+
+def _selected_well_plate_key(well: SelectedWell) -> tuple[object, ...]:
+    plate_key: tuple[int, object] = (
+        (0, int(well.plate_code))
+        if well.plate_code.isdigit()
+        else (1, well.plate_code)
+    )
+    address = well.well_address
+    return (
+        *plate_key,
+        ord(address[0]) - ord("A"),
+        int(address[1:3]),
+        address[3],
+        well.selection_order,
     )

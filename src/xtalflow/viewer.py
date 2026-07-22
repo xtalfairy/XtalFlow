@@ -66,6 +66,7 @@ from xtalflow.application import (
 from xtalflow.domain import (
     PLATE_FORMATS,
     CalibrationMethod,
+    CrystalSelection,
     ImageCalibration,
     ImageFilter,
     PlateFormat,
@@ -76,7 +77,6 @@ from xtalflow.domain import (
     ExperimentProject,
     PlanType,
     crystal_selection_from_selected_crystals,
-    selected_crystals_from_crystal_selection,
 )
 from xtalflow.domain.fragment_screening import (
     AssignmentOrder,
@@ -486,13 +486,19 @@ class FragmentScreeningEditor(QWidget):
     def __init__(
         self,
         library: FragmentLibrary | None,
-        crystals: tuple[SelectedCrystal, ...],
+        selection: CrystalSelection | tuple[SelectedCrystal, ...],
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         initial_library = library
         self.library: FragmentLibrary | None = None
-        self.crystals = crystals
+        self.selection = (
+            selection
+            if isinstance(selection, CrystalSelection)
+            else crystal_selection_from_selected_crystals(
+                "transient-fragment-editor", selection
+            )
+        )
         self.current_plan = None
         self.current_experiment_id: str | None = None
         self.assigned_experiment_id: str | None = None
@@ -527,7 +533,10 @@ class FragmentScreeningEditor(QWidget):
         self.error_label.setStyleSheet("color: #b00020")
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
-            ("Order", "Plate", "Well", "Targets", "Fragment", "Source", "Total")
+            (
+                "Order", "Plate", "Selected Well", "Soaking Positions",
+                "Fragment", "Source", "Total",
+            )
         )
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -621,7 +630,13 @@ class FragmentScreeningEditor(QWidget):
         self.refresh_plan()
 
     def set_crystals(self, crystals: tuple[SelectedCrystal, ...]) -> None:
-        self.crystals = crystals
+        self.selection = crystal_selection_from_selected_crystals(
+            self.selection.project_id, crystals
+        )
+        self.refresh_plan()
+
+    def set_selection(self, selection: CrystalSelection) -> None:
+        self.selection = selection
         self.refresh_plan()
 
     def set_mxlive_account(self, account: MxLiveAccount) -> None:
@@ -704,7 +719,7 @@ class FragmentScreeningEditor(QWidget):
             selected_library = self.library.select_rows(self.rows_input.text())
             plan = build_fragment_screen_plan(
                 selected_library,
-                self.crystals,
+                self.selection,
                 Decimal(str(self.volume_input.value())),
                 self.order_input.currentData(),
             )
@@ -723,11 +738,12 @@ class FragmentScreeningEditor(QWidget):
         self.error_label.setText("")
         self.table.setRowCount(len(plan.assignments))
         for row, assignment in enumerate(plan.assignments):
+            selected_well = assignment.selected_well
             values = (
                 str(row + 1),
-                assignment.crystal.destination_plate,
-                assignment.crystal.destination_well,
-                str(len(assignment.crystal.targets)),
+                selected_well.plate_code,
+                selected_well.well_address,
+                str(len(selected_well.soaking_positions)),
                 assignment.fragment.compound_id,
                 f"{assignment.fragment.source_plate} / {assignment.fragment.source_well}",
                 f"{assignment.total_volume_nl} nL",
@@ -796,10 +812,18 @@ class RawCrystalEditor(QWidget):
     webdb_upload_requested = pyqtSignal()
 
     def __init__(
-        self, crystals: tuple[SelectedCrystal, ...], parent: QWidget | None = None
+        self,
+        selection: CrystalSelection | tuple[SelectedCrystal, ...],
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.crystals = crystals
+        self.selection = (
+            selection
+            if isinstance(selection, CrystalSelection)
+            else crystal_selection_from_selected_crystals(
+                "transient-raw-editor", selection
+            )
+        )
         self.current_plan: RawCrystalPlan | None = None
         self.current_experiment_id: str | None = None
         self.assigned_experiment_id: str | None = None
@@ -818,7 +842,7 @@ class RawCrystalEditor(QWidget):
         self.error_label.setStyleSheet("color: #b00020")
         self.summary_table = QTableWidget(0, 5)
         self.summary_table.setHorizontalHeaderLabels(
-            ("Order", "Plate", "Well", "Position", "Selected at")
+            ("Order", "Plate", "Selected Well", "Soaking Position", "Selected at")
         )
         self.shifter_table = QTableWidget(0, len(SHIFTER_HEADER))
         self.shifter_table.setHorizontalHeaderLabels(SHIFTER_HEADER)
@@ -877,7 +901,13 @@ class RawCrystalEditor(QWidget):
         self._refresh_experiment_id()
 
     def set_crystals(self, crystals: tuple[SelectedCrystal, ...]) -> None:
-        self.crystals = crystals
+        self.selection = crystal_selection_from_selected_crystals(
+            self.selection.project_id, crystals
+        )
+        self.refresh_plan()
+
+    def set_selection(self, selection: CrystalSelection) -> None:
+        self.selection = selection
         self.refresh_plan()
 
     def set_mxlive_account(self, account: MxLiveAccount) -> None:
@@ -926,7 +956,7 @@ class RawCrystalEditor(QWidget):
     def refresh_plan(self) -> None:
         try:
             plan = build_raw_crystal_plan(
-                self.crystals, self.order_input.currentData()
+                self.selection, self.order_input.currentData()
             )
             rows = build_shifter_worksheet(plan)
         except ValueError as error:
@@ -942,20 +972,20 @@ class RawCrystalEditor(QWidget):
         self.current_plan = plan
         self.error_label.setText("")
         self.summary_table.setRowCount(len(plan.selections))
-        image_target_positions: dict[str, int] = {}
         for row, selection in enumerate(plan.selections):
-            crystal = selection.crystal
-            position = image_target_positions.get(crystal.image_key, 0) + 1
-            image_target_positions[crystal.image_key] = position
-            values = (str(row + 1), crystal.destination_plate,
-                      crystal.destination_well, str(position),
-                      selection.target.selected_at.isoformat(timespec="seconds"))
+            selected_well = selection.selected_well
+            position = selection.position
+            values = (
+                str(row + 1), selected_well.plate_code,
+                selected_well.well_address, str(position.position_order),
+                position.selected_at.isoformat(timespec="seconds"),
+            )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 if column == 3:
                     # Keep the persistence identity available to the UI without
                     # exposing an implementation UUID as an operator-facing value.
-                    item.setData(Qt.UserRole, selection.target.target_id)
+                    item.setData(Qt.UserRole, position.source_target_id)
                 self.summary_table.setItem(row, column, item)
         FragmentScreeningEditor._set_preview_rows(
             self.shifter_table, tuple(row.values() for row in rows)
@@ -1657,11 +1687,12 @@ class ViewerWindow(QMainWindow):
             self.review_store.load_experiment_project(plan_id)
             if self.review_store is not None else None
         )
-        if owned_project is not None:
-            crystals = selected_crystals_from_crystal_selection(
-                owned_project.crystal_selection
-            )
-        editor = FragmentScreeningEditor(library, crystals, self.plan_stack)
+        selection = (
+            owned_project.crystal_selection
+            if owned_project is not None
+            else crystal_selection_from_selected_crystals(plan_id, crystals)
+        )
+        editor = FragmentScreeningEditor(library, selection, self.plan_stack)
         editor.plan_id = plan_id
         editor.project_id = project.id
         editor.plan_name = name
@@ -1716,7 +1747,7 @@ class ViewerWindow(QMainWindow):
         self.main_tabs.setCurrentIndex(self.planning_tab_index)
         if restored is None:
             self._save_selection_snapshot(
-                editor, crystals, PlanType.FRAGMENT_SCREENING
+                editor, selection, PlanType.FRAGMENT_SCREENING
             )
             self._persist_planning_draft(editor)
         else:
@@ -1758,11 +1789,12 @@ class ViewerWindow(QMainWindow):
             self.review_store.load_experiment_project(plan_id)
             if self.review_store is not None else None
         )
-        if owned_project is not None:
-            crystals = selected_crystals_from_crystal_selection(
-                owned_project.crystal_selection
-            )
-        editor = RawCrystalEditor(crystals, self.plan_stack)
+        selection = (
+            owned_project.crystal_selection
+            if owned_project is not None
+            else crystal_selection_from_selected_crystals(plan_id, crystals)
+        )
+        editor = RawCrystalEditor(selection, self.plan_stack)
         editor.plan_id = plan_id
         editor.project_id = project.id
         editor.plan_name = name
@@ -1805,7 +1837,7 @@ class ViewerWindow(QMainWindow):
         self.plan_list.setCurrentRow(self.plan_list.count() - 1)
         self.main_tabs.setCurrentIndex(self.planning_tab_index)
         if restored is None:
-            self._save_selection_snapshot(editor, crystals, PlanType.RAW_CRYSTAL)
+            self._save_selection_snapshot(editor, selection, PlanType.RAW_CRYSTAL)
             self._persist_raw_crystal_draft(editor)
         elif self.review_store is not None:
             revisions = self.review_store.list_plan_revisions(editor.plan_id)
@@ -1831,17 +1863,12 @@ class ViewerWindow(QMainWindow):
     def _save_selection_snapshot(
         self,
         editor,
-        crystals: tuple[SelectedCrystal, ...],
+        selection: CrystalSelection,
         plan_type: PlanType,
     ) -> None:
         if self.review_store is None:
             return
         timestamp = editor.plan_created_at
-        selection = crystal_selection_from_selected_crystals(
-            editor.plan_id,
-            crystals,
-            created_at=timestamp,
-        )
         owned_project = ExperimentProject(
             editor.plan_id,
             editor.plan_name,
@@ -1897,15 +1924,15 @@ class ViewerWindow(QMainWindow):
             "protein": editor.protein_input.text(),
             "assignment_order": plan.assignment_order.value,
             "selections": [
-                {"image_key": selection.crystal.image_key,
-                 "image_path": selection.crystal.image_path,
-                 "plate": selection.crystal.destination_plate,
-                 "well": selection.crystal.destination_well,
-                 "plate_format_id": selection.crystal.plate_format_id,
-                 "target": {"id": selection.target.target_id,
-                            "x_mm": str(selection.target.x_mm),
-                            "y_mm": str(selection.target.y_mm),
-                            "selected_at": selection.target.selected_at.isoformat()}}
+                {"image_key": selection.selected_well.image_key,
+                 "image_path": selection.selected_well.image_path,
+                 "plate": selection.selected_well.plate_code,
+                 "well": selection.selected_well.well_address,
+                 "plate_format_id": selection.selected_well.plate_format_id,
+                 "target": {"id": selection.position.source_target_id,
+                            "x_mm": str(selection.position.x_mm),
+                            "y_mm": str(selection.position.y_mm),
+                            "selected_at": selection.position.selected_at.isoformat()}}
                 for selection in plan.selections
             ],
         }
@@ -2004,11 +2031,11 @@ class ViewerWindow(QMainWindow):
             "assignment_order": plan.assignment_order.value,
             "assignments": [
                 {
-                    "image_key": item.crystal.image_key,
-                    "image_path": item.crystal.image_path,
-                    "plate": item.crystal.destination_plate,
-                    "well": item.crystal.destination_well,
-                    "plate_format_id": item.crystal.plate_format_id,
+                    "image_key": item.selected_well.image_key,
+                    "image_path": item.selected_well.image_path,
+                    "plate": item.selected_well.plate_code,
+                    "well": item.selected_well.well_address,
+                    "plate_format_id": item.selected_well.plate_format_id,
                     "fragment": {
                         "vendor": item.fragment.vendor,
                         "library": item.fragment.library,
@@ -2023,10 +2050,10 @@ class ViewerWindow(QMainWindow):
                         "source_well": item.fragment.source_well,
                     },
                     "targets": [
-                        {"id": transfer.target.target_id,
-                         "x_mm": str(transfer.target.x_mm),
-                         "y_mm": str(transfer.target.y_mm),
-                         "selected_at": transfer.target.selected_at.isoformat(),
+                        {"id": transfer.position.source_target_id,
+                         "x_mm": str(transfer.position.x_mm),
+                         "y_mm": str(transfer.position.y_mm),
+                         "selected_at": transfer.position.selected_at.isoformat(),
                          "volume_nl": str(transfer.volume_nl)}
                         for transfer in item.transfers
                     ],

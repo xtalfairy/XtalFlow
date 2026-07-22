@@ -294,7 +294,9 @@ def test_raw_crystal_plan_has_shifter_preview_without_echo(tmp_path: Path) -> No
 
     assert editor.current_plan is not None
     assert editor.shifter_table.rowCount() == 1
-    assert editor.summary_table.horizontalHeaderItem(3).text() == "Position"
+    assert editor.summary_table.horizontalHeaderItem(3).text() == (
+        "Soaking Position"
+    )
     assert editor.summary_table.item(0, 3).text() == "1"
     assert editor.summary_table.item(1, 3).text() == "2"
     assert editor.summary_table.item(0, 3).data(Qt.UserRole) == "target"
@@ -416,7 +418,7 @@ def test_new_plan_owns_selection_snapshot_when_review_targets_change(
 
     window._main_tab_changed(window.planning_tab_index)
 
-    assert editor.crystals == (original,)
+    assert editor.selection.wells[0].image_key == original.image_key
     owned = store.load_experiment_project(editor.plan_id)
     assert owned is not None
     assert owned.crystal_selection.wells[0].image_key == "original-image"

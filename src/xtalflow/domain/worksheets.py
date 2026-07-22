@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
+from .crystal_selection import SelectedWell
 from .fragment_screening import FragmentScreenPlan
-from .crystal_workflow import SelectedCrystal
 from .raw_crystal import RawCrystalPlan
 from .plate_format import plate_format_by_id
 
@@ -94,26 +94,28 @@ class ShifterWorksheetRow:
 def build_echo_worksheet(plan: FragmentScreenPlan) -> tuple[EchoWorksheetRow, ...]:
     rows: list[EchoWorksheetRow] = []
     for assignment in plan.assignments:
-        crystal = assignment.crystal
-        plate_format = plate_format_by_id(crystal.plate_format_id)
+        selected_well = assignment.selected_well
+        plate_format = plate_format_by_id(selected_well.plate_format_id)
         if plate_format is None:
-            raise ValueError(f"unsupported plate format for {crystal.image_key}")
+            raise ValueError(
+                f"unsupported plate format for {selected_well.image_key}"
+            )
         destination_well = plate_format.echo_destination_well(
-            crystal.destination_well
+            selected_well.well_address
         )
         for transfer in assignment.transfers:
             x_um, y_um = plate_format.echo_offset_um(
-                crystal.destination_well,
-                float(transfer.target.x_mm),
-                float(transfer.target.y_mm),
+                selected_well.well_address,
+                float(transfer.position.x_mm),
+                float(transfer.position.y_mm),
             )
             rows.append(
                 EchoWorksheetRow(
                     assignment.fragment.source_plate,
                     assignment.fragment.source_well,
                     transfer.volume_nl,
-                    crystal.destination_plate,
-                    crystal.destination_well,
+                    selected_well.plate_code,
+                    selected_well.well_address,
                     destination_well,
                     Decimal(str(round(x_um, 6))),
                     Decimal(str(round(y_um, 6))),
@@ -126,25 +128,29 @@ def build_shifter_worksheet(
     plan: FragmentScreenPlan | RawCrystalPlan,
 ) -> tuple[ShifterWorksheetRow, ...]:
     if isinstance(plan, RawCrystalPlan):
-        crystals = plan.crystals
+        selected_wells = plan.selected_wells
     else:
-        crystals = tuple(assignment.crystal for assignment in plan.assignments)
-    return build_shifter_worksheet_for_crystals(crystals)
+        selected_wells = tuple(
+            assignment.selected_well for assignment in plan.assignments
+        )
+    return build_shifter_worksheet_for_selected_wells(selected_wells)
 
 
-def build_shifter_worksheet_for_crystals(
-    crystals: tuple[SelectedCrystal, ...],
+def build_shifter_worksheet_for_selected_wells(
+    selected_wells: tuple[SelectedWell, ...],
 ) -> tuple[ShifterWorksheetRow, ...]:
     rows: list[ShifterWorksheetRow] = []
-    for crystal in crystals:
-        plate_format = plate_format_by_id(crystal.plate_format_id)
+    for selected_well in selected_wells:
+        plate_format = plate_format_by_id(selected_well.plate_format_id)
         if plate_format is None:
-            raise ValueError(f"unsupported plate format for {crystal.image_key}")
-        well = crystal.destination_well
+            raise ValueError(
+                f"unsupported plate format for {selected_well.image_key}"
+            )
+        well = selected_well.well_address
         rows.append(
             ShifterWorksheetRow(
                 plate_format.instrument_name or plate_format.id,
-                crystal.destination_plate,
+                selected_well.plate_code,
                 well[0],
                 str(int(well[1:3])),
                 well[3],

@@ -8,6 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PyQt5.QtCore import QPoint, Qt
+from PyQt5.QtGui import QPixmap
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QInputDialog, QMessageBox
 
@@ -150,6 +151,34 @@ def test_status_bar_is_visible_before_navigation(tmp_path: Path) -> None:
     app.processEvents()
     assert window.statusBar().isVisible()
     assert window.statusBar().height() > 0
+    window.close()
+    app.processEvents()
+
+
+def test_empty_workspace_clears_image_from_previous_workspace(
+    tmp_path: Path,
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(RockMakerImageRepository(tmp_path))
+    pixmap = QPixmap(20, 20)
+    pixmap.fill(Qt.white)
+    window.image_canvas.set_image(pixmap, ())
+    window.well_input.setText("A01a")
+    window.navigation_label.setText("Plate 2069 · Well A01a")
+
+    window.project_controller.create_project("Empty Workspace")
+    window._adopt_active_review()
+    window._sync_project_widgets()
+
+    assert window.image_canvas.pixmap().isNull()
+    assert window.well_input.text() == ""
+    assert window.navigation_label.text() == "No image set loaded"
+    assert window.review_summary_label.text() == (
+        "Add a plate to the active workspace"
+    )
+    assert window.project_progress_label.text() == "Workspace: no images"
+    assert not window.previous_button.isEnabled()
+    assert not window.next_button.isEnabled()
     window.close()
     app.processEvents()
 

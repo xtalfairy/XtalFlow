@@ -183,6 +183,16 @@ class ImageCanvas(QWidget):
         self.fit_image()
         self.update()
 
+    def clear_image(self) -> None:
+        self._pixmap = QPixmap()
+        self._targets = ()
+        self._calibration = None
+        self._calibration_points = ()
+        self._pan_origin = None
+        self._pan_start = None
+        self.fit_image()
+        self.update()
+
     def set_targets(self, targets: tuple[TargetPoint, ...]) -> None:
         self._targets = targets
         self.update()
@@ -2743,10 +2753,17 @@ class ViewerWindow(QMainWindow):
         if self.controller is None:
             self.calibration_service = None
             self.current_calibration = None
+            self._manual_calibration_points = None
+            self.image_canvas.clear_image()
+            self.well_input.clear()
+            self._well_destinations.clear()
+            self.well_completion_model.setStringList([])
             self.navigation_label.setText("No image set loaded")
-            self.review_summary_label.setText("Add a plate to the active project")
+            self.review_summary_label.setText("Add a plate to the active workspace")
+            self.project_progress_label.setText("Workspace: no images")
             self.save_status_label.setText("Not loaded")
             self.image_path_status.set_image_path(None)
+            self.status_message_label.clear()
             self.accept_calibration_button.setEnabled(False)
             self.auto_confirm_plate_checkbox.setEnabled(False)
             self.auto_confirm_plate_checkbox.setChecked(False)

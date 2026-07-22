@@ -8,6 +8,10 @@ class MxLiveReadError(RuntimeError):
     """MxLive could not be read safely or returned an invalid response."""
 
 
+class MxLiveWriteError(RuntimeError):
+    """MxLive rejected or could not safely accept an upload."""
+
+
 @dataclass(frozen=True)
 class MxLiveLabwork:
     experiment_id: str
@@ -60,4 +64,3 @@ def _optional_text(value: object) -> str | None:
     if value is None or value == "None":
         return None
     return str(value)
-

@@ -7,8 +7,8 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import dsa
 
-from xtalflow.domain.mxlive import MxLiveReadError
-from xtalflow.infrastructure.mxlive_client import LegacyMxLiveReadClient
+from xtalflow.domain.mxlive import MxLiveReadError, MxLiveWriteError
+from xtalflow.infrastructure.mxlive_client import LegacyMxLiveReadClient, LegacyMxLiveWriteClient
 from xtalflow.infrastructure.mxlive_client import RequestsJsonTransport
 
 
@@ -21,6 +21,14 @@ class FakeTransport:
         self, url: str, *, timeout_seconds: float, ca_bundle: Path | None
     ) -> object:
         self.calls.append((url, timeout_seconds, ca_bundle))
+        return self.replies.pop(0)
+
+    def post_msgpack(
+        self, url: str, payload: object, *, timeout_seconds: float,
+        ca_bundle: Path | None,
+    ) -> object:
+        self.calls.append((url, timeout_seconds, ca_bundle))
+        self.posted_payload = payload
         return self.replies.pop(0)
 
 
@@ -119,3 +127,34 @@ def test_missing_python_ssl_support_has_an_actionable_error(monkeypatch) -> None
         RequestsJsonTransport().get_json(
             "https://mxlive.example", timeout_seconds=10, ca_bundle=None
         )
+
+
+def test_legacy_mxlive_writer_posts_labwork_list_to_signed_endpoint(
+    tmp_path: Path,
+) -> None:
+    transport = FakeTransport([{"created": 2}])
+    client = LegacyMxLiveWriteClient(
+        "https://mxlive.example", "BL-5C", "fbdd",
+        _key_file(tmp_path / "keys.dsa"), transport=transport,
+    )
+    records = ({"expri_id": "RawCrystal-1", "project_id": "fbdd"},)
+
+    response = client.upload_labworks(records)
+
+    assert response == {"created": 2}
+    assert transport.posted_payload == list(records)
+    assert transport.calls[0][0].startswith(
+        "https://mxlive.example/api/v2/fbdd:"
+    )
+    assert transport.calls[0][0].endswith("/upload_labworks/BL-5C/")
+    assert client.endpoint == "https://mxlive.example/upload_labworks/BL-5C/"
+
+
+def test_writer_rejects_non_object_response(tmp_path: Path) -> None:
+    client = LegacyMxLiveWriteClient(
+        "https://mxlive.example", "BL-5C", "fbdd",
+        _key_file(tmp_path / "keys.dsa"), transport=FakeTransport([["unexpected"]]),
+    )
+
+    with pytest.raises(MxLiveWriteError, match="must be an object"):
+        client.upload_labworks(({"expri_id": "RawCrystal-1"},))

@@ -32,3 +32,4 @@ def test_cli_uses_central_defaults_and_allows_site_overrides() -> None:
     assert str(overridden.echo_dir) == "/echo"
     assert overridden.mxlive_url == "https://mxlive.example"
     assert str(overridden.mxlive_key) == "/keys.dsa"
+    assert defaults.mxlive_config == DEFAULT_SETTINGS.mxlive_config_path

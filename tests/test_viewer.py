@@ -80,7 +80,7 @@ def test_fragment_plan_dialog_previews_and_reassigns_by_plate_well() -> None:
     assert [
         dialog.editor.preview_tabs.tabText(index)
         for index in range(dialog.editor.preview_tabs.count())
-    ] == ["Summary", "ECHO Worksheet", "SHIFTER Worksheet"]
+    ] == ["Summary", "ECHO Worksheet", "SHIFTER Worksheet", "WebDB"]
     assert dialog.editor.echo_table.rowCount() == 2
     assert dialog.editor.shifter_table.rowCount() == 2
     dialog.order_input.setCurrentIndex(
@@ -221,14 +221,81 @@ def test_raw_crystal_plan_has_shifter_preview_without_echo(tmp_path: Path) -> No
     window.main_tabs.setCurrentIndex(window.planning_tab_index)
     window._add_raw_crystal_plan((crystal,))
     editor = window.plan_stack.currentWidget()
+    editor.set_crystals((crystal,))
     editor.protein_input.setText("BRD4")
     window._persist_raw_crystal_draft(editor)
 
     assert editor.current_plan is not None
     assert editor.shifter_table.rowCount() == 1
+    assert editor.preview_tabs.tabText(2) == "WebDB"
+    assert editor.webdb_table.rowCount() == 1
+    assert editor.webdb_table.item(0, 8).text() != ""
     assert not hasattr(editor, "echo_table")
     drafts = store.load_planning_drafts(window.project_controller.active_project.id)
     assert drafts[-1].plan_type == "raw_crystal"
+    window.close()
+    app.processEvents()
+
+
+def test_only_finalized_raw_revision_can_be_uploaded_and_is_audited(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    key = tmp_path / "keys.dsa"
+    key.write_bytes(b"test-key-presence")
+    settings = replace(
+        DEFAULT_SETTINGS,
+        mxlive_base_url="https://mxlive.example",
+        mxlive_key_path=key,
+        mxlive_ca_bundle=None,
+        mxlive_config_path=None,
+    )
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store, settings=settings)
+    crystal = SelectedCrystal(
+        "image-key", "1070", "A01a",
+        (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
+        SWISSCI_MIDI_3_LENS.id, "/rmserver/image.jpg",
+    )
+    window._add_raw_crystal_plan((crystal,))
+    editor = window.plan_stack.currentWidget()
+    editor.set_crystals((crystal,))
+    editor.protein_input.setText("BRD4")
+    assert not editor.webdb_upload_button.isEnabled()
+
+    unexpected_dialogs = []
+    monkeypatch.setattr(
+        QMessageBox, "warning",
+        lambda *args, **kwargs: unexpected_dialogs.append(("warning", args[2])),
+    )
+    monkeypatch.setattr(
+        QMessageBox, "critical",
+        lambda *args, **kwargs: unexpected_dialogs.append(("critical", args[2])),
+    )
+
+    revision = window._finalize_raw_crystal_plan(editor)
+    assert revision is not None, unexpected_dialogs
+    assert editor.webdb_upload_button.isEnabled()
+
+    class FakeWriter:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def upload_labworks(self, records):
+            assert records[0]["plate_imgpath"] == "/rmserver/image.jpg"
+            return {"created": len(records)}
+
+    monkeypatch.setattr("xtalflow.viewer.LegacyMxLiveWriteClient", FakeWriter)
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: QMessageBox.Ok)
+    window._upload_raw_labworks(editor)
+
+    events = store.list_webdb_uploads(revision.id)
+    assert len(events) == 1
+    assert events[0].status == "succeeded"
+    assert events[0].account_id == events[0].username
+    assert not editor.webdb_upload_button.isEnabled()
+    assert unexpected_dialogs == []
     window.close()
     app.processEvents()
 

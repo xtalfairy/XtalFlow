@@ -6,3 +6,4 @@ PyQt5==5.15.11
 cryptography==45.0.5
 msgpack==1.1.1
 requests==2.32.4
+tomli==2.2.1; python_version < "3.11"

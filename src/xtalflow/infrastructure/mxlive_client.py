@@ -15,12 +15,20 @@ from xtalflow.domain.mxlive import (
     MxLiveLabwork,
     MxLiveReadError,
     MxLiveSample,
+    MxLiveWriteError,
 )
 
 
 class JsonHttpTransport(Protocol):
     def get_json(
         self, url: str, *, timeout_seconds: float, ca_bundle: Path | None
+    ) -> object: ...
+
+
+class MsgpackHttpTransport(Protocol):
+    def post_msgpack(
+        self, url: str, payload: object, *, timeout_seconds: float,
+        ca_bundle: Path | None,
     ) -> object: ...
 
 
@@ -47,6 +55,30 @@ class RequestsJsonTransport:
             raise MxLiveReadError(f"MxLive request failed ({detail})") from error
         except ValueError as error:
             raise MxLiveReadError("MxLive returned invalid JSON") from error
+
+    def post_msgpack(
+        self, url: str, payload: object, *, timeout_seconds: float,
+        ca_bundle: Path | None,
+    ) -> object:
+        try:
+            response = requests.post(
+                url,
+                data=msgpack.packb(payload, use_bin_type=True),
+                timeout=timeout_seconds,
+                verify=str(ca_bundle) if ca_bundle is not None else True,
+            )
+            response.raise_for_status()
+            return response.json()
+        except ImportError as error:
+            raise MxLiveWriteError(
+                "Python SSL support is unavailable; use a Python build with the ssl module"
+            ) from error
+        except requests.RequestException as error:
+            status = error.response.status_code if error.response is not None else None
+            detail = f"HTTP {status}" if status is not None else type(error).__name__
+            raise MxLiveWriteError(f"MxLive upload failed ({detail})") from error
+        except ValueError as error:
+            raise MxLiveWriteError("MxLive returned invalid JSON after upload") from error
 
 
 class DsaUrlSigner:
@@ -146,6 +178,59 @@ class LegacyMxLiveReadClient:
         ):
             raise MxLiveReadError("MxLive response must be a list of objects")
         return tuple(payload)
+
+
+class LegacyMxLiveWriteClient:
+    """Write only the legacy labworks endpoint using authenticated HTTPS."""
+
+    def __init__(
+        self, base_url: str, beamline: str, username: str, key_path: Path, *,
+        ca_bundle: Path | None = None, timeout_seconds: float = 10.0,
+        transport: MsgpackHttpTransport | None = None,
+    ) -> None:
+        if not base_url.startswith("https://"):
+            raise ValueError("MxLive base URL must use HTTPS")
+        if not beamline.strip() or "/" in beamline:
+            raise ValueError("invalid MxLive beamline")
+        if timeout_seconds <= 0:
+            raise ValueError("MxLive timeout must be positive")
+        if ca_bundle is not None and not ca_bundle.is_file():
+            raise MxLiveWriteError(f"MxLive CA bundle does not exist: {ca_bundle}")
+        self.base_url = base_url.rstrip("/")
+        self.beamline = beamline
+        self.username = username
+        self.ca_bundle = ca_bundle
+        self.timeout_seconds = timeout_seconds
+        self.transport = transport or RequestsJsonTransport()
+        try:
+            private_key = load_legacy_mxlive_private_key(key_path)
+            self.signer = DsaUrlSigner(private_key)
+        except MxLiveReadError as error:
+            raise MxLiveWriteError(str(error)) from error
+
+    @property
+    def endpoint(self) -> str:
+        return f"{self.base_url}/upload_labworks/{self.beamline}/"
+
+    def upload_labworks(
+        self, records: tuple[Mapping[str, Any], ...]
+    ) -> Mapping[str, Any]:
+        if not records:
+            raise ValueError("at least one labwork record is required")
+        if not all(isinstance(record, Mapping) for record in records):
+            raise ValueError("labwork records must be mappings")
+        signed_user = quote(self.signer.sign(self.username), safe=":=_-")
+        url = (
+            f"{self.base_url}/api/v2/{signed_user}/upload_labworks/"
+            f"{quote(self.beamline)}/"
+        )
+        response = self.transport.post_msgpack(
+            url, list(records), timeout_seconds=self.timeout_seconds,
+            ca_bundle=self.ca_bundle,
+        )
+        if not isinstance(response, Mapping):
+            raise MxLiveWriteError("MxLive upload response must be an object")
+        return response
 
 
 def _base62_encode(value: int) -> str:

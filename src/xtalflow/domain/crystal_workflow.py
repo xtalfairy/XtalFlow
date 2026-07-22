@@ -36,6 +36,7 @@ class SelectedCrystal:
     destination_well: str
     targets: tuple[CrystalTarget, ...]
     plate_format_id: str = ""
+    image_path: str = ""
 
     def __post_init__(self) -> None:
         if not self.image_key or not self.destination_plate or not self.destination_well:
@@ -66,4 +67,3 @@ def _plate_well_sort_key(crystal: SelectedCrystal) -> tuple[object, ...]:
         raise ValueError(f"invalid destination well: {crystal.destination_well}")
     row, column, suffix = match.groups()
     return (*plate_key, ord(row) - ord("A"), int(column), suffix)
-

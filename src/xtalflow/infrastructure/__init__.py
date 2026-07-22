@@ -5,7 +5,7 @@ from .rmserver import (
 )
 from .review_store import SQLiteReviewStore
 from .well_detector import OpenCVWellDetector
-from .mxlive_client import LegacyMxLiveReadClient
+from .mxlive_client import LegacyMxLiveReadClient, LegacyMxLiveWriteClient
 
 __all__ = [
     "InvalidPlateCodeError",
@@ -14,4 +14,5 @@ __all__ = [
     "RockMakerImageRepository",
     "SQLiteReviewStore",
     "LegacyMxLiveReadClient",
+    "LegacyMxLiveWriteClient",
 ]

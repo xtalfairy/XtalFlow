@@ -375,6 +375,7 @@ class ProjectController:
                     address,
                     tuple(targets),
                     plate_format.id,
+                    str(first.image.path),
                 )
             )
         return tuple(crystals)

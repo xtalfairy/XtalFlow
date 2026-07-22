@@ -1,0 +1,14 @@
+# Copy this file to /etc/xtalflow/xtalflow.toml on the operating server.
+# Store only key paths here; never store private-key contents.
+
+[mxlive]
+base_url = "https://mxlive.postech.ac.kr"
+beamline = "BL-5C"
+ca_bundle = "/etc/pki/tls/certs/ca-bundle.crt"
+
+# The table name is the local OS username. The values identify the MxLive
+# account. Omit this table when all three usernames/IDs are identical.
+[mxlive.accounts.local_user]
+username = "mxlive_user"
+account_id = "mxlive_account_id"
+key_path = "/data/users/local_user/.config/mxdc/keys.dsa"

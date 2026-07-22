@@ -28,6 +28,7 @@ class ApplicationSettings:
     mxlive_key_path: Path | None = None
     mxlive_ca_bundle: Path | None = None
     mxlive_timeout_seconds: float = 10.0
+    mxlive_config_path: Path | None = None
 
 
 DEVELOPMENT_SETTINGS = ApplicationSettings(
@@ -63,6 +64,8 @@ OPERATING_SERVER_SETTINGS = ApplicationSettings(
     shifter2_output_directory=Path("/smbmount/shifter2"),
     create_missing_instrument_roots=False,
     mxlive_base_url="https://mxlive.postech.ac.kr",
+    mxlive_ca_bundle=Path("/etc/pki/tls/certs/ca-bundle.crt"),
+    mxlive_config_path=Path("/etc/xtalflow/xtalflow.toml"),
     # Legacy resolves /data/users/{username}/.config/mxdc/keys.dsa. Supply the
     # user-specific path with --mxlive-key rather than embedding an account.
 )

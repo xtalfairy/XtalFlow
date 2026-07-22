@@ -41,3 +41,18 @@ class WorksheetExportEvent:
     shifter1_path: str | None = None
     shifter2_path: str | None = None
     error_message: str | None = None
+
+
+@dataclass(frozen=True)
+class WebDBUploadEvent:
+    id: str
+    revision_id: str
+    username: str
+    account_id: str
+    endpoint: str
+    attempted_at: datetime
+    status: str
+    record_count: int
+    payload_json: str
+    response_json: str | None = None
+    error_message: str | None = None

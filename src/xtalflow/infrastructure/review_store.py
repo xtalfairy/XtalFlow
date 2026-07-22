@@ -20,6 +20,7 @@ from xtalflow.domain.fragment_screening import Fragment, FragmentLibrary
 from xtalflow.domain.plan_lifecycle import (
     PlanningDraft,
     PlanRevision,
+    WebDBUploadEvent,
     WorksheetExportEvent,
 )
 from xtalflow.infrastructure.fragment_library_csv import (
@@ -589,6 +590,38 @@ class SQLiteReviewStore:
         ).fetchall()
         return tuple(
             WorksheetExportEvent(row[0], row[1], row[2], datetime.fromisoformat(row[3]), *row[4:])
+            for row in rows
+        )
+
+    def record_webdb_upload(self, event: WebDBUploadEvent) -> None:
+        try:
+            with self._connection:
+                self._connection.execute(
+                    "INSERT INTO webdb_upload_event VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        event.id, event.revision_id, event.username,
+                        event.account_id, event.endpoint,
+                        event.attempted_at.isoformat(), event.status,
+                        event.record_count, event.payload_json,
+                        event.response_json, event.error_message,
+                    ),
+                )
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError("could not record WebDB upload") from error
+
+    def list_webdb_uploads(self, revision_id: str) -> tuple[WebDBUploadEvent, ...]:
+        rows = self._connection.execute(
+            """SELECT upload_id, revision_id, username, account_id, endpoint,
+                      attempted_at, status, record_count, payload_json,
+                      response_json, error_message
+               FROM webdb_upload_event WHERE revision_id = ? ORDER BY attempted_at""",
+            (revision_id,),
+        ).fetchall()
+        return tuple(
+            WebDBUploadEvent(
+                row[0], row[1], row[2], row[3], row[4],
+                datetime.fromisoformat(row[5]), *row[6:]
+            )
             for row in rows
         )
 

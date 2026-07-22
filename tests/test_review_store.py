@@ -15,7 +15,9 @@ from xtalflow.domain import (
 )
 from xtalflow.infrastructure.review_migrations import LATEST_SCHEMA_VERSION
 from xtalflow.infrastructure import SQLiteReviewStore
-from xtalflow.domain.plan_lifecycle import PlanningDraft, PlanRevision, WorksheetExportEvent
+from xtalflow.domain.plan_lifecycle import (
+    PlanningDraft, PlanRevision, WebDBUploadEvent, WorksheetExportEvent,
+)
 
 
 def test_sqlite_store_replaces_and_restores_image_snapshot(tmp_path: Path) -> None:
@@ -133,6 +135,14 @@ def test_planning_draft_revision_and_export_lifecycle(tmp_path: Path) -> None:
     )
     store.record_worksheet_export(export)
     assert store.list_worksheet_exports(second.id) == (export,)
+    upload = WebDBUploadEvent(
+        "upload-1", second.id, "fbdd", "fbdd",
+        "https://mxlive.example/upload_labworks/BL-5C/", now,
+        "succeeded", 2, '[{"expri_id":"FragSC-1"}]',
+        '{"created":2}', None,
+    )
+    store.record_webdb_upload(upload)
+    assert store.list_webdb_uploads(second.id) == (upload,)
     store.close()
 
 

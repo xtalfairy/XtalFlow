@@ -80,11 +80,18 @@ from xtalflow.domain.fragment_screening import (
 )
 from xtalflow.domain.experiment_naming import suggest_experiment_id
 from xtalflow.domain.raw_crystal import RawCrystalPlan, build_raw_crystal_plan
+from xtalflow.domain.labwork import (
+    LABWORK_COLUMNS,
+    build_fragment_labworks,
+    build_raw_crystal_labworks,
+)
 from xtalflow.domain.plan_lifecycle import (
     PlanningDraft,
     PlanRevision,
+    WebDBUploadEvent,
     WorksheetExportEvent,
 )
+from xtalflow.domain.mxlive import MxLiveWriteError
 from xtalflow.domain.worksheets import (
     ECHO_HEADER,
     SHIFTER_HEADER,
@@ -92,6 +99,7 @@ from xtalflow.domain.worksheets import (
     build_shifter_worksheet,
 )
 from xtalflow.infrastructure import (
+    LegacyMxLiveWriteClient,
     PlateImagesNotFoundError,
     OpenCVWellDetector,
     RockMakerImageRepository,
@@ -104,6 +112,11 @@ from xtalflow.infrastructure.fragment_library_csv import (
 from xtalflow.infrastructure.worksheet_exporter import (
     WorksheetDestinationUnavailable,
     WorksheetExporter,
+)
+from xtalflow.infrastructure.mxlive_config import (
+    MxLiveAccount,
+    MxLiveConfigurationError,
+    resolve_mxlive_account,
 )
 from xtalflow.presentation import AspectFitTransform, ProjectImageSetListModel
 from xtalflow.settings import ApplicationSettings, DEFAULT_SETTINGS
@@ -448,6 +461,7 @@ class FragmentScreeningEditor(QWidget):
     save_worksheets_requested = pyqtSignal()
     finalize_requested = pyqtSignal()
     draft_changed = pyqtSignal()
+    webdb_upload_requested = pyqtSignal()
 
     def __init__(
         self,
@@ -460,6 +474,8 @@ class FragmentScreeningEditor(QWidget):
         self.library: FragmentLibrary | None = None
         self.crystals = crystals
         self.current_plan = None
+        self.current_experiment_id: str | None = None
+        self.mxlive_account: MxLiveAccount | None = None
         self.library_input = QComboBox()
         self.library_input.setMinimumWidth(260)
         self.refresh_libraries_button = QPushButton("Refresh Libraries")
@@ -512,6 +528,24 @@ class FragmentScreeningEditor(QWidget):
         self.preview_tabs.addTab(self.table, "Summary")
         self.preview_tabs.addTab(self.echo_table, "ECHO Worksheet")
         self.preview_tabs.addTab(self.shifter_table, "SHIFTER Worksheet")
+        self.webdb_status_label = QLabel("MxLive account: not configured")
+        self.webdb_table = QTableWidget(0, len(LABWORK_COLUMNS))
+        self.webdb_table.setHorizontalHeaderLabels(LABWORK_COLUMNS)
+        self.webdb_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.webdb_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.webdb_table.verticalHeader().setVisible(False)
+        self.webdb_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeToContents
+        )
+        self.webdb_upload_button = QPushButton("Upload Finalized Revision…")
+        self.webdb_upload_button.setEnabled(False)
+        webdb_widget = QWidget()
+        webdb_layout = QVBoxLayout()
+        webdb_layout.addWidget(self.webdb_status_label)
+        webdb_layout.addWidget(self.webdb_table, 1)
+        webdb_layout.addWidget(self.webdb_upload_button)
+        webdb_widget.setLayout(webdb_layout)
+        self.preview_tabs.addTab(webdb_widget, "WebDB")
 
         controls = QHBoxLayout()
         controls.addWidget(QLabel("Library rows:"))
@@ -553,6 +587,7 @@ class FragmentScreeningEditor(QWidget):
             self.save_worksheets_requested.emit
         )
         self.finalize_button.clicked.connect(self.finalize_requested.emit)
+        self.webdb_upload_button.clicked.connect(self.webdb_upload_requested.emit)
         if initial_library is not None:
             self.set_library_choices(
                 ((
@@ -568,6 +603,10 @@ class FragmentScreeningEditor(QWidget):
         self.crystals = crystals
         self.refresh_plan()
 
+    def set_mxlive_account(self, account: MxLiveAccount) -> None:
+        self.mxlive_account = account
+        self.refresh_plan()
+
     def set_experiment_id_provider(
         self, provider: Callable[[str], str]
     ) -> None:
@@ -576,17 +615,23 @@ class FragmentScreeningEditor(QWidget):
 
     def _refresh_experiment_id(self) -> None:
         if self._experiment_id_provider is None:
+            self.current_experiment_id = None
             self.experiment_id_label.setText("Experiment ID: —")
             self.save_worksheets_button.setEnabled(False)
+            self._refresh_webdb_preview()
             return
         try:
             experiment_id = self._experiment_id_provider(self.protein_input.text())
         except ValueError as error:
+            self.current_experiment_id = None
             self.experiment_id_label.setText(f"Experiment ID: {error}")
             self.save_worksheets_button.setEnabled(False)
+            self._refresh_webdb_preview()
             return
+        self.current_experiment_id = experiment_id
         self.experiment_id_label.setText(f"Experiment ID: {experiment_id}")
         self.save_worksheets_button.setEnabled(self.current_plan is not None)
+        self._refresh_webdb_preview()
 
     def set_library_choices(
         self,
@@ -640,7 +685,9 @@ class FragmentScreeningEditor(QWidget):
             self.table.setRowCount(0)
             self.echo_table.setRowCount(0)
             self.shifter_table.setRowCount(0)
+            self.webdb_table.setRowCount(0)
             self.save_worksheets_button.setEnabled(False)
+            self._refresh_webdb_preview()
             self.draft_changed.emit()
             return
         self.current_plan = plan
@@ -667,7 +714,28 @@ class FragmentScreeningEditor(QWidget):
             tuple(row.values() for row in build_shifter_worksheet(plan)),
         )
         self._refresh_experiment_id()
+        self._refresh_webdb_preview()
         self.draft_changed.emit()
+
+    def _refresh_webdb_preview(self) -> None:
+        account = self.mxlive_account
+        if account is None:
+            self.webdb_table.setRowCount(0)
+            self.webdb_status_label.setText("MxLive account: not configured")
+            return
+        if self.current_plan is None or not self.current_experiment_id:
+            self.webdb_table.setRowCount(0)
+            _set_webdb_account_status(self.webdb_status_label, account, 0)
+            return
+        records = build_fragment_labworks(
+            self.current_plan,
+            experiment_id=self.current_experiment_id,
+            protein_name=self.protein_input.text().strip(),
+            username=account.username,
+            account_id=account.account_id,
+        )
+        _populate_webdb_table(self.webdb_table, records)
+        _set_webdb_account_status(self.webdb_status_label, account, len(records))
 
     def restore_draft(self, draft: PlanningDraft) -> None:
         widgets = (self.library_input, self.rows_input, self.protein_input,
@@ -704,6 +772,7 @@ class RawCrystalEditor(QWidget):
     save_worksheet_requested = pyqtSignal()
     finalize_requested = pyqtSignal()
     draft_changed = pyqtSignal()
+    webdb_upload_requested = pyqtSignal()
 
     def __init__(
         self, crystals: tuple[SelectedCrystal, ...], parent: QWidget | None = None
@@ -711,6 +780,8 @@ class RawCrystalEditor(QWidget):
         super().__init__(parent)
         self.crystals = crystals
         self.current_plan: RawCrystalPlan | None = None
+        self.current_experiment_id: str | None = None
+        self.mxlive_account: MxLiveAccount | None = None
         self.protein_input = QLineEdit()
         self.protein_input.setPlaceholderText("Protein name")
         self.order_input = QComboBox()
@@ -735,9 +806,27 @@ class RawCrystalEditor(QWidget):
             table.verticalHeader().setVisible(False)
             table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
             table.horizontalHeader().setStretchLastSection(True)
-        tabs = QTabWidget()
-        tabs.addTab(self.summary_table, "Summary")
-        tabs.addTab(self.shifter_table, "SHIFTER Worksheet")
+        self.preview_tabs = QTabWidget()
+        self.preview_tabs.addTab(self.summary_table, "Summary")
+        self.preview_tabs.addTab(self.shifter_table, "SHIFTER Worksheet")
+        self.webdb_status_label = QLabel("MxLive account: not configured")
+        self.webdb_table = QTableWidget(0, len(LABWORK_COLUMNS))
+        self.webdb_table.setHorizontalHeaderLabels(LABWORK_COLUMNS)
+        self.webdb_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.webdb_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.webdb_table.verticalHeader().setVisible(False)
+        self.webdb_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeToContents
+        )
+        self.webdb_upload_button = QPushButton("Upload Finalized Revision…")
+        self.webdb_upload_button.setEnabled(False)
+        webdb_widget = QWidget()
+        webdb_layout = QVBoxLayout()
+        webdb_layout.addWidget(self.webdb_status_label)
+        webdb_layout.addWidget(self.webdb_table, 1)
+        webdb_layout.addWidget(self.webdb_upload_button)
+        webdb_widget.setLayout(webdb_layout)
+        self.preview_tabs.addTab(webdb_widget, "WebDB")
         controls = QHBoxLayout()
         controls.addWidget(QLabel("Protein:"))
         controls.addWidget(self.protein_input)
@@ -750,7 +839,7 @@ class RawCrystalEditor(QWidget):
         layout = QVBoxLayout()
         layout.addLayout(controls)
         layout.addWidget(self.error_label)
-        layout.addWidget(tabs, 1)
+        layout.addWidget(self.preview_tabs, 1)
         self.setLayout(layout)
         self._experiment_id_provider: Callable[[str], str] | None = None
         self.protein_input.textChanged.connect(self._refresh_experiment_id)
@@ -758,6 +847,7 @@ class RawCrystalEditor(QWidget):
         self.order_input.currentIndexChanged.connect(self.refresh_plan)
         self.finalize_button.clicked.connect(self.finalize_requested.emit)
         self.save_worksheet_button.clicked.connect(self.save_worksheet_requested.emit)
+        self.webdb_upload_button.clicked.connect(self.webdb_upload_requested.emit)
         self.refresh_plan()
 
     def set_experiment_id_provider(self, provider: Callable[[str], str]) -> None:
@@ -766,6 +856,10 @@ class RawCrystalEditor(QWidget):
 
     def set_crystals(self, crystals: tuple[SelectedCrystal, ...]) -> None:
         self.crystals = crystals
+        self.refresh_plan()
+
+    def set_mxlive_account(self, account: MxLiveAccount) -> None:
+        self.mxlive_account = account
         self.refresh_plan()
 
     def restore_draft(self, draft: PlanningDraft) -> None:
@@ -780,17 +874,23 @@ class RawCrystalEditor(QWidget):
 
     def _refresh_experiment_id(self) -> None:
         if self._experiment_id_provider is None:
+            self.current_experiment_id = None
             self.experiment_id_label.setText("Experiment ID: —")
             self.save_worksheet_button.setEnabled(False)
+            self._refresh_webdb_preview()
             return
         try:
             experiment_id = self._experiment_id_provider(self.protein_input.text())
         except ValueError as error:
+            self.current_experiment_id = None
             self.experiment_id_label.setText(f"Experiment ID: {error}")
             self.save_worksheet_button.setEnabled(False)
+            self._refresh_webdb_preview()
             return
+        self.current_experiment_id = experiment_id
         self.experiment_id_label.setText(f"Experiment ID: {experiment_id}")
         self.save_worksheet_button.setEnabled(self.current_plan is not None)
+        self._refresh_webdb_preview()
 
     def refresh_plan(self) -> None:
         try:
@@ -803,7 +903,9 @@ class RawCrystalEditor(QWidget):
             self.error_label.setText(str(error))
             self.summary_table.setRowCount(0)
             self.shifter_table.setRowCount(0)
+            self.webdb_table.setRowCount(0)
             self.save_worksheet_button.setEnabled(False)
+            self._refresh_webdb_preview()
             self.draft_changed.emit()
             return
         self.current_plan = plan
@@ -820,7 +922,51 @@ class RawCrystalEditor(QWidget):
             self.shifter_table, tuple(row.values() for row in rows)
         )
         self._refresh_experiment_id()
+        self._refresh_webdb_preview()
         self.draft_changed.emit()
+
+    def _refresh_webdb_preview(self) -> None:
+        account = self.mxlive_account
+        if account is None:
+            self.webdb_table.setRowCount(0)
+            self.webdb_status_label.setText("MxLive account: not configured")
+            return
+        if self.current_plan is None or not self.current_experiment_id:
+            self.webdb_table.setRowCount(0)
+            _set_webdb_account_status(self.webdb_status_label, account, 0)
+            return
+        records = build_raw_crystal_labworks(
+            self.current_plan,
+            experiment_id=self.current_experiment_id,
+            protein_name=self.protein_input.text().strip(),
+            username=account.username,
+            account_id=account.account_id,
+        )
+        _populate_webdb_table(self.webdb_table, records)
+        _set_webdb_account_status(self.webdb_status_label, account, len(records))
+
+
+def _populate_webdb_table(table: QTableWidget, records: tuple) -> None:
+    table.setRowCount(len(records))
+    for row_index, record in enumerate(records):
+        payload = record.to_payload()
+        values = tuple(str(payload[column]) for column in LABWORK_COLUMNS)
+        tooltip = json.dumps(payload, ensure_ascii=False, indent=2)
+        for column, value in enumerate(values):
+            item = QTableWidgetItem(value)
+            item.setToolTip(tooltip)
+            table.setItem(row_index, column, item)
+
+
+def _set_webdb_account_status(
+    label: QLabel, account: MxLiveAccount, record_count: int
+) -> None:
+    state = "Ready" if account.upload_ready else "Preview only"
+    label.setText(
+        f"MxLive account: {account.username} · API project_id: "
+        f"{account.account_id} · {record_count} records · {state}"
+    )
+    label.setToolTip("\n".join(account.upload_blockers))
 
 
 class FragmentScreeningDialog(QDialog):
@@ -868,6 +1014,18 @@ class ViewerWindow(QMainWindow):
         self.repository = repository
         self.review_store = review_store
         self.settings = settings or DEFAULT_SETTINGS
+        try:
+            self.mxlive_account = resolve_mxlive_account(
+                self.settings.mxlive_config_path,
+                base_url=self.settings.mxlive_base_url,
+                beamline=self.settings.mxlive_beamline,
+                key_path=self.settings.mxlive_key_path,
+                ca_bundle=self.settings.mxlive_ca_bundle,
+            )
+            self.mxlive_configuration_error: str | None = None
+        except MxLiveConfigurationError as error:
+            self.mxlive_account = None
+            self.mxlive_configuration_error = str(error)
         self.project_controller = ProjectController(
             repository, review_store, auto_advance_target_count
         )
@@ -1345,6 +1503,10 @@ class ViewerWindow(QMainWindow):
             self._refresh_fragment_library_choices
         )
         editor.set_experiment_id_provider(self._suggest_fragment_experiment_id)
+        if self.mxlive_account is not None:
+            editor.set_mxlive_account(self.mxlive_account)
+        elif self.mxlive_configuration_error:
+            editor.webdb_status_label.setText(self.mxlive_configuration_error)
         editor.save_worksheets_requested.connect(
             lambda selected_editor=editor: self._save_fragment_worksheets(
                 selected_editor
@@ -1352,6 +1514,11 @@ class ViewerWindow(QMainWindow):
         )
         editor.finalize_requested.connect(
             lambda selected_editor=editor: self._finalize_fragment_plan(selected_editor)
+        )
+        editor.webdb_upload_requested.connect(
+            lambda selected_editor=editor: self._upload_fragment_labworks(
+                selected_editor
+            )
         )
         editor.draft_changed.connect(
             lambda selected_editor=editor: self._planning_draft_changed(selected_editor)
@@ -1372,6 +1539,7 @@ class ViewerWindow(QMainWindow):
                 if self._fragment_plan_snapshot(editor) == editor.last_revision_snapshot:
                     editor.lifecycle_label.setText(f"Finalized r{revisions[-1].revision}")
                     self._set_plan_list_status(editor, f"Finalized r{revisions[-1].revision}")
+                    self._sync_webdb_upload_state(editor)
                 else:
                     editor.lifecycle_label.setText("Draft · restored with changes")
                     self._set_plan_list_status(editor, "Draft")
@@ -1380,6 +1548,7 @@ class ViewerWindow(QMainWindow):
         if not hasattr(editor, "autosave_timer"):
             return
         editor.lifecycle_label.setText("Draft · saving…")
+        editor.webdb_upload_button.setEnabled(False)
         self._set_plan_list_status(editor, "Draft")
         editor.autosave_timer.start()
 
@@ -1408,11 +1577,18 @@ class ViewerWindow(QMainWindow):
         if restored is not None:
             editor.restore_draft(restored)
         editor.set_experiment_id_provider(self._suggest_raw_crystal_experiment_id)
+        if self.mxlive_account is not None:
+            editor.set_mxlive_account(self.mxlive_account)
+        elif self.mxlive_configuration_error:
+            editor.webdb_status_label.setText(self.mxlive_configuration_error)
         editor.draft_changed.connect(
             lambda selected_editor=editor: self._raw_crystal_draft_changed(selected_editor)
         )
         editor.finalize_requested.connect(
             lambda selected_editor=editor: self._finalize_raw_crystal_plan(selected_editor)
+        )
+        editor.webdb_upload_requested.connect(
+            lambda selected_editor=editor: self._upload_raw_labworks(selected_editor)
         )
         editor.save_worksheet_requested.connect(
             lambda selected_editor=editor: self._save_raw_crystal_worksheet(selected_editor)
@@ -1433,6 +1609,7 @@ class ViewerWindow(QMainWindow):
                 if self._raw_crystal_snapshot(editor) == editor.last_revision_snapshot:
                     editor.lifecycle_label.setText(f"Finalized r{revisions[-1].revision}")
                     self._set_plan_list_status(editor, f"Finalized r{revisions[-1].revision}")
+                    self._sync_webdb_upload_state(editor)
                 else:
                     editor.lifecycle_label.setText("Draft · restored with changes")
                     self._set_plan_list_status(editor, "Draft")
@@ -1441,6 +1618,7 @@ class ViewerWindow(QMainWindow):
         if not hasattr(editor, "autosave_timer"):
             return
         editor.lifecycle_label.setText("Draft · saving…")
+        editor.webdb_upload_button.setEnabled(False)
         self._set_plan_list_status(editor, "Draft")
         editor.autosave_timer.start()
 
@@ -1464,6 +1642,7 @@ class ViewerWindow(QMainWindow):
         if editor.last_revision is not None and snapshot == editor.last_revision_snapshot:
             editor.lifecycle_label.setText(f"Finalized r{editor.last_revision.revision}")
             self._set_plan_list_status(editor, f"Finalized r{editor.last_revision.revision}")
+            self._sync_webdb_upload_state(editor)
         else:
             editor.lifecycle_label.setText("Draft · saved")
             self._set_plan_list_status(editor, "Draft")
@@ -1478,6 +1657,7 @@ class ViewerWindow(QMainWindow):
             "assignment_order": plan.assignment_order.value,
             "selections": [
                 {"image_key": selection.crystal.image_key,
+                 "image_path": selection.crystal.image_path,
                  "plate": selection.crystal.destination_plate,
                  "well": selection.crystal.destination_well,
                  "plate_format_id": selection.crystal.plate_format_id,
@@ -1520,6 +1700,7 @@ class ViewerWindow(QMainWindow):
         editor.last_revision_snapshot = snapshot
         editor.lifecycle_label.setText(f"Finalized r{revision.revision}")
         self._set_plan_list_status(editor, f"Finalized r{revision.revision}")
+        self._sync_webdb_upload_state(editor)
         return revision
 
     def _set_plan_list_status(self, editor: FragmentScreeningEditor, status: str) -> None:
@@ -1553,6 +1734,7 @@ class ViewerWindow(QMainWindow):
         if editor.last_revision is not None and editor.last_revision_snapshot == current_snapshot:
             editor.lifecycle_label.setText(f"Finalized r{editor.last_revision.revision}")
             self._set_plan_list_status(editor, f"Finalized r{editor.last_revision.revision}")
+            self._sync_webdb_upload_state(editor)
         else:
             editor.lifecycle_label.setText("Draft · saved")
             self._set_plan_list_status(editor, "Draft")
@@ -1573,6 +1755,7 @@ class ViewerWindow(QMainWindow):
             "assignments": [
                 {
                     "image_key": item.crystal.image_key,
+                    "image_path": item.crystal.image_path,
                     "plate": item.crystal.destination_plate,
                     "well": item.crystal.destination_well,
                     "plate_format_id": item.crystal.plate_format_id,
@@ -1627,7 +1810,151 @@ class ViewerWindow(QMainWindow):
         editor.last_revision_snapshot = snapshot
         editor.lifecycle_label.setText(f"Finalized r{revision.revision}")
         self._set_plan_list_status(editor, f"Finalized r{revision.revision}")
+        self._sync_webdb_upload_state(editor)
         return revision
+
+    def _sync_webdb_upload_state(self, editor) -> None:
+        editor.webdb_upload_button.setEnabled(False)
+        account = self.mxlive_account
+        revision = getattr(editor, "last_revision", None)
+        if account is None or revision is None or not account.upload_ready:
+            return
+        if isinstance(editor, RawCrystalEditor):
+            snapshot = self._raw_crystal_snapshot(editor)
+        else:
+            snapshot = self._fragment_plan_snapshot(editor)
+        if snapshot != editor.last_revision_snapshot:
+            return
+        if self.review_store is not None:
+            prior = self.review_store.list_webdb_uploads(revision.id)
+            if any(event.status == "succeeded" for event in prior):
+                editor.webdb_status_label.setText(
+                    editor.webdb_status_label.text() + " · Uploaded"
+                )
+                editor.webdb_upload_button.setToolTip(
+                    "This finalized revision has already been uploaded."
+                )
+                return
+        editor.webdb_upload_button.setEnabled(True)
+        editor.webdb_upload_button.setToolTip(
+            "Upload this exact finalized revision to MxLive labworks."
+        )
+
+    def _upload_fragment_labworks(self, editor: FragmentScreeningEditor) -> None:
+        if editor.current_plan is None:
+            return
+        self._upload_labworks(
+            editor,
+            build_fragment_labworks(
+                editor.current_plan,
+                experiment_id=editor.last_revision.experiment_id
+                if editor.last_revision else "",
+                protein_name=editor.protein_input.text().strip(),
+                username=self.mxlive_account.username if self.mxlive_account else "",
+                account_id=self.mxlive_account.account_id if self.mxlive_account else "",
+            ),
+        )
+
+    def _upload_raw_labworks(self, editor: RawCrystalEditor) -> None:
+        if editor.current_plan is None:
+            return
+        self._upload_labworks(
+            editor,
+            build_raw_crystal_labworks(
+                editor.current_plan,
+                experiment_id=editor.last_revision.experiment_id
+                if editor.last_revision else "",
+                protein_name=editor.protein_input.text().strip(),
+                username=self.mxlive_account.username if self.mxlive_account else "",
+                account_id=self.mxlive_account.account_id if self.mxlive_account else "",
+            ),
+        )
+
+    def _upload_labworks(self, editor, records: tuple) -> None:
+        account = self.mxlive_account
+        revision = getattr(editor, "last_revision", None)
+        snapshot = (
+            self._raw_crystal_snapshot(editor)
+            if isinstance(editor, RawCrystalEditor)
+            else self._fragment_plan_snapshot(editor)
+        )
+        if (
+            account is None or revision is None
+            or snapshot != editor.last_revision_snapshot
+        ):
+            QMessageBox.warning(
+                self, "Cannot upload", "Finalize the current plan revision first."
+            )
+            return
+        if not account.upload_ready:
+            QMessageBox.warning(
+                self, "Cannot upload", "\n".join(account.upload_blockers)
+            )
+            return
+        endpoint = (
+            f"{account.base_url.rstrip('/')}/upload_labworks/"
+            f"{account.beamline}/"
+        )
+        answer = QMessageBox.question(
+            self,
+            "Upload finalized revision",
+            f"Upload {len(records)} records for {revision.experiment_id}?\n\n"
+            f"Account: {account.username}\n"
+            f"API project_id: {account.account_id}\n"
+            f"Endpoint: {endpoint}",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        payload = tuple(record.to_payload() for record in records)
+        payload_json = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        attempted_at = datetime.now(timezone.utc)
+        response_json = None
+        error_message = None
+        status = "failed"
+        try:
+            client = LegacyMxLiveWriteClient(
+                account.base_url, account.beamline, account.username,
+                account.key_path, ca_bundle=account.ca_bundle,
+                timeout_seconds=self.settings.mxlive_timeout_seconds,
+            )
+            response = client.upload_labworks(payload)
+            response_json = json.dumps(
+                response, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
+            status = "succeeded"
+        except (MxLiveWriteError, ValueError) as error:
+            error_message = str(error)
+        event = WebDBUploadEvent(
+            str(uuid4()), revision.id, account.username, account.account_id,
+            endpoint, attempted_at, status, len(records), payload_json,
+            response_json, error_message,
+        )
+        if self.review_store is not None:
+            try:
+                self.review_store.record_webdb_upload(event)
+            except ReviewPersistenceError as error:
+                QMessageBox.critical(
+                    self, "Upload audit could not be saved",
+                    "MxLive may have accepted the upload, but its local audit record "
+                    f"could not be saved:\n{error}",
+                )
+                editor.webdb_upload_button.setEnabled(False)
+                return
+        if status == "succeeded":
+            self._sync_webdb_upload_state(editor)
+            QMessageBox.information(
+                self, "WebDB upload complete",
+                f"Uploaded {len(records)} records for {revision.experiment_id}.",
+            )
+        else:
+            editor.webdb_status_label.setText(
+                editor.webdb_status_label.text() + " · Last upload failed"
+            )
+            QMessageBox.critical(self, "WebDB upload failed", error_message or "Unknown error")
 
     def _fragment_library_choices(
         self,
@@ -3063,6 +3390,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mxlive-url", default=DEFAULT_SETTINGS.mxlive_base_url)
     parser.add_argument("--mxlive-key", type=Path, default=DEFAULT_SETTINGS.mxlive_key_path)
     parser.add_argument("--mxlive-ca", type=Path, default=DEFAULT_SETTINGS.mxlive_ca_bundle)
+    parser.add_argument(
+        "--mxlive-config", type=Path, default=DEFAULT_SETTINGS.mxlive_config_path,
+        help="external TOML file containing OS-user to MxLive account mappings",
+    )
     return parser
 
 
@@ -3088,6 +3419,7 @@ def main(argv: list[str] | None = None) -> int:
         mxlive_base_url=args.mxlive_url,
         mxlive_key_path=args.mxlive_key,
         mxlive_ca_bundle=args.mxlive_ca,
+        mxlive_config_path=args.mxlive_config,
     )
     try:
         review_store = SQLiteReviewStore(database_path)

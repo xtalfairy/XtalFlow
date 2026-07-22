@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 
-LATEST_SCHEMA_VERSION = 12
+LATEST_SCHEMA_VERSION = 13
 IMPORTED_PROJECT_ID = "imported-standalone-reviews"
 LEGACY_PLATE_FORMAT_ID = "swissci-midi-3-lens-hr3-194"
 LEGACY_PLATE_FORMAT_VERSION = 1
@@ -146,6 +146,23 @@ def _create_planning_schema(connection: sqlite3.Connection) -> None:
             echo_path TEXT,
             shifter1_path TEXT,
             shifter2_path TEXT,
+            error_message TEXT
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS webdb_upload_event (
+            upload_id TEXT PRIMARY KEY,
+            revision_id TEXT NOT NULL REFERENCES plan_revision(revision_id),
+            username TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            endpoint TEXT NOT NULL,
+            attempted_at TEXT NOT NULL,
+            status TEXT NOT NULL,
+            record_count INTEGER NOT NULL CHECK(record_count > 0),
+            payload_json TEXT NOT NULL,
+            response_json TEXT,
             error_message TEXT
         )
         """

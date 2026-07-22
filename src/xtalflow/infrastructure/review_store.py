@@ -9,11 +9,17 @@ from pathlib import Path
 from xtalflow.application import ReviewPersistenceError
 from xtalflow.domain import (
     CalibrationMethod,
+    CrystalSelection,
+    ExperimentPlan,
+    ExperimentProject,
     ImageCalibration,
+    PlanType,
     Project,
     ProjectImageSet,
     ReviewPreferences,
     ReviewProgress,
+    SelectedWell,
+    SoakingPosition,
     TargetPoint,
 )
 from xtalflow.domain.fragment_screening import Fragment, FragmentLibrary
@@ -54,6 +60,149 @@ class SQLiteReviewStore:
                 self._upsert_review_state(progress, preferences)
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not save review state") from error
+
+    def save_experiment_project(self, project: ExperimentProject) -> None:
+        """Persist the complete selected-well snapshot and its single plan."""
+        selection = project.crystal_selection
+        plan = project.plan
+        try:
+            with self._connection:
+                self._connection.execute(
+                    "INSERT OR IGNORE INTO experiment_project VALUES (?, ?, ?, ?)",
+                    (project.id, project.name, project.created_at.isoformat(),
+                     project.updated_at.isoformat()),
+                )
+                self._connection.execute(
+                    """UPDATE experiment_project
+                       SET name = ?, updated_at = ? WHERE project_id = ?""",
+                    (project.name, project.updated_at.isoformat(), project.id),
+                )
+                self._connection.execute(
+                    "INSERT OR IGNORE INTO crystal_selection VALUES (?, ?, ?, ?)",
+                    (selection.id, project.id, selection.created_at.isoformat(),
+                     selection.updated_at.isoformat()),
+                )
+                self._connection.execute(
+                    """UPDATE crystal_selection SET updated_at = ?
+                       WHERE selection_id = ?""",
+                    (selection.updated_at.isoformat(), selection.id),
+                )
+                self._connection.execute(
+                    "DELETE FROM selected_well WHERE selection_id = ?",
+                    (selection.id,),
+                )
+                for well in selection.wells:
+                    self._connection.execute(
+                        """INSERT INTO selected_well VALUES (
+                               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                           )""",
+                        (
+                            well.id, selection.id, well.image_set_id,
+                            well.image_key, well.image_path, well.plate_code,
+                            well.well_address, well.batch_id, well.profile,
+                            well.plate_format_id, well.plate_format_version,
+                            well.selection_order, well.selected_at.isoformat(),
+                        ),
+                    )
+                    self._connection.executemany(
+                        "INSERT INTO soaking_position VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            (
+                                position.id, well.id, position.source_target_id,
+                                position.position_order, str(position.x_mm),
+                                str(position.y_mm), position.selected_at.isoformat(),
+                            )
+                            for position in well.soaking_positions
+                        ),
+                    )
+                self._connection.execute(
+                    "INSERT OR IGNORE INTO experiment_plan VALUES (?, ?, ?, ?, ?)",
+                    (plan.id, project.id, plan.plan_type.value,
+                     plan.created_at.isoformat(), plan.updated_at.isoformat()),
+                )
+                self._connection.execute(
+                    """UPDATE experiment_plan
+                       SET plan_type = ?, updated_at = ? WHERE plan_id = ?""",
+                    (plan.plan_type.value, plan.updated_at.isoformat(), plan.id),
+                )
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError(
+                "could not save experiment project"
+            ) from error
+
+    def load_experiment_projects(self) -> tuple[ExperimentProject, ...]:
+        try:
+            project_rows = self._connection.execute(
+                """SELECT project_id, name, created_at, updated_at
+                   FROM experiment_project ORDER BY created_at, project_id"""
+            ).fetchall()
+            selection_rows = self._connection.execute(
+                """SELECT selection_id, project_id, created_at, updated_at
+                   FROM crystal_selection"""
+            ).fetchall()
+            well_rows = self._connection.execute(
+                """SELECT selected_well_id, selection_id, image_set_id,
+                          image_key, image_path, plate_code, well_address,
+                          batch_id, profile, plate_format_id,
+                          plate_format_version, selection_order, selected_at
+                   FROM selected_well ORDER BY selection_id, selection_order"""
+            ).fetchall()
+            position_rows = self._connection.execute(
+                """SELECT position_id, selected_well_id, source_target_id,
+                          position_order, x_mm, y_mm, selected_at
+                   FROM soaking_position
+                   ORDER BY selected_well_id, position_order"""
+            ).fetchall()
+            plan_rows = self._connection.execute(
+                """SELECT plan_id, project_id, plan_type, created_at, updated_at
+                   FROM experiment_plan"""
+            ).fetchall()
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError(
+                "could not load experiment projects"
+            ) from error
+
+        positions_by_well: dict[str, list[SoakingPosition]] = {}
+        for row in position_rows:
+            positions_by_well.setdefault(row[1], []).append(
+                SoakingPosition(
+                    row[0], row[1], row[2], row[3], Decimal(row[4]),
+                    Decimal(row[5]), datetime.fromisoformat(row[6]),
+                )
+            )
+        wells_by_selection: dict[str, list[SelectedWell]] = {}
+        for row in well_rows:
+            wells_by_selection.setdefault(row[1], []).append(
+                SelectedWell(
+                    id=row[0], crystal_selection_id=row[1], image_set_id=row[2],
+                    image_key=row[3], image_path=row[4], plate_code=row[5],
+                    well_address=row[6], batch_id=row[7], profile=row[8],
+                    plate_format_id=row[9], plate_format_version=row[10],
+                    selection_order=row[11], selected_at=datetime.fromisoformat(row[12]),
+                    soaking_positions=tuple(positions_by_well.get(row[0], [])),
+                )
+            )
+        selections = {
+            row[1]: CrystalSelection(
+                row[0], row[1], tuple(wells_by_selection.get(row[0], [])),
+                datetime.fromisoformat(row[2]), datetime.fromisoformat(row[3]),
+            )
+            for row in selection_rows
+        }
+        plans = {
+            row[1]: ExperimentPlan(
+                row[0], row[1], PlanType(row[2]),
+                datetime.fromisoformat(row[3]), datetime.fromisoformat(row[4]),
+            )
+            for row in plan_rows
+        }
+        return tuple(
+            ExperimentProject(
+                row[0], row[1], selections[row[0]], plans[row[0]],
+                datetime.fromisoformat(row[2]), datetime.fromisoformat(row[3]),
+            )
+            for row in project_rows
+        )
 
     def save_checkpoint(
         self,

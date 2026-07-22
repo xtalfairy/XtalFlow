@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 
-LATEST_SCHEMA_VERSION = 14
+LATEST_SCHEMA_VERSION = 15
 IMPORTED_PROJECT_ID = "imported-standalone-reviews"
 LEGACY_PLATE_FORMAT_ID = "swissci-midi-3-lens-hr3-194"
 LEGACY_PLATE_FORMAT_VERSION = 1
@@ -69,6 +69,7 @@ def migrate_review_database(connection: sqlite3.Connection) -> None:
         _create_project_schema(connection)
         _create_fragment_library_schema(connection)
         _create_planning_schema(connection)
+        _create_experiment_project_schema(connection)
         if starting_version < 10:
             _assign_legacy_selection_times(connection, "target_point")
         _import_standalone_reviews(connection)
@@ -101,6 +102,84 @@ def migrate_review_database(connection: sqlite3.Connection) -> None:
                 """
             )
         connection.execute(f"PRAGMA user_version = {LATEST_SCHEMA_VERSION}")
+
+
+def _create_experiment_project_schema(connection: sqlite3.Connection) -> None:
+    """Add the new project = crystal selection + plan aggregate."""
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS experiment_project (
+            project_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS crystal_selection (
+            selection_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL UNIQUE
+                REFERENCES experiment_project(project_id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS selected_well (
+            selected_well_id TEXT PRIMARY KEY,
+            selection_id TEXT NOT NULL
+                REFERENCES crystal_selection(selection_id) ON DELETE CASCADE,
+            image_set_id TEXT,
+            image_key TEXT NOT NULL,
+            image_path TEXT NOT NULL,
+            plate_code TEXT NOT NULL,
+            well_address TEXT NOT NULL,
+            batch_id INTEGER,
+            profile TEXT NOT NULL,
+            plate_format_id TEXT NOT NULL,
+            plate_format_version INTEGER NOT NULL,
+            selection_order INTEGER NOT NULL CHECK(selection_order > 0),
+            selected_at TEXT NOT NULL,
+            UNIQUE(selection_id, image_key),
+            UNIQUE(selection_id, selection_order)
+        )
+        """
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS selected_well_image_key "
+        "ON selected_well(image_key)"
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS soaking_position (
+            position_id TEXT PRIMARY KEY,
+            selected_well_id TEXT NOT NULL
+                REFERENCES selected_well(selected_well_id) ON DELETE CASCADE,
+            source_target_id TEXT NOT NULL,
+            position_order INTEGER NOT NULL CHECK(position_order > 0),
+            x_mm TEXT NOT NULL,
+            y_mm TEXT NOT NULL,
+            selected_at TEXT NOT NULL,
+            UNIQUE(selected_well_id, position_order)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS experiment_plan (
+            plan_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL UNIQUE
+                REFERENCES experiment_project(project_id) ON DELETE CASCADE,
+            plan_type TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
 
 
 def _create_planning_schema(connection: sqlite3.Connection) -> None:

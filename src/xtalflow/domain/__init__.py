@@ -1,4 +1,11 @@
 from .calibration import CalibrationMethod, ImageCalibration, WellBoundary
+from .crystal_selection import (
+    CrystalSelection,
+    SelectedWell,
+    SoakingPosition,
+    crystal_selection_from_selected_crystals,
+)
+from .experiment_project import ExperimentPlan, ExperimentProject, PlanType
 from .imaging import CrystalImage, PlateImages
 from .project import Project, ProjectImageSet
 from .plate_format import (
@@ -14,8 +21,11 @@ from .review import ImageFilter, ReviewPreferences, ReviewProgress, ReviewSessio
 
 __all__ = [
     "CalibrationMethod",
+    "CrystalSelection",
     "CrystalImage",
     "ImageCalibration",
+    "ExperimentPlan",
+    "ExperimentProject",
     "PlateImages",
     "Project",
     "ProjectImageSet",
@@ -31,5 +41,9 @@ __all__ = [
     "ReviewPreferences",
     "ReviewProgress",
     "ReviewSession",
+    "SelectedWell",
+    "SoakingPosition",
     "TargetPoint",
+    "PlanType",
+    "crystal_selection_from_selected_crystals",
 ]

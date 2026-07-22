@@ -1,19 +1,25 @@
 from pathlib import Path
 import sqlite3
 from datetime import datetime, timezone
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
 
 from xtalflow.domain import (
     CrystalImage,
+    ExperimentPlan,
+    ExperimentProject,
+    PlanType,
     Project,
     ReviewPreferences,
     ReviewProgress,
     ReviewSession,
     TargetPoint,
     SWISSCI_MIDI_3_LENS,
+    crystal_selection_from_selected_crystals,
 )
+from xtalflow.domain.crystal_workflow import CrystalTarget, SelectedCrystal
 from xtalflow.infrastructure.review_migrations import LATEST_SCHEMA_VERSION
 from xtalflow.infrastructure import SQLiteReviewStore
 from xtalflow.domain.plan_lifecycle import (
@@ -49,6 +55,40 @@ def test_sqlite_store_restores_review_state(tmp_path: Path) -> None:
     restored_progress, restored_preferences = restored
     assert restored_preferences.auto_advance_target_count == 3
     assert restored_progress.current_image_key == "second"
+    store.close()
+
+
+def test_experiment_project_selected_wells_round_trip(tmp_path: Path) -> None:
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    now = datetime.now(timezone.utc)
+    source = SelectedCrystal(
+        "image-key", "2069", "A04a",
+        (
+            CrystalTarget("target-1", Decimal("0.1"), Decimal("-0.2"), now),
+            CrystalTarget("target-2", Decimal("0.3"), Decimal("0.4"), now),
+        ),
+        SWISSCI_MIDI_3_LENS.id,
+        "/rmserver/image.jpg",
+    )
+    selection = crystal_selection_from_selected_crystals(
+        "experiment-project", (source,), selection_id="selection"
+    )
+    plan = ExperimentPlan(
+        "experiment-plan", "experiment-project",
+        PlanType.FRAGMENT_SCREENING, now, now,
+    )
+    project = ExperimentProject(
+        "experiment-project", "BRD4 screen", selection, plan, now, now
+    )
+
+    store.save_experiment_project(project)
+    restored = store.load_experiment_projects()
+
+    assert restored == (project,)
+    assert len(restored[0].crystal_selection.wells[0].soaking_positions) == 2
+    assert store._connection.execute("PRAGMA user_version").fetchone()[0] == (
+        LATEST_SCHEMA_VERSION
+    )
     store.close()
 
 

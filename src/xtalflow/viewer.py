@@ -1263,6 +1263,11 @@ class ViewerWindow(QMainWindow):
         self.settings = settings or DEFAULT_SETTINGS
         self.preferences_store = preferences_store or JsonUserPreferencesStore()
         self.user_preferences = self.preferences_store.load()
+        self._global_auto_advance_target_count = (
+            self.user_preferences.auto_advance_target_count
+            if self.user_preferences.auto_advance_target_count is not None
+            else auto_advance_target_count
+        )
         self._trusted_auto_well_image_sets: set[str] = set()
         self._auto_well_opted_out_image_sets: set[str] = set()
         try:
@@ -1278,14 +1283,13 @@ class ViewerWindow(QMainWindow):
             self.mxlive_account = None
             self.mxlive_configuration_error = str(error)
         self.project_controller = ProjectController(
-            repository, review_store, auto_advance_target_count
+            repository, review_store, self._global_auto_advance_target_count
         )
         self.plate: PlateImages | None = None
         self.controller: ReviewController | None = None
         self.calibration_service: WellCalibrationService | None = None
         self.current_calibration: ImageCalibration | None = None
         self._manual_calibration_points: list[tuple[float, float]] | None = None
-        self._initial_auto_advance_target_count = auto_advance_target_count
         self._target_summary_window_expansion = 0
         self._planning_project_id: str | None = None
         self._planning_drafts: dict[
@@ -1345,7 +1349,7 @@ class ViewerWindow(QMainWindow):
         self._refreshing_target_summary = False
         self.auto_advance_input = QSpinBox()
         self.auto_advance_input.setRange(1, 100)
-        self.auto_advance_input.setValue(auto_advance_target_count)
+        self.auto_advance_input.setValue(self._global_auto_advance_target_count)
         self.auto_advance_input.setPrefix("Targets/img: ")
         self.auto_advance_input.setToolTip(
             "Automatically move to the next image after selecting this many targets. "
@@ -3081,9 +3085,10 @@ class ViewerWindow(QMainWindow):
         )
         self.auto_confirm_plate_checkbox.blockSignals(False)
         self.auto_advance_input.blockSignals(True)
-        self.auto_advance_input.setValue(
-            self.controller.preferences.auto_advance_target_count
+        self.controller.preferences.auto_advance_target_count = (
+            self._global_auto_advance_target_count
         )
+        self.auto_advance_input.setValue(self._global_auto_advance_target_count)
         self.auto_advance_input.blockSignals(False)
         self.image_filter_input.blockSignals(True)
         filter_index = self.image_filter_input.findData(self.controller.image_filter)
@@ -3747,7 +3752,9 @@ class ViewerWindow(QMainWindow):
         self._refresh_target_summary()
 
     def _change_auto_confirm_confidence(self, percent: int) -> None:
-        preferences = UserPreferences(percent)
+        preferences = replace(
+            self.user_preferences, auto_confirm_confidence_percent=percent
+        )
         try:
             self.preferences_store.save(preferences)
         except OSError as error:
@@ -3820,18 +3827,36 @@ class ViewerWindow(QMainWindow):
             self._load_current_calibration()
 
     def _change_auto_advance_target_count(self, count: int) -> None:
+        preferences = replace(
+            self.user_preferences, auto_advance_target_count=count
+        )
+        try:
+            self.preferences_store.save(preferences)
+        except OSError as error:
+            self.auto_advance_input.blockSignals(True)
+            self.auto_advance_input.setValue(
+                self._global_auto_advance_target_count
+            )
+            self.auto_advance_input.blockSignals(False)
+            self.status_message_label.show_message(
+                f"Could not save user preferences: {error}", 5000
+            )
+            return
+        self.user_preferences = preferences
+        self._global_auto_advance_target_count = count
         if self.controller is None:
             return
         try:
             self.controller.change_auto_advance_target_count(count)
         except ReviewPersistenceError as error:
-            self.auto_advance_input.blockSignals(True)
-            self.auto_advance_input.setValue(
-                self.controller.preferences.auto_advance_target_count
-            )
-            self.auto_advance_input.blockSignals(False)
+            # The user-level setting remains authoritative even if the legacy
+            # plate checkpoint cannot be updated.
+            self.controller.preferences.auto_advance_target_count = count
             self._show_persistence_error(error)
             return
+        self.status_message_label.show_message(
+            f"Targets/img saved at {count}", 3000
+        )
         self._update_review_summary()
 
     def _change_image_filter(self) -> None:

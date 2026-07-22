@@ -856,8 +856,10 @@ def test_auto_advance_count_moves_and_navigation_persists(tmp_path: Path) -> Non
 def test_auto_advance_count_updates_plan_and_is_restored(tmp_path: Path) -> None:
     app = QApplication.instance() or QApplication([])
     database_path = tmp_path / "reviews.sqlite3"
+    preferences_path = tmp_path / "preferences.json"
     window = ViewerWindow(
-        RockMakerImageRepository(FIXTURE_ROOT), SQLiteReviewStore(database_path)
+        RockMakerImageRepository(FIXTURE_ROOT), SQLiteReviewStore(database_path),
+        preferences_store=JsonUserPreferencesStore(preferences_path),
     )
     window.load_plate("1070", SWISSCI_MIDI_3_LENS)
 
@@ -867,7 +869,8 @@ def test_auto_advance_count_updates_plan_and_is_restored(tmp_path: Path) -> None
     app.processEvents()
 
     restored_window = ViewerWindow(
-        RockMakerImageRepository(FIXTURE_ROOT), SQLiteReviewStore(database_path)
+        RockMakerImageRepository(FIXTURE_ROOT), SQLiteReviewStore(database_path),
+        preferences_store=JsonUserPreferencesStore(preferences_path),
     )
     restored_window.load_plate("1070", SWISSCI_MIDI_3_LENS)
     assert restored_window.controller.preferences.auto_advance_target_count == 4
@@ -959,9 +962,11 @@ def test_up_down_switch_plates_only_from_image_or_plate_list_focus(tmp_path: Pat
     window = ViewerWindow(
         RockMakerImageRepository(FIXTURE_ROOT),
         SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        preferences_store=JsonUserPreferencesStore(tmp_path / "preferences.json"),
     )
     window.load_plate("1070", SWISSCI_MIDI_3_LENS)
     window.load_plate("1100", SWISSCI_MIDI_3_LENS)
+    window.auto_advance_input.setValue(6)
     window.show()
 
     window.plate_input.setFocus()
@@ -973,10 +978,13 @@ def test_up_down_switch_plates_only_from_image_or_plate_list_focus(tmp_path: Pat
     QTest.keyClick(window.image_canvas, Qt.Key_Up)
     app.processEvents()
     assert window.controller.plate.plate_code == "1070"
+    assert window.auto_advance_input.value() == 6
+    assert window.controller.preferences.auto_advance_target_count == 6
 
     QTest.keyClick(window.image_canvas, Qt.Key_Down)
     app.processEvents()
     assert window.controller.plate.plate_code == "1100"
+    assert window.auto_advance_input.value() == 6
 
     window.image_set_list.setFocus(Qt.OtherFocusReason)
     QTest.keyClick(window.image_set_list, Qt.Key_Up)

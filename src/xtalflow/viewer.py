@@ -1104,7 +1104,7 @@ class ViewerWindow(QMainWindow):
         self.resize(1100, 850)
 
         self.project_selector = QComboBox()
-        self.new_project_button = QPushButton("New Project")
+        self.new_project_button = QPushButton("New Workspace")
         self.rename_project_button = QPushButton("Rename")
         self.plate_input = QLineEdit()
         self.plate_input.setPlaceholderText("Plate codes (e.g. 1070, 1100, 2070)")
@@ -1175,7 +1175,7 @@ class ViewerWindow(QMainWindow):
         self.move_image_set_down_button = QPushButton("Down")
         self.archive_image_set_button = QPushButton("Remove")
         self.restore_image_set_button = QPushButton("Restore")
-        self.project_progress_label = QLabel("Project: no images")
+        self.project_progress_label = QLabel("Workspace: no images")
         self.target_summary_button = QPushButton("View Target Summary")
         self.calibration_label = QLabel("Well calibration: not loaded")
         self.auto_calibration_button = QPushButton("Auto Well")
@@ -1201,7 +1201,7 @@ class ViewerWindow(QMainWindow):
         self.image_path_status = ImagePathStatusLabel()
 
         project_controls = QHBoxLayout()
-        project_controls.addWidget(QLabel("Project:"))
+        project_controls.addWidget(QLabel("Workspace:"))
         project_controls.addWidget(self.project_selector, 1)
         project_controls.addWidget(self.new_project_button)
         project_controls.addWidget(self.rename_project_button)
@@ -1277,16 +1277,18 @@ class ViewerWindow(QMainWindow):
 
         self.plan_list = QListWidget()
         self.plan_list.setMinimumWidth(210)
-        self.plan_list.setToolTip("Draft and finalized plans in the active project")
+        self.plan_list.setToolTip(
+            "Experiment projects: each owns a selected-well snapshot and one plan"
+        )
         self.plan_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.new_plan_button = QPushButton("+ New Plan")
+        self.new_plan_button = QPushButton("+ New Project")
         self.plan_list_empty_label = QLabel(
-            "No plans yet.\nCreate a plan to begin."
+            "No experiment projects yet.\nCreate one from the current selection."
         )
         self.plan_list_empty_label.setAlignment(Qt.AlignCenter)
         self.plan_list_empty_label.setStyleSheet("color: #666")
         plan_sidebar_layout = QVBoxLayout()
-        plan_sidebar_layout.addWidget(QLabel("Project plans"))
+        plan_sidebar_layout.addWidget(QLabel("Experiment Projects"))
         plan_sidebar_layout.addWidget(self.new_plan_button)
         plan_sidebar_layout.addWidget(self.plan_list_empty_label)
         plan_sidebar_layout.addWidget(self.plan_list, 1)
@@ -1295,7 +1297,7 @@ class ViewerWindow(QMainWindow):
 
         self.plan_stack = QStackedWidget()
         planning_placeholder = QLabel(
-            "Create a plan to assign treatments to the selected crystals."
+            "Create a Project to snapshot selected wells and apply one plan."
         )
         planning_placeholder.setAlignment(Qt.AlignCenter)
         self.plan_stack.addWidget(planning_placeholder)
@@ -1324,7 +1326,7 @@ class ViewerWindow(QMainWindow):
         container.setLayout(layout)
         self.setCentralWidget(container)
 
-        self.target_summary_table = QTableWidget(0, 7)
+        self.target_summary_table = QTableWidget(0, 8)
         self.target_summary_table.setHorizontalHeaderLabels(
             (
                 "Plate",
@@ -1333,6 +1335,7 @@ class ViewerWindow(QMainWindow):
                 "X (mm)",
                 "Y (mm)",
                 "Calibration",
+                "Usage",
                 "Status",
             )
         )
@@ -1566,7 +1569,7 @@ class ViewerWindow(QMainWindow):
             return
         self.plan_list.setCurrentRow(row)
         menu = QMenu(self.plan_list)
-        delete_action = menu.addAction("Delete Plan…")
+        delete_action = menu.addAction("Delete Project…")
         project = self.project_controller.active_project
         drafts = self._planning_drafts.get(project.id, []) if project else []
         if row >= len(drafts):
@@ -1586,7 +1589,7 @@ class ViewerWindow(QMainWindow):
             delete_action.setEnabled(not has_uploads)
             if has_uploads and not delete_action.toolTip():
                 delete_action.setToolTip(
-                    "Plans with MxLive upload history cannot be deleted"
+                    "Projects with MxLive upload history cannot be deleted"
                 )
         delete_action.triggered.connect(self._delete_selected_draft_plan)
         menu.exec_(self.plan_list.viewport().mapToGlobal(position))
@@ -1600,8 +1603,8 @@ class ViewerWindow(QMainWindow):
         name, editor = drafts[row]
         answer = QMessageBox.question(
             self,
-            "Delete draft plan",
-            f"Permanently delete draft '{name}'?\n\nThis cannot be undone.",
+            "Delete experiment project",
+            f"Permanently delete Project '{name}'?\n\nThis cannot be undone.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -1635,7 +1638,10 @@ class ViewerWindow(QMainWindow):
         if project is None:
             raise ValueError("no project is open")
         existing = self._planning_drafts.setdefault(project.id, [])
-        name = restored.name if restored else f"Fragment Screening #{len(existing) + 1}"
+        name = (
+            restored.name if restored
+            else f"Fragment Screening Project #{len(existing) + 1}"
+        )
         plan_id = restored.id if restored else str(uuid4())
         owned_project = (
             self.review_store.load_experiment_project(plan_id)
@@ -1732,7 +1738,11 @@ class ViewerWindow(QMainWindow):
         if project is None:
             raise ValueError("no project is open")
         existing = self._planning_drafts.setdefault(project.id, [])
-        name = restored.name if restored else f"Raw Crystal Plan #{sum(isinstance(item[1], RawCrystalEditor) for item in existing) + 1}"
+        name = (
+            restored.name if restored
+            else "Raw Crystal Project #"
+            f"{sum(isinstance(item[1], RawCrystalEditor) for item in existing) + 1}"
+        )
         plan_id = restored.id if restored else str(uuid4())
         owned_project = (
             self.review_store.load_experiment_project(plan_id)
@@ -2585,7 +2595,9 @@ class ViewerWindow(QMainWindow):
         self.resize(target_width, self.height())
 
     def create_project_interactively(self) -> None:
-        name, accepted = QInputDialog.getText(self, "New project", "Project name:")
+        name, accepted = QInputDialog.getText(
+            self, "New workspace", "Workspace name:"
+        )
         if not accepted:
             return
         try:
@@ -2595,14 +2607,14 @@ class ViewerWindow(QMainWindow):
             self._adopt_active_review()
             self._sync_project_widgets()
         except (ValueError, ReviewPersistenceError) as error:
-            QMessageBox.warning(self, "Cannot create project", str(error))
+            QMessageBox.warning(self, "Cannot create workspace", str(error))
 
     def rename_project_interactively(self) -> None:
         project = self.project_controller.active_project
         if project is None:
             return
         name, accepted = QInputDialog.getText(
-            self, "Rename project", "Project name:", text=project.name
+            self, "Rename workspace", "Workspace name:", text=project.name
         )
         if not accepted:
             return
@@ -2610,7 +2622,7 @@ class ViewerWindow(QMainWindow):
             self.project_controller.rename_active_project(name)
             self._sync_project_widgets()
         except (ValueError, ReviewPersistenceError) as error:
-            QMessageBox.warning(self, "Cannot rename project", str(error))
+            QMessageBox.warning(self, "Cannot rename workspace", str(error))
 
     def _project_selected(self, index: int) -> None:
         project_id = self.project_selector.itemData(index)
@@ -2624,7 +2636,7 @@ class ViewerWindow(QMainWindow):
             self._adopt_active_review()
             self._sync_project_widgets()
         except (ValueError, PlateImagesNotFoundError, ReviewPersistenceError) as error:
-            QMessageBox.warning(self, "Cannot open project", str(error))
+            QMessageBox.warning(self, "Cannot open workspace", str(error))
 
     def _image_set_selected(self, index) -> None:
         image_set_id = index.data(ProjectImageSetListModel.ImageSetIdRole)
@@ -2993,6 +3005,16 @@ class ViewerWindow(QMainWindow):
         )
         project = self.project_controller.active_project
         image_sets = {item.id: item for item in project.image_sets} if project else {}
+        usage_by_image: dict[str, tuple] = {}
+        if self.review_store is not None:
+            try:
+                usage_by_image = self.review_store.selected_well_usage(
+                    tuple({summary.image.image_key for summary in summaries})
+                )
+            except ReviewPersistenceError as error:
+                self.status_message_label.show_message(
+                    f"Project usage unavailable: {error}"
+                )
         self._refreshing_target_summary = True
         restored_row = None
         try:
@@ -3046,6 +3068,8 @@ class ViewerWindow(QMainWindow):
                     )
                     or "Ready"
                 )
+                usages = usage_by_image.get(summary.image.image_key, ())
+                usage_status = "New" if not usages else f"Used · {len(usages)} project(s)"
                 values = (
                     summary.image.plate_code,
                     well,
@@ -3053,16 +3077,25 @@ class ViewerWindow(QMainWindow):
                     x_mm,
                     y_mm,
                     calibration_status,
+                    usage_status,
                     validation_status,
                 )
                 tooltip = (
                     f"Pixel: ({summary.target.x_px:.1f}, {summary.target.y_px:.1f})\n"
                     f"{summary.image.path.resolve()}"
                 )
+                if usages:
+                    tooltip += "\n\nProject usage:\n" + "\n".join(
+                        f"• {usage.project_name} · "
+                        f"{usage.plan_type.value} · {usage.status}"
+                        for usage in usages
+                    )
                 for column, value in enumerate(values):
                     item = QTableWidgetItem(value)
                     item.setToolTip(tooltip)
-                    if column == 6:
+                    if column == 6 and usages:
+                        item.setForeground(QColor("#ef6c00"))
+                    if column == 7:
                         item.setForeground(
                             QColor("#2e7d32" if summary.is_ready else "#c62828")
                         )

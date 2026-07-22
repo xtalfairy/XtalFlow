@@ -6,7 +6,12 @@ from .crystal_selection import (
     crystal_selection_from_selected_crystals,
     selected_crystals_from_crystal_selection,
 )
-from .experiment_project import ExperimentPlan, ExperimentProject, PlanType
+from .experiment_project import (
+    ExperimentPlan,
+    ExperimentProject,
+    PlanType,
+    SelectedWellUsage,
+)
 from .imaging import CrystalImage, PlateImages
 from .project import Project, ProjectImageSet
 from .plate_format import (
@@ -43,6 +48,7 @@ __all__ = [
     "ReviewProgress",
     "ReviewSession",
     "SelectedWell",
+    "SelectedWellUsage",
     "SoakingPosition",
     "TargetPoint",
     "PlanType",

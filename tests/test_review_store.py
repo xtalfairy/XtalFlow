@@ -86,6 +86,9 @@ def test_experiment_project_selected_wells_round_trip(tmp_path: Path) -> None:
 
     assert restored == (project,)
     assert len(restored[0].crystal_selection.wells[0].soaking_positions) == 2
+    usage = store.selected_well_usage(("image-key",))
+    assert usage["image-key"][0].project_name == "BRD4 screen"
+    assert usage["image-key"][0].status == "Draft"
     assert store._connection.execute("PRAGMA user_version").fetchone()[0] == (
         LATEST_SCHEMA_VERSION
     )

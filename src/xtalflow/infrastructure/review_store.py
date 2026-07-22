@@ -19,6 +19,7 @@ from xtalflow.domain import (
     ReviewPreferences,
     ReviewProgress,
     SelectedWell,
+    SelectedWellUsage,
     SoakingPosition,
     TargetPoint,
 )
@@ -214,6 +215,51 @@ class SQLiteReviewStore:
             ),
             None,
         )
+
+    def selected_well_usage(
+        self, image_keys: tuple[str, ...]
+    ) -> dict[str, tuple[SelectedWellUsage, ...]]:
+        if not image_keys:
+            return {}
+        placeholders = ",".join("?" for _ in image_keys)
+        try:
+            rows = self._connection.execute(
+                f"""SELECT well.image_key, project.project_id, project.name,
+                           plan.plan_type,
+                           CASE
+                             WHEN EXISTS (
+                               SELECT 1 FROM webdb_upload_event AS upload
+                               JOIN plan_revision AS revision
+                                 ON revision.revision_id = upload.revision_id
+                               WHERE revision.plan_id = project.project_id
+                             ) THEN 'Uploaded'
+                             WHEN EXISTS (
+                               SELECT 1 FROM plan_revision AS revision
+                               WHERE revision.plan_id = project.project_id
+                             ) THEN 'Finalized'
+                             ELSE 'Draft'
+                           END
+                    FROM selected_well AS well
+                    JOIN crystal_selection AS selection
+                      ON selection.selection_id = well.selection_id
+                    JOIN experiment_project AS project
+                      ON project.project_id = selection.project_id
+                    JOIN experiment_plan AS plan
+                      ON plan.project_id = project.project_id
+                    WHERE well.image_key IN ({placeholders})
+                    ORDER BY project.created_at, project.project_id""",
+                image_keys,
+            ).fetchall()
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError(
+                "could not inspect selected-well usage"
+            ) from error
+        grouped: dict[str, list[SelectedWellUsage]] = {}
+        for row in rows:
+            grouped.setdefault(row[0], []).append(
+                SelectedWellUsage(row[1], row[2], PlanType(row[3]), row[4])
+            )
+        return {key: tuple(value) for key, value in grouped.items()}
 
     def save_checkpoint(
         self,
@@ -720,6 +766,10 @@ class SQLiteReviewStore:
                 )
                 self._connection.execute(
                     "DELETE FROM planning_draft WHERE plan_id = ?", (plan_id,)
+                )
+                self._connection.execute(
+                    "DELETE FROM experiment_project WHERE project_id = ?",
+                    (plan_id,),
                 )
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not delete planning draft") from error

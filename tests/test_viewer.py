@@ -185,7 +185,8 @@ def test_main_window_separates_image_review_and_planning_tabs(
     assert window.main_tabs.tabText(window.planning_tab_index) == "Planning"
     assert window.main_tabs.currentIndex() == window.image_review_tab_index
     assert window.plan_list.count() == 0
-    assert window.new_plan_button.text() == "+ New Plan"
+    assert window.new_plan_button.text() == "+ New Project"
+    assert window.new_project_button.text() == "New Workspace"
 
     window.close()
     app.processEvents()
@@ -318,6 +319,7 @@ def test_draft_plan_can_be_deleted_from_planning_sidebar(
             window.project_controller.active_project.id
         )
     )
+    assert store.load_experiment_project(plan_id) is None
     window.close()
     app.processEvents()
 
@@ -581,11 +583,11 @@ def test_target_summary_uses_hidden_right_dock_and_jumps_to_image(
     window.target_summary_table.setCurrentCell(0, 0)
     assert window.controller.current_image.image_key == target_image_key
     assert window.target_summary_table.hasFocus()
-    assert "Unconfirmed calibration" in window.target_summary_table.item(0, 6).text()
+    assert "Unconfirmed calibration" in window.target_summary_table.item(0, 7).text()
     assert window.accept_calibration_button.isEnabled()
     window.accept_calibration_button.click()
     assert window.current_calibration.confirmed
-    assert window.target_summary_table.item(0, 6).text() == "Ready"
+    assert window.target_summary_table.item(0, 7).text() == "Ready"
     assert not window.accept_calibration_button.isEnabled()
     QTest.keyClick(window.target_summary_table, Qt.Key_Down)
     assert window.target_summary_table.currentRow() == 1
@@ -594,7 +596,7 @@ def test_target_summary_uses_hidden_right_dock_and_jumps_to_image(
         window.target_summary_filter.findData("warnings")
     )
     assert window.target_summary_table.rowCount() == 1
-    assert "Unconfirmed calibration" in window.target_summary_table.item(0, 6).text()
+    assert "Unconfirmed calibration" in window.target_summary_table.item(0, 7).text()
     window.target_summary_filter.setCurrentIndex(
         window.target_summary_filter.findData("all")
     )

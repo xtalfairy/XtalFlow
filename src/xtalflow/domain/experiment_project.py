@@ -47,3 +47,11 @@ class ExperimentProject:
             raise ValueError("experiment plan must belong to the project")
         if self.created_at.tzinfo is None or self.updated_at.tzinfo is None:
             raise ValueError("experiment project times must include a timezone")
+
+
+@dataclass(frozen=True)
+class SelectedWellUsage:
+    project_id: str
+    project_name: str
+    plan_type: PlanType
+    status: str

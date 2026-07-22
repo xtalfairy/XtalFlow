@@ -63,8 +63,13 @@ class WorksheetExporter:
             raise WorksheetDestinationUnavailable(
                 f"instrument output location is unavailable: {paths}"
             )
-        for base in bases:
-            (base / self.username).mkdir(parents=True, exist_ok=True)
+        try:
+            for base in bases:
+                (base / self.username).mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise WorksheetDestinationUnavailable(
+                f"could not prepare instrument output folders: {error}"
+            ) from error
         return self._export_to_directories(
             plan,
             experiment_id,
@@ -78,8 +83,13 @@ class WorksheetExporter:
             root / name / self.username
             for name in ("echo650", "shifter1", "shifter2")
         )
-        for directory in directories:
-            directory.mkdir(parents=True, exist_ok=True)
+        try:
+            for directory in directories:
+                directory.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise WorksheetDestinationUnavailable(
+                f"could not prepare alternate output folders: {error}"
+            ) from error
         return self._export_to_directories(plan, experiment_id, directories)
 
     def export_shifter(
@@ -94,8 +104,13 @@ class WorksheetExporter:
                 + ", ".join(str(path) for path in missing)
             )
         directories = tuple(base / self.username for base in bases)
-        for directory in directories:
-            directory.mkdir(parents=True, exist_ok=True)
+        try:
+            for directory in directories:
+                directory.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise WorksheetDestinationUnavailable(
+                f"could not prepare instrument output folders: {error}"
+            ) from error
         return self._export_shifter_to_directories(plan, experiment_id, directories)
 
     def export_shifter_to_alternate_root(
@@ -104,8 +119,13 @@ class WorksheetExporter:
         directories = tuple(
             root / name / self.username for name in ("shifter1", "shifter2")
         )
-        for directory in directories:
-            directory.mkdir(parents=True, exist_ok=True)
+        try:
+            for directory in directories:
+                directory.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise WorksheetDestinationUnavailable(
+                f"could not prepare alternate output folders: {error}"
+            ) from error
         return self._export_shifter_to_directories(plan, experiment_id, directories)
 
     def _export_shifter_to_directories(

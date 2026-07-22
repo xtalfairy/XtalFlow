@@ -106,6 +106,34 @@ def test_missing_operating_mount_requires_explicit_alternate_root(
     )
 
 
+def test_permission_error_preparing_output_is_reported_without_crashing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        echo_output_directory=tmp_path / "echo650",
+        shifter1_output_directory=tmp_path / "shifter1",
+        shifter2_output_directory=tmp_path / "shifter2",
+        create_missing_instrument_roots=True,
+    )
+    original_mkdir = Path.mkdir
+
+    def deny_runtime_directory(path, *args, **kwargs):
+        if path == tmp_path / "echo650" / "scientist":
+            raise PermissionError("permission denied for test")
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", deny_runtime_directory)
+
+    with pytest.raises(
+        WorksheetDestinationUnavailable, match="could not prepare instrument"
+    ):
+        WorksheetExporter(settings, "scientist").export(
+            fragment_plan(), "FragSC-202607-BRD4-01"
+        )
+
+
 def test_raw_crystal_export_writes_only_shifter_files(tmp_path: Path) -> None:
     settings = replace(
         DEFAULT_SETTINGS,

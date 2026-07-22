@@ -233,9 +233,16 @@ def test_raw_crystal_plan_has_shifter_preview_without_echo(tmp_path: Path) -> No
     app = QApplication.instance() or QApplication([])
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
     window = ViewerWindow(RockMakerImageRepository(tmp_path), store)
+    selected_at = datetime.now(timezone.utc)
     crystal = SelectedCrystal(
         "image", "1070", "A01a",
-        (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
+        (
+            CrystalTarget("target", Decimal(0), Decimal(0), selected_at),
+            CrystalTarget(
+                "target-2", Decimal("0.1"), Decimal("-0.2"),
+                selected_at + timedelta(seconds=1),
+            ),
+        ),
         SWISSCI_MIDI_3_LENS.id,
     )
 
@@ -247,10 +254,26 @@ def test_raw_crystal_plan_has_shifter_preview_without_echo(tmp_path: Path) -> No
     window._persist_raw_crystal_draft(editor)
 
     assert editor.current_plan is not None
-    assert editor.shifter_table.rowCount() == 1
+    assert editor.shifter_table.rowCount() == 2
+    assert editor.summary_table.horizontalHeaderItem(3).text() == "Position"
+    assert editor.summary_table.item(0, 3).text() == "1"
+    assert editor.summary_table.item(1, 3).text() == "2"
+    assert editor.summary_table.item(0, 3).data(Qt.UserRole) == "target"
     assert editor.preview_tabs.tabText(2) == "WebDB"
-    assert editor.webdb_table.rowCount() == 1
-    assert editor.webdb_table.item(0, 8).text() != ""
+    assert editor.webdb_table.rowCount() == 2
+    columns = {
+        editor.webdb_table.horizontalHeaderItem(index).text(): index
+        for index in range(editor.webdb_table.columnCount())
+    }
+    assert editor.webdb_table.item(0, columns["protein_name"]).text() == "BRD4"
+    assert editor.webdb_table.item(0, columns["plate_type"]).text() == (
+        "SwissCI-MRC-3d"
+    )
+    assert editor.webdb_table.item(0, columns["plate_code"]).text() == "1070"
+    assert editor.webdb_table.item(0, columns["plate_well"]).text() == "A01a"
+    assert editor.webdb_table.item(0, columns["soak_id"]).text() == ""
+    assert editor.webdb_table.item(0, columns["soak_smile"]).text() == ""
+    assert editor.webdb_table.item(0, columns["project_id"]).text() != ""
     assert not hasattr(editor, "echo_table")
     drafts = store.load_planning_drafts(window.project_controller.active_project.id)
     assert drafts[-1].plan_type == "raw_crystal"
@@ -317,6 +340,37 @@ def test_only_finalized_raw_revision_can_be_uploaded_and_is_audited(
     assert events[0].account_id == events[0].username
     assert not editor.webdb_upload_button.isEnabled()
     assert unexpected_dialogs == []
+    window.close()
+    app.processEvents()
+
+
+def test_raw_plan_keeps_experiment_id_across_revisions(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store)
+    crystal = SelectedCrystal(
+        "image", "1070", "A01a",
+        (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
+        SWISSCI_MIDI_3_LENS.id,
+    )
+    window._add_raw_crystal_plan((crystal,))
+    editor = window.plan_stack.currentWidget()
+    editor.set_crystals((crystal,))
+    editor.protein_input.setText("BRD4")
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: QMessageBox.Ok)
+
+    first = window._finalize_raw_crystal_plan(editor)
+    editor.protein_input.setText("BRD4 variant")
+    second = window._finalize_raw_crystal_plan(editor)
+
+    assert first is not None and second is not None
+    assert second.revision == 2
+    assert second.experiment_id == first.experiment_id
+    assert "fixed for this plan" in editor.experiment_id_label.text()
+    restored = store.load_planning_drafts(editor.project_id)
+    assert restored[-1].experiment_id == first.experiment_id
     window.close()
     app.processEvents()
 

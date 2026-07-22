@@ -111,6 +111,7 @@ def test_planning_draft_revision_and_export_lifecycle(tmp_path: Path) -> None:
     draft = PlanningDraft(
         "plan-1", project.id, "fragment_screening", "Fragment Screening #1",
         "/libraries/main.csv", "1-8", "BRD4", "25.0", "selection", now, now,
+        "FragSC-202607-BRD4-01",
     )
     store.save_planning_draft(draft)
 
@@ -121,13 +122,11 @@ def test_planning_draft_revision_and_export_lifecycle(tmp_path: Path) -> None:
         PlanRevision("revision-1", draft.id, 0, "FragSC-202607-BRD4-01", "{\"v\":1}", "jjh", now)
     )
     second = store.finalize_plan_revision(
-        PlanRevision("revision-2", draft.id, 0, "FragSC-202607-BRD4-02", "{\"v\":2}", "jjh", now)
+        PlanRevision("revision-2", draft.id, 0, "FragSC-202607-BRD4-01", "{\"v\":2}", "jjh", now)
     )
     assert (first.revision, second.revision) == (1, 2)
     assert store.list_plan_revisions(draft.id) == (first, second)
-    assert store.reserved_experiment_ids() == {
-        "FragSC-202607-BRD4-01", "FragSC-202607-BRD4-02"
-    }
+    assert store.reserved_experiment_ids() == {"FragSC-202607-BRD4-01"}
 
     export = WorksheetExportEvent(
         "export-1", second.id, "jjh", now, "succeeded",
@@ -144,6 +143,31 @@ def test_planning_draft_revision_and_export_lifecycle(tmp_path: Path) -> None:
     store.record_webdb_upload(upload)
     assert store.list_webdb_uploads(second.id) == (upload,)
     store.close()
+
+
+def test_existing_plan_inherits_latest_revision_experiment_id(tmp_path: Path) -> None:
+    database_path = tmp_path / "reviews.sqlite3"
+    store = SQLiteReviewStore(database_path)
+    now = datetime.now(timezone.utc)
+    project = Project("project-1", "Test", now, now)
+    store.save_project(project)
+    draft = PlanningDraft(
+        "plan-1", project.id, "raw_crystal", "Raw #1", None, "", "TEST",
+        "0", "selection", now, now,
+    )
+    store.save_planning_draft(draft)
+    store.finalize_plan_revision(
+        PlanRevision("r1", draft.id, 0, "RawCrystal-01", "{}", "jjh", now)
+    )
+    store.finalize_plan_revision(
+        PlanRevision("r2", draft.id, 0, "RawCrystal-02", "{\"v\":2}", "jjh", now)
+    )
+    store.close()
+
+    reopened = SQLiteReviewStore(database_path)
+
+    assert reopened.load_planning_drafts(project.id)[0].experiment_id == "RawCrystal-02"
+    reopened.close()
 
 
 def test_checkpoint_rolls_back_targets_when_progress_write_fails(tmp_path: Path) -> None:

@@ -17,6 +17,7 @@ class PlanningDraft:
     assignment_order: str
     created_at: datetime
     updated_at: datetime
+    experiment_id: str | None = None
 
 
 @dataclass(frozen=True)

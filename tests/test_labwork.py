@@ -6,6 +6,7 @@ from xtalflow.domain.fragment_screening import (
     Fragment, FragmentLibrary, build_fragment_screen_plan,
 )
 from xtalflow.domain.labwork import build_fragment_labworks, build_raw_crystal_labworks
+from xtalflow.domain.plate_format import SWISSCI_MIDI_3_LENS
 from xtalflow.domain.raw_crystal import build_raw_crystal_plan
 
 
@@ -14,7 +15,7 @@ def _crystal() -> SelectedCrystal:
         "/rmserver/image.jpg", "2069", "A04a",
         (CrystalTarget("target-1", Decimal("0.125"), Decimal("-0.5"),
                        datetime.now(timezone.utc)),),
-        "swissci-midi-3-lens",
+        SWISSCI_MIDI_3_LENS.id,
         "/rmserver/image.jpg",
     )
 
@@ -31,6 +32,11 @@ def test_raw_labwork_uses_account_id_and_empty_soaking_fields() -> None:
     assert payload["plate_x"] == 0.125
     assert payload["plate_y"] == -0.5
     assert payload["plate_imgpath"] == "/rmserver/image.jpg"
+    assert payload["protein_name"] == "BRD4"
+    assert payload["plate_type"] == "SwissCI-MRC-3d"
+    assert payload["plate_code"] == "2069"
+    assert payload["plate_well"] == "A04a"
+    assert payload["crystal_no"] == 1
     assert payload["soak_id"] == ""
     assert payload["soak_smile"] == ""
     assert payload["soak_vol"] == 0.0
@@ -54,4 +60,5 @@ def test_fragment_labwork_has_one_record_per_target_transfer() -> None:
     assert payload["soak_id"] == "CMP-1"
     assert payload["soak_smile"] == "CCO"
     assert payload["soak_vol"] == 25.0
+    assert payload["plate_type"] == "SwissCI-MRC-3d"
     assert payload["project_id"] == "fbdd"

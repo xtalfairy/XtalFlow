@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 
-LATEST_SCHEMA_VERSION = 13
+LATEST_SCHEMA_VERSION = 14
 IMPORTED_PROJECT_ID = "imported-standalone-reviews"
 LEGACY_PLATE_FORMAT_ID = "swissci-midi-3-lens-hr3-194"
 LEGACY_PLATE_FORMAT_VERSION = 1
@@ -117,10 +117,18 @@ def _create_planning_schema(connection: sqlite3.Connection) -> None:
             volume_nl TEXT NOT NULL,
             assignment_order TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            experiment_id TEXT
         )
         """
     )
+    draft_columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(planning_draft)")
+    }
+    if "experiment_id" not in draft_columns:
+        connection.execute(
+            "ALTER TABLE planning_draft ADD COLUMN experiment_id TEXT"
+        )
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS plan_revision (
@@ -133,6 +141,23 @@ def _create_planning_schema(connection: sqlite3.Connection) -> None:
             finalized_at TEXT NOT NULL,
             UNIQUE(plan_id, revision_number)
         )
+        """
+    )
+    connection.execute(
+        """
+        UPDATE planning_draft
+        SET experiment_id = (
+            SELECT revision.experiment_id
+            FROM plan_revision AS revision
+            WHERE revision.plan_id = planning_draft.plan_id
+            ORDER BY revision.revision_number DESC
+            LIMIT 1
+        )
+        WHERE experiment_id IS NULL
+          AND EXISTS (
+              SELECT 1 FROM plan_revision AS revision
+              WHERE revision.plan_id = planning_draft.plan_id
+          )
         """
     )
     connection.execute(

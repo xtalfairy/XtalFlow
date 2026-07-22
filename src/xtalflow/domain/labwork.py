@@ -5,13 +5,24 @@ from decimal import Decimal
 from typing import Any
 
 from .fragment_screening import FragmentScreenPlan
+from .plate_format import plate_format_by_id
 from .raw_crystal import RawCrystalPlan
 
 
 LABWORK_COLUMNS = (
-    "crystal_no", "expri_id", "plate_code", "plate_well", "plate_x",
-    "plate_y", "soak_id", "soak_smile", "project_id",
+    "crystal_no", "expri_id", "protein_name", "plate_type", "plate_code",
+    "plate_well", "plate_x", "plate_y", "plate_imgpath", "soak_id",
+    "soak_smile", "project_id",
 )
+
+
+def _mxlive_plate_type(plate_format_id: str) -> str:
+    plate_format = plate_format_by_id(plate_format_id)
+    if plate_format is None:
+        # Preserve the source value for old or externally supplied formats so
+        # the preview remains useful instead of silently losing information.
+        return plate_format_id
+    return plate_format.instrument_name or plate_format.display_name
 
 
 @dataclass(frozen=True)
@@ -68,7 +79,7 @@ def build_fragment_labworks(
         for transfer in assignment.transfers:
             records.append(LabworkRecord(
                 username, experiment_id, protein_name,
-                assignment.crystal.plate_format_id,
+                _mxlive_plate_type(assignment.crystal.plate_format_id),
                 assignment.crystal.destination_plate,
                 assignment.crystal.image_path or assignment.crystal.image_key,
                 assignment.crystal.destination_well,
@@ -90,7 +101,8 @@ def build_raw_crystal_labworks(
 ) -> tuple[LabworkRecord, ...]:
     return tuple(
         LabworkRecord(
-            username, experiment_id, protein_name, selection.crystal.plate_format_id,
+            username, experiment_id, protein_name,
+            _mxlive_plate_type(selection.crystal.plate_format_id),
             selection.crystal.destination_plate,
             selection.crystal.image_path or selection.crystal.image_key,
             selection.crystal.destination_well, selection.target.x_mm,

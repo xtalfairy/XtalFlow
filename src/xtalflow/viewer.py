@@ -480,6 +480,7 @@ class FragmentScreeningEditor(QWidget):
         self.crystals = crystals
         self.current_plan = None
         self.current_experiment_id: str | None = None
+        self.assigned_experiment_id: str | None = None
         self.mxlive_account: MxLiveAccount | None = None
         self.library_input = QComboBox()
         self.library_input.setMinimumWidth(260)
@@ -619,6 +620,14 @@ class FragmentScreeningEditor(QWidget):
         self._refresh_experiment_id()
 
     def _refresh_experiment_id(self) -> None:
+        if self.assigned_experiment_id:
+            self.current_experiment_id = self.assigned_experiment_id
+            self.experiment_id_label.setText(
+                f"Experiment ID: {self.assigned_experiment_id} · fixed for this plan"
+            )
+            self.save_worksheets_button.setEnabled(self.current_plan is not None)
+            self._refresh_webdb_preview()
+            return
         if self._experiment_id_provider is None:
             self.current_experiment_id = None
             self.experiment_id_label.setText("Experiment ID: —")
@@ -754,6 +763,7 @@ class FragmentScreeningEditor(QWidget):
         )
         self.rows_input.setText(draft.library_rows)
         self.protein_input.setText(draft.protein)
+        self.assigned_experiment_id = draft.experiment_id
         self.volume_input.setValue(float(draft.volume_nl))
         order_index = self.order_input.findData(AssignmentOrder(draft.assignment_order))
         self.order_input.setCurrentIndex(max(0, order_index))
@@ -786,6 +796,7 @@ class RawCrystalEditor(QWidget):
         self.crystals = crystals
         self.current_plan: RawCrystalPlan | None = None
         self.current_experiment_id: str | None = None
+        self.assigned_experiment_id: str | None = None
         self.mxlive_account: MxLiveAccount | None = None
         self.protein_input = QLineEdit()
         self.protein_input.setPlaceholderText("Protein name")
@@ -801,7 +812,7 @@ class RawCrystalEditor(QWidget):
         self.error_label.setStyleSheet("color: #b00020")
         self.summary_table = QTableWidget(0, 5)
         self.summary_table.setHorizontalHeaderLabels(
-            ("Order", "Plate", "Well", "Target", "Selected at")
+            ("Order", "Plate", "Well", "Position", "Selected at")
         )
         self.shifter_table = QTableWidget(0, len(SHIFTER_HEADER))
         self.shifter_table.setHorizontalHeaderLabels(SHIFTER_HEADER)
@@ -871,6 +882,7 @@ class RawCrystalEditor(QWidget):
         self.protein_input.blockSignals(True)
         self.order_input.blockSignals(True)
         self.protein_input.setText(draft.protein)
+        self.assigned_experiment_id = draft.experiment_id
         index = self.order_input.findData(AssignmentOrder(draft.assignment_order))
         self.order_input.setCurrentIndex(max(0, index))
         self.protein_input.blockSignals(False)
@@ -878,6 +890,14 @@ class RawCrystalEditor(QWidget):
         self.refresh_plan()
 
     def _refresh_experiment_id(self) -> None:
+        if self.assigned_experiment_id:
+            self.current_experiment_id = self.assigned_experiment_id
+            self.experiment_id_label.setText(
+                f"Experiment ID: {self.assigned_experiment_id} · fixed for this plan"
+            )
+            self.save_worksheet_button.setEnabled(self.current_plan is not None)
+            self._refresh_webdb_preview()
+            return
         if self._experiment_id_provider is None:
             self.current_experiment_id = None
             self.experiment_id_label.setText("Experiment ID: —")
@@ -916,13 +936,21 @@ class RawCrystalEditor(QWidget):
         self.current_plan = plan
         self.error_label.setText("")
         self.summary_table.setRowCount(len(plan.selections))
+        image_target_positions: dict[str, int] = {}
         for row, selection in enumerate(plan.selections):
             crystal = selection.crystal
+            position = image_target_positions.get(crystal.image_key, 0) + 1
+            image_target_positions[crystal.image_key] = position
             values = (str(row + 1), crystal.destination_plate,
-                      crystal.destination_well, selection.target.target_id,
+                      crystal.destination_well, str(position),
                       selection.target.selected_at.isoformat(timespec="seconds"))
             for column, value in enumerate(values):
-                self.summary_table.setItem(row, column, QTableWidgetItem(value))
+                item = QTableWidgetItem(value)
+                if column == 3:
+                    # Keep the persistence identity available to the UI without
+                    # exposing an implementation UUID as an operator-facing value.
+                    item.setData(Qt.UserRole, selection.target.target_id)
+                self.summary_table.setItem(row, column, item)
         FragmentScreeningEditor._set_preview_rows(
             self.shifter_table, tuple(row.values() for row in rows)
         )
@@ -1665,6 +1693,7 @@ class ViewerWindow(QMainWindow):
             editor.plan_id, editor.project_id, "raw_crystal", editor.plan_name,
             None, "", editor.protein_input.text(), "0",
             editor.order_input.currentData().value, editor.plan_created_at, now,
+            editor.assigned_experiment_id,
         )
         try:
             self.review_store.save_planning_draft(draft)
@@ -1722,16 +1751,25 @@ class ViewerWindow(QMainWindow):
         if snapshot == editor.last_revision_snapshot:
             return editor.last_revision
         try:
+            experiment_id = (
+                editor.assigned_experiment_id
+                or self._suggest_raw_crystal_experiment_id(
+                    editor.protein_input.text()
+                )
+            )
             revision = self.review_store.finalize_plan_revision(
                 PlanRevision(str(uuid4()), editor.plan_id, 0,
-                             self._suggest_raw_crystal_experiment_id(editor.protein_input.text()),
+                             experiment_id,
                              snapshot, getpass.getuser(), datetime.now(timezone.utc))
             )
         except (ValueError, ReviewPersistenceError) as error:
             QMessageBox.warning(self, "Cannot finalize plan", str(error))
             return None
         editor.last_revision = revision
+        editor.assigned_experiment_id = revision.experiment_id
         editor.last_revision_snapshot = snapshot
+        editor._refresh_experiment_id()
+        self._persist_raw_crystal_draft(editor)
         editor.lifecycle_label.setText(f"Finalized r{revision.revision}")
         self._set_plan_list_status(editor, f"Finalized r{revision.revision}")
         self._sync_webdb_upload_state(editor)
@@ -1756,7 +1794,7 @@ class ViewerWindow(QMainWindow):
             editor.library_input.currentData(Qt.UserRole), editor.rows_input.text(),
             editor.protein_input.text(), str(editor.volume_input.value()),
             editor.order_input.currentData().value,
-            editor.plan_created_at, now,
+            editor.plan_created_at, now, editor.assigned_experiment_id,
         )
         try:
             self.review_store.save_planning_draft(draft)
@@ -1832,7 +1870,10 @@ class ViewerWindow(QMainWindow):
         if editor.last_revision_snapshot == snapshot:
             return editor.last_revision
         try:
-            experiment_id = self._suggest_fragment_experiment_id(editor.protein_input.text())
+            experiment_id = (
+                editor.assigned_experiment_id
+                or self._suggest_fragment_experiment_id(editor.protein_input.text())
+            )
             revision = self.review_store.finalize_plan_revision(
                 PlanRevision(str(uuid4()), editor.plan_id, 0, experiment_id, snapshot,
                              getpass.getuser(), datetime.now(timezone.utc))
@@ -1841,7 +1882,10 @@ class ViewerWindow(QMainWindow):
             QMessageBox.warning(self, "Cannot finalize plan", str(error))
             return None
         editor.last_revision = revision
+        editor.assigned_experiment_id = revision.experiment_id
         editor.last_revision_snapshot = snapshot
+        editor._refresh_experiment_id()
+        self._persist_planning_draft(editor)
         editor.lifecycle_label.setText(f"Finalized r{revision.revision}")
         self._set_plan_list_status(editor, f"Finalized r{revision.revision}")
         self._sync_webdb_upload_state(editor)

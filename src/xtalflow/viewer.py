@@ -2209,10 +2209,9 @@ class ViewerWindow(QMainWindow):
         return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
     def _suggest_raw_crystal_experiment_id(self, protein: str) -> str:
-        existing = self._worksheet_exporter().existing_experiment_ids()
-        if self.review_store is not None:
-            existing.update(self.review_store.reserved_experiment_ids())
-        return suggest_experiment_id("RawCrystal", protein, existing)
+        return suggest_experiment_id(
+            "RawCrystal", protein, self._reserved_experiment_ids()
+        )
 
     def _finalize_raw_crystal_plan(self, editor: RawCrystalEditor) -> PlanRevision | None:
         if self.review_store is None:
@@ -2570,13 +2569,14 @@ class ViewerWindow(QMainWindow):
     def _worksheet_exporter(self) -> WorksheetExporter:
         return WorksheetExporter(self.settings, getpass.getuser())
 
+    def _reserved_experiment_ids(self) -> set[str]:
+        if self.review_store is None:
+            return set()
+        return self.review_store.reserved_experiment_ids()
+
     def _suggest_fragment_experiment_id(self, protein: str) -> str:
-        exporter = self._worksheet_exporter()
-        existing = exporter.existing_experiment_ids()
-        if self.review_store is not None:
-            existing.update(self.review_store.reserved_experiment_ids())
         return suggest_experiment_id(
-            "FragSC", protein, existing
+            "FragSC", protein, self._reserved_experiment_ids()
         )
 
     def _save_fragment_worksheets(

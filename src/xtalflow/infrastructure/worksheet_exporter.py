@@ -45,19 +45,11 @@ class WorksheetExporter:
         self.settings = settings
         self.username = username
 
-    def existing_experiment_ids(self) -> set[str]:
-        existing: set[str] = set()
-        for base in self._instrument_bases():
-            directory = base / self.username
-            if directory.is_dir():
-                existing.update(path.stem for path in directory.glob("*.csv"))
-        return existing
-
     def export(
         self, plan: FragmentScreenPlan, experiment_id: str
     ) -> WorksheetExportResult:
         bases = self._instrument_bases()
-        missing = [base for base in bases if not base.is_dir()]
+        missing = self._unavailable_bases(bases)
         if missing and not self.settings.create_missing_instrument_roots:
             paths = ", ".join(str(path) for path in missing)
             raise WorksheetDestinationUnavailable(
@@ -97,7 +89,7 @@ class WorksheetExporter:
     ) -> ShifterExportResult:
         bases = (self.settings.shifter1_output_directory,
                  self.settings.shifter2_output_directory)
-        missing = [base for base in bases if not base.is_dir()]
+        missing = self._unavailable_bases(bases)
         if missing and not self.settings.create_missing_instrument_roots:
             raise WorksheetDestinationUnavailable(
                 "instrument output location is unavailable: "
@@ -128,13 +120,28 @@ class WorksheetExporter:
             ) from error
         return self._export_shifter_to_directories(plan, experiment_id, directories)
 
+    @staticmethod
+    def _unavailable_bases(bases: tuple[Path, ...]) -> list[Path]:
+        unavailable = []
+        for base in bases:
+            try:
+                if not base.is_dir():
+                    unavailable.append(base)
+            except OSError:
+                unavailable.append(base)
+        return unavailable
+
     def _export_shifter_to_directories(
         self, plan: RawCrystalPlan, experiment_id: str,
         directories: tuple[Path, Path],
     ) -> ShifterExportResult:
-        file_stem = self._available_file_stem(experiment_id, directories)
-        staging = self.settings.worksheet_staging_directory / self.username / file_stem
         try:
+            file_stem = self._available_file_stem(experiment_id, directories)
+            staging = (
+                self.settings.worksheet_staging_directory
+                / self.username
+                / file_stem
+            )
             staging.mkdir(parents=True, exist_ok=False)
             staged = staging / "shifter.csv"
             self._write_csv(
@@ -158,9 +165,13 @@ class WorksheetExporter:
         experiment_id: str,
         directories: tuple[Path, ...],
     ) -> WorksheetExportResult:
-        file_stem = self._available_file_stem(experiment_id, directories)
-        staging = self.settings.worksheet_staging_directory / self.username / file_stem
         try:
+            file_stem = self._available_file_stem(experiment_id, directories)
+            staging = (
+                self.settings.worksheet_staging_directory
+                / self.username
+                / file_stem
+            )
             staging.mkdir(parents=True, exist_ok=False)
             echo_staged = staging / "echo.csv"
             shifter_staged = staging / "shifter.csv"

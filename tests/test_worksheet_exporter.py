@@ -134,6 +134,31 @@ def test_permission_error_preparing_output_is_reported_without_crashing(
         )
 
 
+def test_offline_instrument_share_is_reported_as_unavailable_at_export(
+    tmp_path: Path, monkeypatch
+) -> None:
+    offline = tmp_path / "shifter1"
+    settings = replace(
+        DEFAULT_SETTINGS,
+        echo_output_directory=tmp_path / "echo650",
+        shifter1_output_directory=offline,
+        shifter2_output_directory=tmp_path / "shifter2",
+        create_missing_instrument_roots=False,
+    )
+    original_is_dir = Path.is_dir
+
+    def host_down(path):
+        if path == offline or path == offline / "scientist":
+            raise OSError(112, "Host is down")
+        return original_is_dir(path)
+
+    monkeypatch.setattr(Path, "is_dir", host_down)
+    exporter = WorksheetExporter(settings, "scientist")
+
+    with pytest.raises(WorksheetDestinationUnavailable, match="unavailable"):
+        exporter.export(fragment_plan(), "FragSC-202607-BRD4-01")
+
+
 def test_raw_crystal_export_writes_only_shifter_files(tmp_path: Path) -> None:
     settings = replace(
         DEFAULT_SETTINGS,

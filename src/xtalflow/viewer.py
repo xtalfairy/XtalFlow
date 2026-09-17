@@ -5,15 +5,25 @@ import getpass
 import json
 import re
 import sys
+import threading
 import traceback
 from collections.abc import Callable
+from typing import TypeVar
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from PyQt5.QtCore import QRectF, QStandardPaths, QStringListModel, QTimer, Qt, pyqtSignal
+from PyQt5.QtCore import (
+    QEventLoop,
+    QRectF,
+    QStandardPaths,
+    QStringListModel,
+    QTimer,
+    Qt,
+    pyqtSignal,
+)
 from PyQt5.QtGui import (
     QColor,
     QKeySequence,
@@ -38,6 +48,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QProgressDialog,
     QLineEdit,
     QListView,
     QListWidget,
@@ -158,6 +169,8 @@ from xtalflow.settings import (
 # Image sets live on the RockMaker SMB share. A dropped share raises plain OSError
 # (for example "Host is down"), not only PlateImagesNotFoundError.
 IMAGE_SOURCE_ERRORS = (ValueError, OSError, ReviewPersistenceError)
+
+T = TypeVar("T")
 
 class ImageCanvas(QWidget):
     image_clicked = pyqtSignal(float, float, int)
@@ -2599,13 +2612,18 @@ class ViewerWindow(QMainWindow):
             return
         response_json = None
         error_message = None
-        try:
+        def upload() -> object:
             client = LegacyMxLiveWriteClient(
                 account.base_url, account.beamline, account.username,
                 account.key_path, ca_bundle=account.ca_bundle,
                 timeout_seconds=self.settings.mxlive_timeout_seconds,
             )
-            response = client.upload_labworks(payload)
+            return client.upload_labworks(payload)
+
+        try:
+            response = self._run_in_background(
+                f"Uploading {len(records)} records to MxLive…", upload
+            )
             response_json = json.dumps(
                 response, ensure_ascii=False, sort_keys=True, separators=(",", ":")
             )
@@ -2667,7 +2685,11 @@ class ViewerWindow(QMainWindow):
             )
             return
         try:
-            labworks = self._mxlive_reader().labworks(experiment_id)
+            reader = self._mxlive_reader()
+            labworks = self._run_in_background(
+                f"Checking {experiment_id} on MxLive…",
+                lambda: reader.labworks(experiment_id),
+            )
         except (MxLiveReadError, ValueError) as error:
             QMessageBox.warning(self, "Could not verify upload", str(error))
             return
@@ -2755,7 +2777,11 @@ class ViewerWindow(QMainWindow):
         if account is None or not account.upload_ready:
             return True
         try:
-            remote = self._mxlive_reader().experiment_ids(datetime.now().year)
+            reader = self._mxlive_reader()
+            remote = self._run_in_background(
+                "Checking experiment IDs on MxLive…",
+                lambda: reader.experiment_ids(datetime.now().year),
+            )
         except (MxLiveReadError, ValueError) as error:
             answer = QMessageBox.question(
                 self,
@@ -2802,7 +2828,10 @@ class ViewerWindow(QMainWindow):
         experiment_id = revision.experiment_id
         exporter = self._worksheet_exporter()
         try:
-            result = exporter.export(plan, experiment_id)
+            result = self._run_in_background(
+                "Saving worksheets to instrument folders…",
+                lambda: exporter.export(plan, experiment_id),
+            )
         except WorksheetDestinationUnavailable as error:
             dialog = QMessageBox(self)
             dialog.setIcon(QMessageBox.Critical)
@@ -2827,8 +2856,11 @@ class ViewerWindow(QMainWindow):
                 self._record_worksheet_export(revision, "cancelled", error=str(error))
                 return
             try:
-                result = exporter.export_to_alternate_root(
-                    plan, experiment_id, Path(selected)
+                result = self._run_in_background(
+                    "Saving worksheets…",
+                    lambda: exporter.export_to_alternate_root(
+                        plan, experiment_id, Path(selected)
+                    ),
                 )
             except WorksheetDestinationUnavailable as fallback_error:
                 self._record_worksheet_export(
@@ -2884,7 +2916,10 @@ class ViewerWindow(QMainWindow):
             return
         exporter = self._worksheet_exporter()
         try:
-            result = exporter.export_shifter(plan, revision.experiment_id)
+            result = self._run_in_background(
+                "Saving worksheets to SHIFTER folders…",
+                lambda: exporter.export_shifter(plan, revision.experiment_id),
+            )
         except WorksheetDestinationUnavailable as error:
             dialog = QMessageBox(self)
             dialog.setIcon(QMessageBox.Critical)
@@ -2909,8 +2944,11 @@ class ViewerWindow(QMainWindow):
                 self._record_worksheet_export(revision, "cancelled", error=str(error))
                 return
             try:
-                result = exporter.export_shifter_to_alternate_root(
-                    plan, revision.experiment_id, Path(selected)
+                result = self._run_in_background(
+                    "Saving worksheets…",
+                    lambda: exporter.export_shifter_to_alternate_root(
+                        plan, revision.experiment_id, Path(selected)
+                    ),
                 )
             except WorksheetDestinationUnavailable as fallback_error:
                 self._record_worksheet_export(
@@ -4217,6 +4255,47 @@ class ViewerWindow(QMainWindow):
         self._set_save_status("failed")
         self.status_message_label.show_message(f"Not saved: {error}")
         QMessageBox.warning(self, "Review was not saved", str(error))
+
+    def _run_in_background(self, message: str, task: Callable[[], T]) -> T:
+        """Run slow network or share I/O without freezing the window.
+
+        The task runs on a worker thread and must not touch Qt widgets or the
+        SQLite review store. User input is excluded until it finishes, so the
+        plan cannot change underneath it, while the window keeps repainting.
+        """
+        outcome: dict[str, object] = {}
+
+        def work() -> None:
+            try:
+                outcome["result"] = task()
+            except BaseException as error:  # noqa: BLE001 - re-raised on the UI thread
+                outcome["error"] = error
+
+        worker = threading.Thread(target=work, name="xtalflow-io", daemon=True)
+        progress = QProgressDialog(message, None, 0, 0, self)
+        progress.setWindowTitle("XtalFlow")
+        progress.setWindowModality(Qt.WindowModal)
+        # QProgressDialog's own delayed show ignores later setMinimumDuration
+        # calls, so reveal it explicitly only when the work is not instant.
+        progress.setMinimumDuration(2**31 - 1)
+        reveal = QTimer()
+        reveal.setSingleShot(True)
+        reveal.timeout.connect(progress.show)
+        loop = QEventLoop()
+        poll = QTimer()
+        poll.setInterval(20)
+        poll.timeout.connect(lambda: None if worker.is_alive() else loop.quit())
+        worker.start()
+        reveal.start(400)
+        poll.start()
+        loop.exec_(QEventLoop.ExcludeUserInputEvents)
+        poll.stop()
+        reveal.stop()
+        progress.close()
+        progress.deleteLater()
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome["result"]
 
     def handle_unexpected_error(self, error_type, error, error_traceback) -> None:
         """Report an exception raised in a Qt slot instead of letting PyQt abort."""

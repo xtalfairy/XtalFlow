@@ -104,6 +104,10 @@ class ProjectController:
         self.active_project: Project | None = None
         self.review_controller: ReviewController | None = None
         self.default_auto_advance_count = default_auto_advance_count
+        # Scanning an image set walks every well folder on the RockMaker share.
+        # Statistics and summaries run after each click, so reuse the listing
+        # until the user opens that image set again.
+        self._plate_cache: dict[tuple[str, int, str], PlateImages] = {}
 
     def create_project(self, name: str) -> Project:
         self._checkpoint_active_review()
@@ -130,12 +134,14 @@ class ProjectController:
     ) -> ProjectImageSet:
         project = self._require_active_project()
         plate = self.image_repository.load_plate(plate_code, profile)
+        self._cache_plate(plate)
         return self._add_loaded_image_set(plate, plate_format)
 
     def add_pinned_image_set(
         self, plate_code: str, batch_id: int, profile: str, plate_format: PlateFormat
     ) -> ProjectImageSet:
         plate = self.image_repository.load_plate_batch(plate_code, batch_id, profile)
+        self._cache_plate(plate)
         return self._add_loaded_image_set(plate, plate_format)
 
     def _add_loaded_image_set(
@@ -219,7 +225,7 @@ class ProjectController:
             ) == image_set.source_key:
                 return image_set
         self._checkpoint_active_review()
-        plate = self._load_image_set_plate(image_set)
+        plate = self._load_image_set_plate(image_set, refresh=True)
         self._activate_loaded_image_set(image_set, plate)
         return image_set
 
@@ -453,14 +459,22 @@ class ProjectController:
                 self.review_controller.session.remove_target(target_id)
         return len(unique_ids)
 
-    def _load_image_set_plate(self, image_set: ProjectImageSet) -> PlateImages:
+    def _load_image_set_plate(
+        self, image_set: ProjectImageSet, refresh: bool = False
+    ) -> PlateImages:
         plate_format = plate_format_by_id(image_set.plate_format_id)
         if plate_format is None or plate_format.version != image_set.plate_format_version:
             raise ValueError("image set uses an unsupported plate format")
-        plate = self.image_repository.load_plate_batch(
-            image_set.plate_code, image_set.batch_id, image_set.profile
-        )
+        plate = None if refresh else self._plate_cache.get(image_set.source_key)
+        if plate is None:
+            plate = self.image_repository.load_plate_batch(
+                image_set.plate_code, image_set.batch_id, image_set.profile
+            )
+            self._cache_plate(plate)
         return self._images_supported_by(plate, plate_format)
+
+    def _cache_plate(self, plate: PlateImages) -> None:
+        self._plate_cache[(plate.plate_code, plate.batch_id, plate.profile)] = plate
 
     @staticmethod
     def _images_supported_by(

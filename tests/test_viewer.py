@@ -227,6 +227,40 @@ def test_viewer_starts_when_workspace_images_are_unavailable(tmp_path: Path) -> 
     app.processEvents()
 
 
+def test_background_io_keeps_event_loop_running_and_reraises_errors(
+    tmp_path: Path,
+) -> None:
+    import threading
+    import time
+
+    from PyQt5.QtCore import QTimer
+
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(RockMakerImageRepository(tmp_path))
+    ticks = []
+    timer = QTimer()
+    timer.timeout.connect(lambda: ticks.append(1))
+    timer.start(10)
+
+    def slow_network_call():
+        time.sleep(0.2)
+        return threading.current_thread() is threading.main_thread()
+
+    ran_on_ui_thread = window._run_in_background("Working…", slow_network_call)
+    timer.stop()
+
+    assert ran_on_ui_thread is False
+    assert len(ticks) >= 5
+
+    def dropped_share():
+        raise OSError(112, "Host is down")
+
+    with pytest.raises(OSError, match="Host is down"):
+        window._run_in_background("Working…", dropped_share)
+    window.close()
+    app.processEvents()
+
+
 def test_auto_confirm_confidence_is_saved_per_user(tmp_path: Path) -> None:
     app = QApplication.instance() or QApplication([])
     preferences_path = tmp_path / ".config" / "xtalflow" / "preferences.json"

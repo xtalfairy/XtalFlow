@@ -182,3 +182,33 @@ def test_target_summary_preserves_selection_order_instead_of_well_order(
         second_selected_key,
     ]
     store.close()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_project_totals_reuse_image_listings_until_image_set_is_reopened(
+    tmp_path: Path,
+) -> None:
+    class CountingRepository(RockMakerImageRepository):
+        scans: list[tuple[str, int]] = []
+
+        def load_plate_batch(self, plate_code, batch_id, profile="profileID_1"):
+            self.scans.append((plate_code, batch_id))
+            return super().load_plate_batch(plate_code, batch_id, profile)
+
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    repository = CountingRepository(FIXTURE_ROOT)
+    workspace = ProjectController(repository, store)
+    workspace.create_project("FBDD")
+    first = workspace.add_pinned_image_set("1070", 5947, "profileID_1", SWISSCI_MIDI_3_LENS)
+    workspace.add_pinned_image_set("1100", 6088, "profileID_1", SWISSCI_MIDI_3_LENS)
+    repository.scans.clear()
+
+    for _ in range(3):
+        workspace.project_review_statistics()
+        workspace.project_target_summaries()
+    assert repository.scans == []
+
+    workspace.activate_image_set(first.id)
+    assert repository.scans == [("1070", 5947)]
+    store.close()

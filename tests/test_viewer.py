@@ -177,7 +177,7 @@ def test_conditions_explain_a_volume_that_cannot_be_split_equally() -> None:
     assert editor.volume_error_label.isHidden()
     assert editor.assignment_table.item(0, 3).text() == "10.0 nL × 3"
     assert editor.table.item(0, 8).text() == "10.0 nL × 3"
-    assert "30.0 nL per well" in editor.checklist_label.text()
+    assert "30.0 nL per well" in editor.summary_label.text()
     editor.close()
     app.processEvents()
 
@@ -373,6 +373,14 @@ def test_main_window_starts_on_home_and_guides_an_experiment(
     assert not page.back_button.isEnabled()
     editor.protein_input.setText("BRD4")
     assert page.primary_button.text() == "Select wells"
+    assert editor.setup_step.experiment_id_label.text().startswith(
+        "ID when finalized: RawCrystal-"
+    )
+    editor.protein_input.setText("BRD4 !!")
+    assert editor.setup_step.protein_error_label.text().startswith("Protein name may contain")
+    assert not page.primary_button.isEnabled()
+    editor.protein_input.setText("BRD4")
+    assert editor.setup_step.protein_error_label.isHidden()
     page.primary_button.click()
 
     assert window._current_step is WorkflowStep.SELECT_WELLS
@@ -1032,8 +1040,9 @@ def test_fragment_worksheets_are_saved_and_audited(tmp_path: Path, monkeypatch) 
     revision = editor.last_revision
     exports = store.audit.list_worksheet_exports(revision.id)
     result = editor.worksheets_step.result_label.text()
-    assert result.startswith("✓ Worksheets saved for r1")
-    assert "SHIFTER 2: " in result
+    assert result.startswith("✓ Saved r1")
+    assert "nothing has run on the instruments yet" in result
+    assert table.item(2, 3).text() == exports[0].path_for("shifter2")
     assert editor.lifecycle_label.text() == "Finalized r1"
     assert page.primary_button.text() == "Done"
     assert all(

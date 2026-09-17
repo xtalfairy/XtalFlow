@@ -560,7 +560,7 @@ class ViewerWindow(QMainWindow):
         self.remove_targets_button = QPushButton("Delete Selected")
         self.remove_targets_button.setToolTip("Delete the selected positions (Delete)")
         self.remove_targets_button.setEnabled(False)
-        self.accept_valid_auto_wells_button = QPushButton("Accept Valid Auto Wells")
+        self.accept_valid_auto_wells_button = QPushButton("Confirm detected boundaries")
         target_summary_layout = QVBoxLayout()
         target_summary_layout.setContentsMargins(0, 0, 0, 0)
         target_summary_layout.addLayout(target_summary_controls)
@@ -1051,7 +1051,7 @@ class ViewerWindow(QMainWindow):
             or "no configured instruments"
         )
         editor.setup_step = SetupStep(editor, PLAN_TYPE_LABELS[plan_type])
-        editor.worksheets_step = WorksheetsStep(editor.mxlive_widget())
+        editor.worksheets_step = WorksheetsStep(editor)
         editor.worksheets_step.retry_button.clicked.connect(
             lambda _=False, selected_editor=editor: self._save_plan_worksheets(
                 selected_editor
@@ -1097,6 +1097,7 @@ class ViewerWindow(QMainWindow):
         editor.setup_step.workspace_label.setText(
             workspace.name if workspace is not None else "Unknown workspace"
         )
+        editor.setup_step.refresh()
         self.experiment_page.set_pages(editor.step_pages)
         self.pages.setCurrentWidget(self.experiment_page)
         self.setWindowTitle(f"{editor.plan_name} · XtalFlow")
@@ -1129,6 +1130,8 @@ class ViewerWindow(QMainWindow):
         self.experiment_page.show_step(step, STEP_HINTS[step])
         if step is WorkflowStep.WORKSHEETS:
             self._refresh_worksheets_step(editor)
+        elif step is WorkflowStep.SETUP:
+            editor.setup_step.refresh()
         elif step is WorkflowStep.SELECT_WELLS:
             self.image_canvas.setFocus(Qt.OtherFocusReason)
         if editor.workflow_step != step.value:
@@ -1400,6 +1403,12 @@ class ViewerWindow(QMainWindow):
                 plan = None
         worksheets = worksheets_for(plan) if plan is not None else {}
         username = getpass.getuser()
+        latest = self._latest_worksheet_export(revision) if finalized else None
+        saved = (
+            {output.instrument: output.path for output in latest.outputs}
+            if latest is not None and latest.status == WORKSHEETS_SUCCEEDED else {}
+        )
+        # Before saving, the folder each file will go to; after, the file itself.
         editor.worksheets_step.show_instruments(
             tuple(
                 (
@@ -1407,30 +1416,23 @@ class ViewerWindow(QMainWindow):
                     destination.worksheet.value.upper(),
                     str(len(worksheets[destination.worksheet][1]))
                     if destination.worksheet in worksheets else "—",
-                    str(destination.output_directory / username),
+                    saved.get(
+                        destination.instrument,
+                        str(destination.output_directory / username),
+                    ),
                 )
                 for destination in self._instruments_for(editor.plan_type)
             )
         )
-        latest = self._latest_worksheet_export(revision) if finalized else None
-        if not finalized:
-            editor.worksheets_step.show_result(
-                "Finalize the experiment in Review before saving worksheets.", "muted"
-            )
-        elif latest is None:
+        if latest is None:
+            # Not finalized yet: the footer names that and disables saving.
             editor.worksheets_step.show_result("", "muted")
         elif latest.status == WORKSHEETS_SUCCEEDED:
-            lines = [
-                f"{theme.SYMBOL_OK} Worksheets saved for r{revision.revision} · "
-                f"{latest.exported_at:%Y-%m-%d %H:%M} · {latest.username} · "
-                "not yet run on the instruments"
-            ]
-            lines.extend(
-                f"{self._instrument_label(output)}: {output.path}"
-                for output in latest.outputs
-            )
             editor.worksheets_step.show_result(
-                "\n".join(lines), "ok",
+                f"{theme.SYMBOL_OK} Saved r{revision.revision} · "
+                f"{latest.exported_at:%Y-%m-%d %H:%M} · {latest.username} · "
+                "files are ready; nothing has run on the instruments yet",
+                "ok",
                 copy_text="\n".join(output.path for output in latest.outputs),
             )
         elif latest.status == WORKSHEETS_CANCELLED:
@@ -1441,8 +1443,7 @@ class ViewerWindow(QMainWindow):
         else:
             editor.worksheets_step.show_result(
                 f"{theme.SYMBOL_ERROR} No worksheets were saved. "
-                f"{latest.error_message or ''}\nMake the folders available and try "
-                "again, or save to another folder.",
+                f"{latest.error_message or ''}",
                 "error",
                 can_retry=True,
             )
@@ -2485,7 +2486,7 @@ class ViewerWindow(QMainWindow):
         except IMAGE_SOURCE_ERRORS:
             acceptable_count = 0
         self.accept_valid_auto_wells_button.setText(
-            f"Accept Valid Auto Wells ({acceptable_count})"
+            f"Confirm detected boundaries ({acceptable_count})"
         )
         self.accept_valid_auto_wells_button.setEnabled(acceptable_count > 0)
         summaries = (

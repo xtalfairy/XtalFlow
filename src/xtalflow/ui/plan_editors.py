@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import getpass
+import html
 import math
 import json
 from collections.abc import Callable
@@ -112,9 +113,13 @@ class PlanEditorBase(QWidget):
         self.protein_input.setPlaceholderText("e.g. BRD4")
         self.protein_input.setMaximumWidth(480)
         self.lifecycle_label = QLabel("Draft · not saved")
-        self.checklist_label = QLabel()
-        self.checklist_label.setWordWrap(True)
-        self.checklist_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.summary_label = QLabel()
+        self.summary_label.setTextFormat(Qt.RichText)
+        self.summary_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.warning_label = QLabel()
+        self.warning_label.setWordWrap(True)
+        self.warning_label.setStyleSheet(theme.status_style("attention"))
+        self.warning_label.hide()
         self.destinations_text = ""
         self.experiment_id_label = QLabel("Experiment ID: determined when finalized")
         self.experiment_id_label.setObjectName("Muted")
@@ -142,19 +147,6 @@ class PlanEditorBase(QWidget):
         self.protein_input.textChanged.connect(self.draft_changed.emit)
         self.name_input.textEdited.connect(self.draft_changed.emit)
 
-    def mxlive_widget(self) -> QWidget:
-        widget = QWidget()
-        layout = QVBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.webdb_status_label)
-        layout.addWidget(self.webdb_table, 1)
-        actions = QHBoxLayout()
-        actions.addStretch()
-        actions.addWidget(self.webdb_upload_button)
-        layout.addLayout(actions)
-        widget.setLayout(layout)
-        return widget
-
     def conditions_widget(self) -> QWidget | None:
         return None
 
@@ -162,10 +154,11 @@ class PlanEditorBase(QWidget):
         widget = QWidget()
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.checklist_label)
+        layout.setSpacing(theme.SPACING_M)
+        layout.addWidget(self.summary_label)
+        layout.addWidget(self.warning_label)
         layout.addWidget(self.error_label)
         layout.addWidget(self.preview_tabs, 1)
-        layout.addWidget(self.experiment_id_label)
         widget.setLayout(layout)
         return widget
 
@@ -174,25 +167,40 @@ class PlanEditorBase(QWidget):
             self.name_input.setText(name)
 
     def _refresh_facts(self) -> None:
-        self.checklist_label.setText("\n".join(self._checklist_lines()))
+        rows = "".join(
+            f'<tr><td style="color:{theme.TEXT_MUTED}; padding:1px 24px 1px 0">{label}</td>'
+            f"<td>{html.escape(value)}</td></tr>"
+            for label, value in self._summary_rows()
+        )
+        self.summary_label.setText(f"<table>{rows}</table>")
+        warnings = self._warnings()
+        self.warning_label.setText("\n".join(f"{theme.SYMBOL_ATTENTION} {item}" for item in warnings))
+        self.warning_label.setVisible(bool(warnings))
 
-    def _checklist_lines(self) -> list[str]:
-        """What finalizing will fix, one checked fact per line."""
+    def _summary_rows(self) -> list[tuple[str, str]]:
+        """What finalizing fixes, as label and value; problems are listed separately."""
         wells = self.selection.wells if self.selection is not None else ()
         positions = sum(len(well.soaking_positions) for well in wells)
-        lines = [
-            f"{theme.SYMBOL_OK if wells else theme.SYMBOL_ATTENTION} "
-            f"{_plural(len(wells), 'well')} · {_plural(positions, 'position')}"
+        if self.assigned_experiment_id:
+            experiment_id = f"{self.assigned_experiment_id} (fixed)"
+        elif self.current_experiment_id:
+            experiment_id = f"{self.current_experiment_id} (when finalized)"
+        else:
+            experiment_id = "Assigned when finalized"
+        rows = [
+            ("Experiment ID", experiment_id),
+            ("Wells", f"{_plural(len(wells), 'well')} · {_plural(positions, 'soaking position')}"),
         ]
-        reused = sum(1 for well in wells if self.well_usage.get(well.image_key))
-        if reused:
-            lines.append(
-                f"{theme.SYMBOL_ATTENTION} {_plural(reused, 'well')} already used in "
-                "another experiment · see Usage"
-            )
         if self.destinations_text:
-            lines.append(f"{theme.SYMBOL_OK} Worksheets for {self.destinations_text}")
-        return lines
+            rows.append(("Worksheets", self.destinations_text))
+        return rows
+
+    def _warnings(self) -> list[str]:
+        wells = self.selection.wells if self.selection is not None else ()
+        reused = sum(1 for well in wells if self.well_usage.get(well.image_key))
+        if not reused:
+            return []
+        return [f"{_plural(reused, 'well')} already used in another experiment · see Usage"]
 
     def set_destinations(self, text: str) -> None:
         self.destinations_text = text
@@ -248,6 +256,7 @@ class PlanEditorBase(QWidget):
                 self.current_experiment_id = None
                 self.experiment_id_label.setText(f"Experiment ID: {error}")
         self._refresh_webdb_preview()
+        self._refresh_facts()
 
     def _record_builder(self) -> Callable:
         raise NotImplementedError
@@ -644,24 +653,25 @@ class FragmentScreeningEditor(PlanEditorBase):
         self._refresh_experiment_id()
         self.draft_changed.emit()
 
-    def _checklist_lines(self) -> list[str]:
-        lines = super()._checklist_lines()
+    def _summary_rows(self) -> list[tuple[str, str]]:
+        rows = super()._summary_rows()
         plan = self.current_plan
         if isinstance(plan, FragmentScreenPlan):
-            used = len(plan.assignments)
-            line = (
-                f"{theme.SYMBOL_OK} {_plural(used, 'fragment')} from {plan.library.name}"
-                f" (rows {self.rows_input.text()})"
+            fragments = (
+                f"{_plural(len(plan.assignments), 'fragment')} from {plan.library.name}, "
+                f"rows {self.rows_input.text()}"
             )
             if plan.unused_fragments:
-                line += f" · last {len(plan.unused_fragments)} not used"
-            lines.insert(1, line)
-            lines.insert(
-                2,
-                f"{theme.SYMBOL_OK} {plan.volume_per_crystal_nl} nL per well, shared "
-                "equally between its positions",
-            )
-        return lines
+                fragments += f" · last {len(plan.unused_fragments)} not used"
+            rows[2:2] = [
+                ("Fragments", fragments),
+                (
+                    "Volume",
+                    f"{plan.volume_per_crystal_nl} nL per well, shared equally between "
+                    "its positions",
+                ),
+            ]
+        return rows
 
     def _short_volume_error(self, error: ValueError, volume: Decimal) -> ValueError:
         """Name how many wells cannot share the volume and the nearest volumes that work.

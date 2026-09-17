@@ -103,7 +103,7 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
     except ValueError as error:
         message = (
             "Enter a protein name to continue."
-            if not facts.protein.strip() else f"Protein name: {error}"
+            if not facts.protein.strip() else "Fix the protein name to continue."
         )
         statuses[WorkflowStep.SETUP] = StepStatus(
             WorkflowStep.SETUP, StepState.INCOMPLETE, message

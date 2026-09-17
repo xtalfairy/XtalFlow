@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from PyQt5.QtCore import (
     QEventLoop,
+    QPoint,
     QRectF,
     QStandardPaths,
     QStringListModel,
@@ -85,9 +86,9 @@ from xtalflow.domain import (
     PlateImages,
     TargetPoint,
     plate_format_by_id,
-    ExperimentPlan,
     ExperimentProject,
     PlanType,
+    Project,
     SelectedWellUsage,
     crystal_selection_from_selected_crystals,
 )
@@ -122,6 +123,15 @@ from xtalflow.domain.worksheets import (
     build_echo_worksheet,
     build_shifter_worksheet,
 )
+from xtalflow.application.planning_service import (
+    EXPERIMENT_ID_PREFIXES,
+    PlanningService,
+    PlanStatus,
+    fragment_plan_snapshot,
+    raw_crystal_plan_snapshot,
+    restored_plan_status,
+    saved_plan_status,
+)
 from xtalflow.application.labwork_upload import (
     FAILED,
     PARTIAL,
@@ -136,7 +146,6 @@ from xtalflow.application.labwork_upload import (
 from xtalflow.infrastructure import (
     LegacyMxLiveReadClient,
     LegacyMxLiveWriteClient,
-    PlateImagesNotFoundError,
     OpenCVWellDetector,
     RockMakerImageRepository,
     SQLiteReviewStore,
@@ -156,10 +165,7 @@ from xtalflow.infrastructure.mxlive_config import (
     MxLiveConfigurationError,
     resolve_mxlive_account,
 )
-from xtalflow.infrastructure.user_preferences import (
-    JsonUserPreferencesStore,
-    UserPreferences,
-)
+from xtalflow.infrastructure.user_preferences import JsonUserPreferencesStore
 from xtalflow.presentation import AspectFitTransform, ProjectImageSetListModel
 from xtalflow.settings import (
     ApplicationSettings,
@@ -1334,6 +1340,9 @@ class ViewerWindow(QMainWindow):
         super().__init__()
         self.repository = repository
         self.review_store = review_store
+        self.planning_service = (
+            PlanningService(review_store) if review_store is not None else None
+        )
         self.settings = settings or DEFAULT_SETTINGS
         self.preferences_store = preferences_store or JsonUserPreferencesStore()
         self.user_preferences = self.preferences_store.load()
@@ -1956,38 +1965,15 @@ class ViewerWindow(QMainWindow):
         crystals: tuple[SelectedCrystal, ...],
         restored: PlanningDraft | None = None,
     ) -> None:
-        project = self.project_controller.active_project
-        if project is None:
-            raise ValueError("no project is open")
+        project = self._require_planning_workspace()
         existing = self._planning_drafts.setdefault(project.id, [])
         name = (
             restored.name if restored
             else f"Fragment Screening Project #{len(existing) + 1}"
         )
         plan_id = restored.id if restored else str(uuid4())
-        owned_project = (
-            self.review_store.load_experiment_project(plan_id)
-            if self.review_store is not None else None
-        )
-        selection = (
-            owned_project.crystal_selection
-            if owned_project is not None
-            else crystal_selection_from_selected_crystals(plan_id, crystals)
-        )
+        owned_project, selection = self._plan_selection(plan_id, crystals)
         editor = FragmentScreeningEditor(library, selection, self.plan_stack)
-        editor.plan_id = plan_id
-        editor.project_id = project.id
-        editor.plan_name = name
-        editor.plan_created_at = restored.created_at if restored else datetime.now(timezone.utc)
-        editor.last_revision = None
-        editor.last_revision_snapshot = None
-        editor.selection_snapshot_owned = owned_project is not None or restored is None
-        editor.autosave_timer = QTimer(editor)
-        editor.autosave_timer.setSingleShot(True)
-        editor.autosave_timer.setInterval(750)
-        editor.autosave_timer.timeout.connect(
-            lambda selected_editor=editor: self._persist_planning_draft(selected_editor)
-        )
         editor.set_library_choices(self._fragment_library_choices())
         if restored is not None:
             editor.restore_draft(restored)
@@ -1997,81 +1983,20 @@ class ViewerWindow(QMainWindow):
         editor.library_refresh_requested.connect(
             self._refresh_fragment_library_choices
         )
-        editor.set_experiment_id_provider(self._suggest_fragment_experiment_id)
-        if self.mxlive_account is not None:
-            editor.set_mxlive_account(self.mxlive_account)
-        elif self.mxlive_configuration_error:
-            editor.webdb_status_label.setText(
-                f"{self.mxlive_configuration_error} · "
-                f"{editor.webdb_table.rowCount()} preview records"
-            )
         editor.save_worksheets_requested.connect(
             lambda selected_editor=editor: self._save_fragment_worksheets(
                 selected_editor
             )
         )
-        editor.finalize_requested.connect(
-            lambda selected_editor=editor: self._finalize_fragment_plan(selected_editor)
+        self._register_plan_editor(
+            editor, PlanType.FRAGMENT_SCREENING, name, plan_id, restored, owned_project
         )
-        editor.webdb_upload_requested.connect(
-            lambda selected_editor=editor: self._upload_fragment_labworks(
-                selected_editor
-            )
-        )
-        editor.adopt_selection_requested.connect(
-            lambda selected_editor=editor: self._adopt_legacy_selection(
-                selected_editor, PlanType.FRAGMENT_SCREENING
-            )
-        )
-        editor.draft_changed.connect(
-            lambda selected_editor=editor: self._planning_draft_changed(selected_editor)
-        )
-        existing.append((name, editor))
-        self.plan_stack.addWidget(editor)
-        self.plan_list.addItem(name)
-        self.plan_list_empty_label.hide()
-        self.plan_list.setCurrentRow(self.plan_list.count() - 1)
-        if restored is None:
-            self.main_tabs.setCurrentIndex(self.planning_tab_index)
-            self._save_selection_snapshot(
-                editor, selection, PlanType.FRAGMENT_SCREENING
-            )
-            self._persist_planning_draft(editor)
-        else:
-            revisions = self.review_store.list_plan_revisions(editor.plan_id) if self.review_store else ()
-            if revisions:
-                editor.last_revision = revisions[-1]
-                editor.last_revision_snapshot = revisions[-1].snapshot_json
-                if self._fragment_plan_snapshot(editor) == editor.last_revision_snapshot:
-                    editor.lifecycle_label.setText(f"Finalized r{revisions[-1].revision}")
-                    self._set_plan_list_status(editor, f"Finalized r{revisions[-1].revision}")
-                    self._sync_webdb_upload_state(editor)
-                else:
-                    editor.lifecycle_label.setText("Draft · restored with changes")
-                    self._set_plan_list_status(editor, "Draft")
-            if owned_project is None:
-                editor.adopt_selection_button.show()
-                editor.lifecycle_label.setText(
-                    "Legacy Draft · selection needs review"
-                )
-                self._set_plan_list_status(editor, "Legacy · Review selection")
-        self._refresh_project_well_usage()
-
-    def _planning_draft_changed(self, editor: FragmentScreeningEditor) -> None:
-        if not hasattr(editor, "autosave_timer"):
-            return
-        editor.lifecycle_label.setText("Draft · saving…")
-        editor.webdb_upload_button.setEnabled(False)
-        self._set_plan_list_status(editor, "Draft")
-        editor.autosave_timer.start()
 
     def _add_raw_crystal_plan(
         self, crystals: tuple[SelectedCrystal, ...],
         restored: PlanningDraft | None = None,
     ) -> None:
-        project = self.project_controller.active_project
-        if project is None:
-            raise ValueError("no project is open")
+        project = self._require_planning_workspace()
         existing = self._planning_drafts.setdefault(project.id, [])
         name = (
             restored.name if restored
@@ -2079,6 +2004,26 @@ class ViewerWindow(QMainWindow):
             f"{sum(isinstance(item[1], RawCrystalEditor) for item in existing) + 1}"
         )
         plan_id = restored.id if restored else str(uuid4())
+        owned_project, selection = self._plan_selection(plan_id, crystals)
+        editor = RawCrystalEditor(selection, self.plan_stack)
+        if restored is not None:
+            editor.restore_draft(restored)
+        editor.save_worksheet_requested.connect(
+            lambda selected_editor=editor: self._save_raw_crystal_worksheet(selected_editor)
+        )
+        self._register_plan_editor(
+            editor, PlanType.RAW_CRYSTAL, name, plan_id, restored, owned_project
+        )
+
+    def _require_planning_workspace(self) -> Project:
+        project = self.project_controller.active_project
+        if project is None:
+            raise ValueError("no project is open")
+        return project
+
+    def _plan_selection(
+        self, plan_id: str, crystals: tuple[SelectedCrystal, ...]
+    ) -> tuple[ExperimentProject | None, CrystalSelection]:
         owned_project = (
             self.review_store.load_experiment_project(plan_id)
             if self.review_store is not None else None
@@ -2088,7 +2033,20 @@ class ViewerWindow(QMainWindow):
             if owned_project is not None
             else crystal_selection_from_selected_crystals(plan_id, crystals)
         )
-        editor = RawCrystalEditor(selection, self.plan_stack)
+        return owned_project, selection
+
+    def _register_plan_editor(
+        self,
+        editor,
+        plan_type: PlanType,
+        name: str,
+        plan_id: str,
+        restored: PlanningDraft | None,
+        owned_project: ExperimentProject | None,
+    ) -> None:
+        """Attach plan identity, autosave, and lifecycle actions shared by plan types."""
+        project = self._require_planning_workspace()
+        editor.plan_type = plan_type
         editor.plan_id = plan_id
         editor.project_id = project.id
         editor.plan_name = name
@@ -2100,11 +2058,13 @@ class ViewerWindow(QMainWindow):
         editor.autosave_timer.setSingleShot(True)
         editor.autosave_timer.setInterval(750)
         editor.autosave_timer.timeout.connect(
-            lambda selected_editor=editor: self._persist_raw_crystal_draft(selected_editor)
+            lambda selected_editor=editor: self._persist_draft(selected_editor)
         )
-        if restored is not None:
-            editor.restore_draft(restored)
-        editor.set_experiment_id_provider(self._suggest_raw_crystal_experiment_id)
+        editor.set_experiment_id_provider(
+            lambda protein, selected_type=plan_type: self._suggest_experiment_id(
+                selected_type, protein
+            )
+        )
         if self.mxlive_account is not None:
             editor.set_mxlive_account(self.mxlive_account)
         elif self.mxlive_configuration_error:
@@ -2112,53 +2072,50 @@ class ViewerWindow(QMainWindow):
                 f"{self.mxlive_configuration_error} · "
                 f"{editor.webdb_table.rowCount()} preview records"
             )
-        editor.draft_changed.connect(
-            lambda selected_editor=editor: self._raw_crystal_draft_changed(selected_editor)
-        )
         editor.finalize_requested.connect(
-            lambda selected_editor=editor: self._finalize_raw_crystal_plan(selected_editor)
+            lambda selected_editor=editor: self._finalize_plan(selected_editor)
         )
         editor.webdb_upload_requested.connect(
-            lambda selected_editor=editor: self._upload_raw_labworks(selected_editor)
+            lambda selected_editor=editor: self._upload_plan_labworks(selected_editor)
         )
         editor.adopt_selection_requested.connect(
-            lambda selected_editor=editor: self._adopt_legacy_selection(
-                selected_editor, PlanType.RAW_CRYSTAL
-            )
+            lambda selected_editor=editor: self._adopt_legacy_selection(selected_editor)
         )
-        editor.save_worksheet_requested.connect(
-            lambda selected_editor=editor: self._save_raw_crystal_worksheet(selected_editor)
+        editor.draft_changed.connect(
+            lambda selected_editor=editor: self._plan_draft_changed(selected_editor)
         )
-        existing.append((name, editor))
+        self._planning_drafts.setdefault(project.id, []).append((name, editor))
         self.plan_stack.addWidget(editor)
         self.plan_list.addItem(name)
         self.plan_list_empty_label.hide()
         self.plan_list.setCurrentRow(self.plan_list.count() - 1)
         if restored is None:
             self.main_tabs.setCurrentIndex(self.planning_tab_index)
-            self._save_selection_snapshot(editor, selection, PlanType.RAW_CRYSTAL)
-            self._persist_raw_crystal_draft(editor)
-        elif self.review_store is not None:
-            revisions = self.review_store.list_plan_revisions(editor.plan_id)
-            if revisions:
-                editor.last_revision = revisions[-1]
-                editor.last_revision_snapshot = revisions[-1].snapshot_json
-                if self._raw_crystal_snapshot(editor) == editor.last_revision_snapshot:
-                    editor.lifecycle_label.setText(f"Finalized r{revisions[-1].revision}")
-                    self._set_plan_list_status(editor, f"Finalized r{revisions[-1].revision}")
-                    self._sync_webdb_upload_state(editor)
-                else:
-                    editor.lifecycle_label.setText("Draft · restored with changes")
-                    self._set_plan_list_status(editor, "Draft")
-            if owned_project is None:
-                editor.adopt_selection_button.show()
-                editor.lifecycle_label.setText(
-                    "Legacy Draft · selection needs review"
-                )
-                self._set_plan_list_status(editor, "Legacy · Review selection")
+            self._save_selection_snapshot(editor, editor.selection)
+            self._persist_draft(editor)
+        elif self.planning_service is not None:
+            self._restore_plan_lifecycle(editor)
         self._refresh_project_well_usage()
 
-    def _raw_crystal_draft_changed(self, editor: RawCrystalEditor) -> None:
+    def _restore_plan_lifecycle(self, editor) -> None:
+        editor.last_revision = self.planning_service.latest_revision(editor.plan_id)
+        if editor.last_revision is not None:
+            editor.last_revision_snapshot = editor.last_revision.snapshot_json
+        snapshot = self._plan_snapshot(editor)
+        status = restored_plan_status(
+            editor.last_revision, snapshot, editor.selection_snapshot_owned
+        )
+        if (
+            editor.last_revision is not None
+            and snapshot == editor.last_revision_snapshot
+        ):
+            self._sync_webdb_upload_state(editor)
+        if not editor.selection_snapshot_owned:
+            editor.adopt_selection_button.show()
+        if status is not None:
+            self._show_plan_status(editor, status)
+
+    def _plan_draft_changed(self, editor) -> None:
         if not hasattr(editor, "autosave_timer"):
             return
         editor.lifecycle_label.setText("Draft · saving…")
@@ -2166,7 +2123,7 @@ class ViewerWindow(QMainWindow):
         self._set_plan_list_status(editor, "Draft")
         editor.autosave_timer.start()
 
-    def _adopt_legacy_selection(self, editor, plan_type: PlanType) -> None:
+    def _adopt_legacy_selection(self, editor) -> None:
         try:
             crystals = self.project_controller.selected_crystals_for_plan()
             if not crystals:
@@ -2192,112 +2149,105 @@ class ViewerWindow(QMainWindow):
             created_at=editor.plan_created_at,
         )
         editor.set_selection(selection)
-        if not self._save_selection_snapshot(editor, selection, plan_type):
+        if not self._save_selection_snapshot(editor, selection):
             return
         editor.selection_snapshot_owned = True
         editor.adopt_selection_button.hide()
         editor.lifecycle_label.setText("Draft · selection fixed")
         self._set_plan_list_status(editor, "Draft · Selection fixed")
         self._refresh_project_well_usage()
-        if isinstance(editor, FragmentScreeningEditor):
-            self._persist_planning_draft(editor)
-        else:
-            self._persist_raw_crystal_draft(editor)
+        self._persist_draft(editor)
 
-    def _save_selection_snapshot(
-        self,
-        editor,
-        selection: CrystalSelection,
-        plan_type: PlanType,
-    ) -> bool:
-        if self.review_store is None:
+    def _save_selection_snapshot(self, editor, selection: CrystalSelection) -> bool:
+        if self.planning_service is None:
             return True
-        timestamp = editor.plan_created_at
-        owned_project = ExperimentProject(
-            editor.plan_id,
-            editor.plan_name,
-            selection,
-            ExperimentPlan(
-                f"{editor.plan_id}:plan",
-                editor.plan_id,
-                plan_type,
-                timestamp,
-                timestamp,
-            ),
-            timestamp,
-            timestamp,
-        )
         try:
-            self.review_store.save_experiment_project(owned_project)
+            self.planning_service.save_selection_snapshot(
+                editor.plan_id, editor.plan_name, editor.plan_type, selection,
+                editor.plan_created_at,
+            )
         except ReviewPersistenceError as error:
             editor.selection_snapshot_owned = False
             self._show_persistence_error(error)
             return False
         return True
 
-    def _persist_raw_crystal_draft(self, editor: RawCrystalEditor) -> None:
-        if self.review_store is None:
+    @staticmethod
+    def _plan_snapshot(editor) -> str | None:
+        plan = editor.current_plan
+        if plan is None:
+            return None
+        protein = editor.protein_input.text()
+        if editor.plan_type is PlanType.RAW_CRYSTAL:
+            return raw_crystal_plan_snapshot(plan, protein)
+        return fragment_plan_snapshot(
+            plan, protein, editor.library_input.currentData(Qt.UserRole),
+            editor.rows_input.text(),
+        )
+
+    @staticmethod
+    def _draft_from_editor(editor) -> PlanningDraft:
+        now = datetime.now(timezone.utc)
+        if editor.plan_type is PlanType.RAW_CRYSTAL:
+            return PlanningDraft(
+                editor.plan_id, editor.project_id, PlanType.RAW_CRYSTAL.value,
+                editor.plan_name, None, "", editor.protein_input.text(), "0",
+                editor.order_input.currentData().value, editor.plan_created_at, now,
+                editor.assigned_experiment_id,
+            )
+        return PlanningDraft(
+            editor.plan_id, editor.project_id, PlanType.FRAGMENT_SCREENING.value,
+            editor.plan_name, editor.library_input.currentData(Qt.UserRole),
+            editor.rows_input.text(), editor.protein_input.text(),
+            str(editor.volume_input.value()), editor.order_input.currentData().value,
+            editor.plan_created_at, now, editor.assigned_experiment_id,
+        )
+
+    def _persist_draft(self, editor) -> None:
+        if self.planning_service is None:
             editor.lifecycle_label.setText("Draft · memory only")
             return
-        now = datetime.now(timezone.utc)
-        draft = PlanningDraft(
-            editor.plan_id, editor.project_id, "raw_crystal", editor.plan_name,
-            None, "", editor.protein_input.text(), "0",
-            editor.order_input.currentData().value, editor.plan_created_at, now,
-            editor.assigned_experiment_id,
-        )
         try:
-            self.review_store.save_planning_draft(draft)
+            self.planning_service.save_draft(self._draft_from_editor(editor))
         except ReviewPersistenceError as error:
             editor.lifecycle_label.setText("Draft · save failed")
             self._show_persistence_error(error)
             return
-        snapshot = self._raw_crystal_snapshot(editor)
-        if editor.last_revision is not None and snapshot == editor.last_revision_snapshot:
-            editor.lifecycle_label.setText(f"Finalized r{editor.last_revision.revision}")
-            self._set_plan_list_status(editor, f"Finalized r{editor.last_revision.revision}")
+        status = saved_plan_status(
+            editor.last_revision, editor.last_revision_snapshot,
+            self._plan_snapshot(editor),
+        )
+        self._show_plan_status(editor, status)
+        if status.finalized:
             self._sync_webdb_upload_state(editor)
-        else:
-            editor.lifecycle_label.setText("Draft · saved")
-            self._set_plan_list_status(editor, "Draft")
 
-    def _raw_crystal_snapshot(self, editor: RawCrystalEditor) -> str | None:
-        plan = editor.current_plan
-        if plan is None:
-            return None
-        payload = {
-            "schema": 1, "plan_type": "raw_crystal",
-            "protein": editor.protein_input.text(),
-            "assignment_order": plan.assignment_order.value,
-            "selections": [
-                {"image_key": selection.selected_well.image_key,
-                 "image_path": selection.selected_well.image_path,
-                 "plate": selection.selected_well.plate_code,
-                 "well": selection.selected_well.well_address,
-                 "plate_format_id": selection.selected_well.plate_format_id,
-                 "target": {"id": selection.position.source_target_id,
-                            "x_mm": str(selection.position.x_mm),
-                            "y_mm": str(selection.position.y_mm),
-                            "selected_at": selection.position.selected_at.isoformat()}}
-                for selection in plan.selections
-            ],
-        }
-        return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    def _show_plan_status(self, editor, status: PlanStatus) -> None:
+        editor.lifecycle_label.setText(status.label)
+        self._set_plan_list_status(editor, status.list_status)
 
-    def _suggest_raw_crystal_experiment_id(self, protein: str) -> str:
-        return suggest_experiment_id(
-            "RawCrystal", protein, self._reserved_experiment_ids()
+    def _suggest_experiment_id(self, plan_type: PlanType, protein: str) -> str:
+        if self.planning_service is None:
+            return suggest_experiment_id(
+                EXPERIMENT_ID_PREFIXES[plan_type], protein, self._mxlive_experiment_ids
+            )
+        return self.planning_service.suggest_experiment_id(
+            plan_type, protein, self._mxlive_experiment_ids
         )
 
-    def _finalize_raw_crystal_plan(self, editor: RawCrystalEditor) -> PlanRevision | None:
-        if self.review_store is None:
+    def _finalize_plan(self, editor) -> PlanRevision | None:
+        if self.planning_service is None:
             QMessageBox.warning(self, "Cannot finalize plan", "Open a writable review database first.")
             return None
-        snapshot = self._raw_crystal_snapshot(editor)
+        snapshot = self._plan_snapshot(editor)
         if snapshot is None:
-            QMessageBox.warning(self, "Cannot finalize plan", "The raw crystal plan is not valid.")
+            plan_kind = (
+                "raw crystal" if editor.plan_type is PlanType.RAW_CRYSTAL else "fragment"
+            )
+            QMessageBox.warning(
+                self, "Cannot finalize plan", f"The {plan_kind} plan is not valid."
+            )
             return None
-        self._persist_raw_crystal_draft(editor)
+        self._persist_draft(editor)
         if snapshot == editor.last_revision_snapshot:
             return editor.last_revision
         if (
@@ -2306,16 +2256,10 @@ class ViewerWindow(QMainWindow):
         ):
             return None
         try:
-            experiment_id = (
-                editor.assigned_experiment_id
-                or self._suggest_raw_crystal_experiment_id(
-                    editor.protein_input.text()
-                )
-            )
-            revision = self.review_store.finalize_plan_revision(
-                PlanRevision(str(uuid4()), editor.plan_id, 0,
-                             experiment_id,
-                             snapshot, getpass.getuser(), datetime.now(timezone.utc))
+            revision = self.planning_service.finalize(
+                editor.plan_id, editor.plan_type, editor.protein_input.text(),
+                snapshot, editor.assigned_experiment_id, getpass.getuser(),
+                self._mxlive_experiment_ids,
             )
         except (ValueError, ReviewPersistenceError) as error:
             QMessageBox.warning(self, "Cannot finalize plan", str(error))
@@ -2324,14 +2268,12 @@ class ViewerWindow(QMainWindow):
         editor.assigned_experiment_id = revision.experiment_id
         editor.last_revision_snapshot = snapshot
         editor._refresh_experiment_id()
-        self._persist_raw_crystal_draft(editor)
-        editor.lifecycle_label.setText(f"Finalized r{revision.revision}")
-        self._set_plan_list_status(editor, f"Finalized r{revision.revision}")
+        self._persist_draft(editor)
         self._sync_webdb_upload_state(editor)
         self._refresh_project_well_usage()
         return revision
 
-    def _set_plan_list_status(self, editor: FragmentScreeningEditor, status: str) -> None:
+    def _set_plan_list_status(self, editor, status: str) -> None:
         editor.plan_list_status = status
         project = self.project_controller.active_project
         if project is None or project.id != self._planning_project_id:
@@ -2340,119 +2282,6 @@ class ViewerWindow(QMainWindow):
             if candidate is editor and index < self.plan_list.count():
                 self.plan_list.item(index).setText(f"{editor.plan_name} · {status}")
                 return
-
-    def _persist_planning_draft(self, editor: FragmentScreeningEditor) -> None:
-        if self.review_store is None:
-            editor.lifecycle_label.setText("Draft · memory only")
-            return
-        now = datetime.now(timezone.utc)
-        draft = PlanningDraft(
-            editor.plan_id, editor.project_id, "fragment_screening", editor.plan_name,
-            editor.library_input.currentData(Qt.UserRole), editor.rows_input.text(),
-            editor.protein_input.text(), str(editor.volume_input.value()),
-            editor.order_input.currentData().value,
-            editor.plan_created_at, now, editor.assigned_experiment_id,
-        )
-        try:
-            self.review_store.save_planning_draft(draft)
-        except ReviewPersistenceError as error:
-            editor.lifecycle_label.setText("Draft · save failed")
-            self._show_persistence_error(error)
-            return
-        current_snapshot = self._fragment_plan_snapshot(editor)
-        if editor.last_revision is not None and editor.last_revision_snapshot == current_snapshot:
-            editor.lifecycle_label.setText(f"Finalized r{editor.last_revision.revision}")
-            self._set_plan_list_status(editor, f"Finalized r{editor.last_revision.revision}")
-            self._sync_webdb_upload_state(editor)
-        else:
-            editor.lifecycle_label.setText("Draft · saved")
-            self._set_plan_list_status(editor, "Draft")
-
-    def _fragment_plan_snapshot(self, editor: FragmentScreeningEditor) -> str | None:
-        plan = editor.current_plan
-        if plan is None:
-            return None
-        payload = {
-            "schema": 1,
-            "plan_type": "fragment_screening",
-            "protein": editor.protein_input.text(),
-            "library_name": plan.library.name,
-            "library_id": editor.library_input.currentData(Qt.UserRole),
-            "library_rows": editor.rows_input.text(),
-            "volume_per_crystal_nl": str(plan.volume_per_crystal_nl),
-            "assignment_order": plan.assignment_order.value,
-            "assignments": [
-                {
-                    "image_key": item.selected_well.image_key,
-                    "image_path": item.selected_well.image_path,
-                    "plate": item.selected_well.plate_code,
-                    "well": item.selected_well.well_address,
-                    "plate_format_id": item.selected_well.plate_format_id,
-                    "fragment": {
-                        "vendor": item.fragment.vendor,
-                        "library": item.fragment.library,
-                        "number": item.fragment.number,
-                        "compound_id": item.fragment.compound_id,
-                        "formula": item.fragment.formula,
-                        "molecular_weight": str(item.fragment.molecular_weight),
-                        "smiles": item.fragment.smiles,
-                        "concentration_mm": str(item.fragment.concentration_mm),
-                        "solvent": item.fragment.solvent,
-                        "source_plate": item.fragment.source_plate,
-                        "source_well": item.fragment.source_well,
-                    },
-                    "targets": [
-                        {"id": transfer.position.source_target_id,
-                         "x_mm": str(transfer.position.x_mm),
-                         "y_mm": str(transfer.position.y_mm),
-                         "selected_at": transfer.position.selected_at.isoformat(),
-                         "volume_nl": str(transfer.volume_nl)}
-                        for transfer in item.transfers
-                    ],
-                }
-                for item in plan.assignments
-            ],
-        }
-        return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-    def _finalize_fragment_plan(self, editor: FragmentScreeningEditor) -> PlanRevision | None:
-        if self.review_store is None:
-            QMessageBox.warning(self, "Cannot finalize plan", "Open a writable review database first.")
-            return None
-        snapshot = self._fragment_plan_snapshot(editor)
-        if snapshot is None:
-            QMessageBox.warning(self, "Cannot finalize plan", "The fragment plan is not valid.")
-            return None
-        self._persist_planning_draft(editor)
-        if editor.last_revision_snapshot == snapshot:
-            return editor.last_revision
-        if (
-            editor.assigned_experiment_id is None
-            and not self._check_new_experiment_id_against_mxlive()
-        ):
-            return None
-        try:
-            experiment_id = (
-                editor.assigned_experiment_id
-                or self._suggest_fragment_experiment_id(editor.protein_input.text())
-            )
-            revision = self.review_store.finalize_plan_revision(
-                PlanRevision(str(uuid4()), editor.plan_id, 0, experiment_id, snapshot,
-                             getpass.getuser(), datetime.now(timezone.utc))
-            )
-        except (ValueError, ReviewPersistenceError) as error:
-            QMessageBox.warning(self, "Cannot finalize plan", str(error))
-            return None
-        editor.last_revision = revision
-        editor.assigned_experiment_id = revision.experiment_id
-        editor.last_revision_snapshot = snapshot
-        editor._refresh_experiment_id()
-        self._persist_planning_draft(editor)
-        editor.lifecycle_label.setText(f"Finalized r{revision.revision}")
-        self._set_plan_list_status(editor, f"Finalized r{revision.revision}")
-        self._sync_webdb_upload_state(editor)
-        self._refresh_project_well_usage()
-        return revision
 
     def _sync_webdb_upload_state(self, editor, failure: str = "") -> None:
         editor.webdb_upload_button.setEnabled(False)
@@ -2487,11 +2316,7 @@ class ViewerWindow(QMainWindow):
                     "or delete labworks."
                 )
             return
-        if isinstance(editor, RawCrystalEditor):
-            snapshot = self._raw_crystal_snapshot(editor)
-        else:
-            snapshot = self._fragment_plan_snapshot(editor)
-        if snapshot != editor.last_revision_snapshot:
+        if self._plan_snapshot(editor) != editor.last_revision_snapshot:
             return
         editor.webdb_upload_button.setEnabled(True)
         editor.webdb_upload_button.setToolTip(
@@ -2518,27 +2343,17 @@ class ViewerWindow(QMainWindow):
             return None
         return upload_lock_state(events)
 
-    def _upload_fragment_labworks(self, editor: FragmentScreeningEditor) -> None:
+    def _upload_plan_labworks(self, editor) -> None:
         if editor.current_plan is None:
             return
-        self._upload_labworks(
-            editor,
-            build_fragment_labworks(
-                editor.current_plan,
-                experiment_id=editor.last_revision.experiment_id
-                if editor.last_revision else "",
-                protein_name=editor.protein_input.text().strip(),
-                username=self.mxlive_account.username if self.mxlive_account else "",
-                account_id=self.mxlive_account.account_id if self.mxlive_account else "",
-            ),
+        build_labworks = (
+            build_raw_crystal_labworks
+            if editor.plan_type is PlanType.RAW_CRYSTAL
+            else build_fragment_labworks
         )
-
-    def _upload_raw_labworks(self, editor: RawCrystalEditor) -> None:
-        if editor.current_plan is None:
-            return
         self._upload_labworks(
             editor,
-            build_raw_crystal_labworks(
+            build_labworks(
                 editor.current_plan,
                 experiment_id=editor.last_revision.experiment_id
                 if editor.last_revision else "",
@@ -2586,12 +2401,7 @@ class ViewerWindow(QMainWindow):
             )
             self._sync_webdb_upload_state(editor)
             return
-        snapshot = (
-            self._raw_crystal_snapshot(editor)
-            if isinstance(editor, RawCrystalEditor)
-            else self._fragment_plan_snapshot(editor)
-        )
-        if snapshot != editor.last_revision_snapshot:
+        if self._plan_snapshot(editor) != editor.last_revision_snapshot:
             QMessageBox.warning(
                 self, "Cannot upload", "Finalize the current plan revision first."
             )
@@ -2778,12 +2588,6 @@ class ViewerWindow(QMainWindow):
     def _worksheet_exporter(self) -> WorksheetExporter:
         return WorksheetExporter(self.settings, getpass.getuser())
 
-    def _reserved_experiment_ids(self) -> set[str]:
-        local = set() if self.review_store is None else (
-            self.review_store.reserved_experiment_ids()
-        )
-        return local | self._mxlive_experiment_ids
-
     def _mxlive_reader(self) -> LegacyMxLiveReadClient:
         account = self.mxlive_account
         return LegacyMxLiveReadClient(
@@ -2817,11 +2621,6 @@ class ViewerWindow(QMainWindow):
         self._mxlive_experiment_ids.update(remote)
         return True
 
-    def _suggest_fragment_experiment_id(self, protein: str) -> str:
-        return suggest_experiment_id(
-            "FragSC", protein, self._reserved_experiment_ids()
-        )
-
     def _save_fragment_worksheets(
         self, editor: FragmentScreeningEditor
     ) -> None:
@@ -2843,7 +2642,7 @@ class ViewerWindow(QMainWindow):
                 self, "Cannot save worksheets", "The reordered plan is not valid."
             )
             return
-        revision = self._finalize_fragment_plan(editor)
+        revision = self._finalize_plan(editor)
         if revision is None:
             return
         experiment_id = revision.experiment_id
@@ -2932,7 +2731,7 @@ class ViewerWindow(QMainWindow):
         if index != editor.order_input.currentIndex():
             editor.order_input.setCurrentIndex(index)
             plan = editor.current_plan
-        revision = self._finalize_raw_crystal_plan(editor)
+        revision = self._finalize_plan(editor)
         if revision is None or plan is None:
             return
         exporter = self._worksheet_exporter()
@@ -4253,10 +4052,8 @@ class ViewerWindow(QMainWindow):
             for _, editor in drafts:
                 if hasattr(editor, "autosave_timer"):
                     editor.autosave_timer.stop()
-                if isinstance(editor, FragmentScreeningEditor):
-                    self._persist_planning_draft(editor)
-                elif isinstance(editor, RawCrystalEditor):
-                    self._persist_raw_crystal_draft(editor)
+                if isinstance(editor, (FragmentScreeningEditor, RawCrystalEditor)):
+                    self._persist_draft(editor)
         while self.controller is not None:
             try:
                 self.controller.checkpoint_current()

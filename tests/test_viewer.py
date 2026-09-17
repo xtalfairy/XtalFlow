@@ -404,7 +404,7 @@ def test_raw_crystal_plan_has_shifter_preview_without_echo(tmp_path: Path) -> No
     editor = window.plan_stack.currentWidget()
     editor.set_crystals((crystal,))
     editor.protein_input.setText("BRD4")
-    window._persist_raw_crystal_draft(editor)
+    window._persist_draft(editor)
 
     assert editor.current_plan is not None
     assert editor.shifter_table.rowCount() == 1
@@ -585,7 +585,7 @@ def test_legacy_draft_requires_explicit_selection_adoption(
 
     assert not editor.adopt_selection_button.isHidden()
     assert not editor.selection_snapshot_owned
-    window._adopt_legacy_selection(editor, PlanType.RAW_CRYSTAL)
+    window._adopt_legacy_selection(editor)
 
     assert editor.selection_snapshot_owned
     assert editor.selection.wells[0].image_key == "adopted"
@@ -632,7 +632,7 @@ def test_only_finalized_raw_revision_can_be_uploaded_and_is_audited(
         lambda *args, **kwargs: unexpected_dialogs.append(("critical", args[2])),
     )
 
-    revision = window._finalize_raw_crystal_plan(editor)
+    revision = window._finalize_plan(editor)
     assert revision is not None, unexpected_dialogs
     assert editor.webdb_upload_button.isEnabled()
 
@@ -647,7 +647,7 @@ def test_only_finalized_raw_revision_can_be_uploaded_and_is_audited(
     monkeypatch.setattr("xtalflow.viewer.LegacyMxLiveWriteClient", FakeWriter)
     monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
     monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: QMessageBox.Ok)
-    window._upload_raw_labworks(editor)
+    window._upload_plan_labworks(editor)
 
     events = store.list_webdb_uploads(revision.id)
     assert len(events) == 1
@@ -688,7 +688,7 @@ def _finalized_raw_upload_window(tmp_path: Path, monkeypatch):
             lambda *args, _name=name, **kwargs: dialogs.append((_name, args[2])),
         )
     monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
-    revision = window._finalize_raw_crystal_plan(editor)
+    revision = window._finalize_plan(editor)
     assert revision is not None, dialogs
     return window, store, editor, revision, dialogs
 
@@ -733,7 +733,7 @@ def test_unknown_upload_result_locks_until_verified_on_mxlive(
     monkeypatch.setattr("xtalflow.viewer.LegacyMxLiveWriteClient", TimeoutWriter)
     monkeypatch.setattr("xtalflow.viewer.LegacyMxLiveReadClient", FakeReader)
 
-    window._upload_raw_labworks(editor)
+    window._upload_plan_labworks(editor)
 
     assert [event.status for event in store.list_webdb_uploads(revision.id)] == [
         "unknown"
@@ -741,7 +741,7 @@ def test_unknown_upload_result_locks_until_verified_on_mxlive(
     assert editor.webdb_upload_button.text() == "Verify on MxLive…"
     assert editor.webdb_upload_button.isEnabled()
 
-    window._upload_raw_labworks(editor)
+    window._upload_plan_labworks(editor)
     assert len(TimeoutWriter.posted) == 1
     assert [event.status for event in store.list_webdb_uploads(revision.id)] == [
         "failed"
@@ -770,7 +770,7 @@ def test_upload_is_not_sent_when_attempt_cannot_be_audited(
     monkeypatch.setattr("xtalflow.viewer.LegacyMxLiveWriteClient", Writer)
     monkeypatch.setattr(store, "record_webdb_upload", audit_unavailable)
 
-    window._upload_raw_labworks(editor)
+    window._upload_plan_labworks(editor)
 
     assert Writer.posted == []
     assert dialogs[-1] == (
@@ -792,14 +792,14 @@ def test_later_revision_with_uploaded_experiment_id_is_not_uploaded_again(
         posted = []
 
     monkeypatch.setattr("xtalflow.viewer.LegacyMxLiveWriteClient", Writer)
-    window._upload_raw_labworks(editor)
+    window._upload_plan_labworks(editor)
     editor.protein_input.setText("BRD4 variant")
-    second = window._finalize_raw_crystal_plan(editor)
+    second = window._finalize_plan(editor)
 
     assert second is not None and second.revision == 2
     assert not editor.webdb_upload_button.isEnabled()
     assert "Uploaded (earlier revision)" in editor.webdb_status_label.text()
-    window._upload_raw_labworks(editor)
+    window._upload_plan_labworks(editor)
     assert len(Writer.posted) == 1
     assert dialogs[-1][0] == "information"
     window.close()
@@ -862,11 +862,11 @@ def test_unchecked_experiment_id_requires_confirmation(
         return question
 
     monkeypatch.setattr(QMessageBox, "question", answer(QMessageBox.No))
-    assert window._finalize_raw_crystal_plan(editor) is None
+    assert window._finalize_plan(editor) is None
     assert store.list_plan_revisions(editor.plan_id) == ()
 
     monkeypatch.setattr(QMessageBox, "question", answer(QMessageBox.Yes))
-    assert window._finalize_raw_crystal_plan(editor) is not None
+    assert window._finalize_plan(editor) is not None
     assert questions == ["Experiment ID not checked"] * 2
     window.close()
     app.processEvents()
@@ -889,9 +889,9 @@ def test_raw_plan_keeps_experiment_id_across_revisions(
     editor.protein_input.setText("BRD4")
     monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: QMessageBox.Ok)
 
-    first = window._finalize_raw_crystal_plan(editor)
+    first = window._finalize_plan(editor)
     editor.protein_input.setText("BRD4 variant")
-    second = window._finalize_raw_crystal_plan(editor)
+    second = window._finalize_plan(editor)
 
     assert first is not None and second is not None
     assert second.revision == 2
@@ -1619,7 +1619,7 @@ def test_restoring_saved_plans_keeps_image_review_tab_and_plan_status(
     monkeypatch_warning = QMessageBox.warning
     QMessageBox.warning = lambda *args, **kwargs: QMessageBox.Ok
     try:
-        assert window._finalize_raw_crystal_plan(editor) is not None
+        assert window._finalize_plan(editor) is not None
     finally:
         QMessageBox.warning = monkeypatch_warning
     window.main_tabs.setCurrentIndex(window.image_review_tab_index)
@@ -1661,7 +1661,7 @@ def test_offline_library_folder_keeps_draft_library(tmp_path: Path) -> None:
     window._add_fragment_plan(None, (crystal,))
     editor = window.plan_stack.currentWidget()
     editor.library_input.setCurrentIndex(1)
-    window._persist_planning_draft(editor)
+    window._persist_draft(editor)
     project_id = editor.project_id
     library_id = editor.library_input.currentData(Qt.UserRole)
     window.close()
@@ -1674,7 +1674,7 @@ def test_offline_library_folder_keeps_draft_library(tmp_path: Path) -> None:
     editor = reopened.plan_stack.widget(1)
     assert editor.library_input.currentData(Qt.UserRole) == library_id
     assert "Library unavailable" in editor.library_label.text()
-    reopened._persist_planning_draft(editor)
+    reopened._persist_draft(editor)
     reopened.close()
     app.processEvents()
 

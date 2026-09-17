@@ -90,14 +90,14 @@ def test_plate_format_is_persisted_with_project_image_set(tmp_path: Path) -> Non
 
     database_path = tmp_path / "reviews.sqlite3"
     store = SQLiteReviewStore(database_path)
-    controller = ProjectController(Repository(), store)
+    controller = ProjectController(Repository(), store.workspace)
     project = controller.create_project("Persistence")
     controller.add_latest_image_set("1070", SWISSCI_MIDI_3_LENS)
     store.close()
 
     restored_store = SQLiteReviewStore(database_path)
     restored = next(
-        item for item in restored_store.load_projects() if item.id == project.id
+        item for item in restored_store.workspace.load_projects() if item.id == project.id
     )
     image_set = restored.active_image_sets[0]
     assert image_set.plate_format_id == SWISSCI_MIDI_3_LENS.id

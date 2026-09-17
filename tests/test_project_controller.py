@@ -50,7 +50,7 @@ def test_target_validation_reports_calibration_and_boundary_problems() -> None:
 def test_project_controller_switches_pinned_image_sets_and_restores_active(tmp_path: Path) -> None:
     database_path = tmp_path / "reviews.sqlite3"
     store = SQLiteReviewStore(database_path)
-    workspace = ProjectController(RockMakerImageRepository(FIXTURE_ROOT), store)
+    workspace = ProjectController(RockMakerImageRepository(FIXTURE_ROOT), store.workspace)
     project = workspace.create_project("FBDD")
     first = workspace.add_latest_image_set("1070", SWISSCI_MIDI_3_LENS)
     second = workspace.add_latest_image_set("1100", SWISSCI_MIDI_3_LENS)
@@ -62,7 +62,7 @@ def test_project_controller_switches_pinned_image_sets_and_restores_active(tmp_p
     store.close()
 
     restored_store = SQLiteReviewStore(database_path)
-    restored = ProjectController(RockMakerImageRepository(FIXTURE_ROOT), restored_store)
+    restored = ProjectController(RockMakerImageRepository(FIXTURE_ROOT), restored_store.workspace)
     restored.open_project(project.id)
     assert restored.review_controller.plate.plate_code == "1070"
     assert [item.plate_code for item in restored.active_project.active_image_sets] == [
@@ -75,13 +75,13 @@ def test_project_controller_switches_pinned_image_sets_and_restores_active(tmp_p
 def test_project_controller_remembers_last_open_project(tmp_path: Path) -> None:
     database_path = tmp_path / "reviews.sqlite3"
     store = SQLiteReviewStore(database_path)
-    workspace = ProjectController(RockMakerImageRepository(FIXTURE_ROOT), store)
+    workspace = ProjectController(RockMakerImageRepository(FIXTURE_ROOT), store.workspace)
     workspace.create_project("First")
     last_project = workspace.create_project("Last opened")
     store.close()
 
     restored_store = SQLiteReviewStore(database_path)
-    restored = ProjectController(RockMakerImageRepository(FIXTURE_ROOT), restored_store)
+    restored = ProjectController(RockMakerImageRepository(FIXTURE_ROOT), restored_store.workspace)
 
     assert restored.last_open_project_id == last_project.id
     restored.open_project(restored.last_open_project_id)
@@ -93,7 +93,7 @@ def test_project_controller_remembers_last_open_project(tmp_path: Path) -> None:
 @pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
 def test_project_navigation_crosses_plate_boundary_in_project_order(tmp_path: Path) -> None:
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
-    workspace = ProjectController(RockMakerImageRepository(FIXTURE_ROOT), store)
+    workspace = ProjectController(RockMakerImageRepository(FIXTURE_ROOT), store.workspace)
     workspace.create_project("Cross-plate")
     first = workspace.add_latest_image_set("1070", SWISSCI_MIDI_3_LENS)
     workspace.add_latest_image_set("1100", SWISSCI_MIDI_3_LENS)
@@ -113,7 +113,7 @@ def test_project_navigation_crosses_plate_boundary_in_project_order(tmp_path: Pa
 @pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
 def test_project_navigation_uses_target_filter_and_reports_totals(tmp_path: Path) -> None:
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
-    workspace = ProjectController(RockMakerImageRepository(FIXTURE_ROOT), store)
+    workspace = ProjectController(RockMakerImageRepository(FIXTURE_ROOT), store.workspace)
     workspace.create_project("Filtered")
     first = workspace.add_latest_image_set("1070", SWISSCI_MIDI_3_LENS)
     workspace.add_latest_image_set("1100", SWISSCI_MIDI_3_LENS)
@@ -137,7 +137,7 @@ def test_project_navigation_uses_target_filter_and_reports_totals(tmp_path: Path
 @pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
 def test_failed_cross_plate_activation_keeps_original_plate(tmp_path: Path) -> None:
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
-    workspace = ProjectController(RockMakerImageRepository(FIXTURE_ROOT), store)
+    workspace = ProjectController(RockMakerImageRepository(FIXTURE_ROOT), store.workspace)
     workspace.create_project("Failure")
     first = workspace.add_latest_image_set("1070", SWISSCI_MIDI_3_LENS)
     second = workspace.add_latest_image_set("1100", SWISSCI_MIDI_3_LENS)
@@ -164,7 +164,7 @@ def test_target_summary_preserves_selection_order_instead_of_well_order(
     tmp_path: Path,
 ) -> None:
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
-    workspace = ProjectController(RockMakerImageRepository(FIXTURE_ROOT), store)
+    workspace = ProjectController(RockMakerImageRepository(FIXTURE_ROOT), store.workspace)
     workspace.create_project("Selection order")
     workspace.add_latest_image_set("1070", SWISSCI_MIDI_3_LENS)
     review = workspace.review_controller
@@ -198,7 +198,7 @@ def test_project_totals_reuse_image_listings_until_image_set_is_reopened(
 
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
     repository = CountingRepository(FIXTURE_ROOT)
-    workspace = ProjectController(repository, store)
+    workspace = ProjectController(repository, store.workspace)
     workspace.create_project("FBDD")
     first = workspace.add_pinned_image_set("1070", 5947, "profileID_1", SWISSCI_MIDI_3_LENS)
     workspace.add_pinned_image_set("1100", 6088, "profileID_1", SWISSCI_MIDI_3_LENS)
@@ -218,7 +218,7 @@ def test_project_totals_reuse_image_listings_until_image_set_is_reopened(
 @pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
 def test_image_filter_survives_image_set_and_workspace_switches(tmp_path: Path) -> None:
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
-    workspace = ProjectController(RockMakerImageRepository(FIXTURE_ROOT), store)
+    workspace = ProjectController(RockMakerImageRepository(FIXTURE_ROOT), store.workspace)
     project = workspace.create_project("Filtered review")
     first = workspace.add_latest_image_set("1070", SWISSCI_MIDI_3_LENS)
     workspace.add_latest_image_set("1100", SWISSCI_MIDI_3_LENS)

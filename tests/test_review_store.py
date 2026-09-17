@@ -35,11 +35,11 @@ def test_sqlite_store_replaces_and_restores_image_snapshot(tmp_path: Path) -> No
     second = session.add_target(image, 30, 40, 100, 100)
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
 
-    store.save_image(image.image_key, (first, second))
-    assert store.load_images((image.image_key,)) == (first, second)
+    store.workspace.save_image(image.image_key, (first, second))
+    assert store.workspace.load_images((image.image_key,)) == (first, second)
 
-    store.save_image(image.image_key, (second,))
-    assert store.load_images((image.image_key,)) == (second,)
+    store.workspace.save_image(image.image_key, (second,))
+    assert store.workspace.load_images((image.image_key,)) == (second,)
     store.close()
 
 
@@ -49,8 +49,8 @@ def test_sqlite_store_restores_review_state(tmp_path: Path) -> None:
     preferences = ReviewPreferences(3)
     progress.move_to("second")
 
-    store.save_review_state(progress, preferences)
-    restored = store.load_review_state(progress.plan_key)
+    store.workspace.save_review_state(progress, preferences)
+    restored = store.workspace.load_review_state(progress.plan_key)
 
     assert restored is not None
     restored_progress, restored_preferences = restored
@@ -82,12 +82,12 @@ def test_experiment_project_selected_wells_round_trip(tmp_path: Path) -> None:
         "experiment-project", "BRD4 screen", selection, plan, now, now
     )
 
-    store.save_experiment_project(project)
-    restored = store.load_experiment_projects()
+    store.planning.save_experiment_project(project)
+    restored = store.planning.load_experiment_projects()
 
     assert restored == (project,)
     assert len(restored[0].crystal_selection.wells[0].soaking_positions) == 2
-    assert store.prior_selected_well_usage(
+    assert store.planning.prior_selected_well_usage(
         "experiment-project", ("image-key",)
     ) == {}
     later = now + timedelta(seconds=1)
@@ -104,8 +104,8 @@ def test_experiment_project_selected_wells_round_trip(tmp_path: Path) -> None:
         later,
         later,
     )
-    store.save_experiment_project(reused_project)
-    usage = store.prior_selected_well_usage("second-project", ("image-key",))
+    store.planning.save_experiment_project(reused_project)
+    usage = store.planning.prior_selected_well_usage("second-project", ("image-key",))
     assert usage["image-key"][0].project_name == "BRD4 screen"
     assert usage["image-key"][0].status == "Draft"
     assert store._connection.execute("PRAGMA user_version").fetchone()[0] == (
@@ -121,12 +121,12 @@ def test_finalized_legacy_plan_migrates_to_selected_well_project(
     store = SQLiteReviewStore(database_path)
     now = datetime.now(timezone.utc)
     workspace = Project("workspace", "Workspace", now, now)
-    store.save_project(workspace)
+    store.workspace.save_project(workspace)
     draft = PlanningDraft(
         "legacy-plan", workspace.id, "raw_crystal", "Legacy Raw", None, "",
         "BRD4", "0", "selection", now, now, "RawCrystal-202607-BRD4-01",
     )
-    store.save_planning_draft(draft)
+    store.planning.save_planning_draft(draft)
     snapshot = json.dumps({
         "schema": 1,
         "plan_type": "raw_crystal",
@@ -161,7 +161,7 @@ def test_finalized_legacy_plan_migrates_to_selected_well_project(
             },
         ],
     })
-    store.finalize_plan_revision(
+    store.planning.finalize_plan_revision(
         PlanRevision(
             "legacy-revision", draft.id, 0, draft.experiment_id,
             snapshot, "jjh", now,
@@ -170,7 +170,7 @@ def test_finalized_legacy_plan_migrates_to_selected_well_project(
     store.close()
 
     migrated = SQLiteReviewStore(database_path)
-    project = migrated.load_experiment_project(draft.id)
+    project = migrated.planning.load_experiment_project(draft.id)
 
     assert migrated.planning_project_migration.migrated == 1
     assert project is not None
@@ -181,7 +181,7 @@ def test_finalized_legacy_plan_migrates_to_selected_well_project(
     reopened = SQLiteReviewStore(database_path)
     assert reopened.planning_project_migration.migrated == 0
     assert reopened.planning_project_migration.skipped_existing == 1
-    assert len(reopened.load_experiment_projects()) == 1
+    assert len(reopened.planning.load_experiment_projects()) == 1
     reopened.close()
 
 
@@ -206,7 +206,7 @@ def test_old_required_count_column_is_migrated_to_auto_advance(tmp_path: Path) -
     connection.close()
 
     store = SQLiteReviewStore(database_path)
-    restored = store.load_review_state("1070:5947:profileID_1")
+    restored = store.workspace.load_review_state("1070:5947:profileID_1")
 
     assert restored[1].auto_advance_target_count == 10
     version = store._connection.execute("PRAGMA user_version").fetchone()[0]
@@ -225,12 +225,12 @@ def test_fragment_library_import_is_content_deduplicated_and_reloadable(
     )
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
 
-    first = store.import_fragment_library(csv_path)
-    second = store.import_fragment_library(csv_path)
-    restored = store.load_fragment_library(first.id)
+    first = store.fragment_libraries.import_fragment_library(csv_path)
+    second = store.fragment_libraries.import_fragment_library(csv_path)
+    restored = store.fragment_libraries.load_fragment_library(first.id)
 
     assert first == second
-    assert len(store.list_fragment_libraries()) == 1
+    assert len(store.fragment_libraries.list_fragment_libraries()) == 1
     assert first.display_name == "library.csv · 1 rows"
     assert restored.fragments[0].number == "8"
     assert restored.fragments[0].compound_id == "CMP-8"
@@ -241,41 +241,41 @@ def test_planning_draft_revision_and_export_lifecycle(tmp_path: Path) -> None:
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
     now = datetime.now(timezone.utc)
     project = Project("project-1", "Test", now, now)
-    store.save_project(project)
+    store.workspace.save_project(project)
     draft = PlanningDraft(
         "plan-1", project.id, "fragment_screening", "Fragment Screening #1",
         "/libraries/main.csv", "1-8", "BRD4", "25.0", "selection", now, now,
         "FragSC-202607-BRD4-01",
     )
-    store.save_planning_draft(draft)
+    store.planning.save_planning_draft(draft)
 
-    restored = store.load_planning_drafts(project.id)
+    restored = store.planning.load_planning_drafts(project.id)
     assert restored == (draft,)
 
-    first = store.finalize_plan_revision(
+    first = store.planning.finalize_plan_revision(
         PlanRevision("revision-1", draft.id, 0, "FragSC-202607-BRD4-01", "{\"v\":1}", "jjh", now)
     )
-    second = store.finalize_plan_revision(
+    second = store.planning.finalize_plan_revision(
         PlanRevision("revision-2", draft.id, 0, "FragSC-202607-BRD4-01", "{\"v\":2}", "jjh", now)
     )
     assert (first.revision, second.revision) == (1, 2)
-    assert store.list_plan_revisions(draft.id) == (first, second)
-    assert store.reserved_experiment_ids() == {"FragSC-202607-BRD4-01"}
+    assert store.planning.list_plan_revisions(draft.id) == (first, second)
+    assert store.planning.reserved_experiment_ids() == {"FragSC-202607-BRD4-01"}
 
     export = WorksheetExportEvent(
         "export-1", second.id, "jjh", now, "succeeded",
         "/echo/file.csv", "/shifter1/file.csv", "/shifter2/file.csv",
     )
-    store.record_worksheet_export(export)
-    assert store.list_worksheet_exports(second.id) == (export,)
+    store.audit.record_worksheet_export(export)
+    assert store.audit.list_worksheet_exports(second.id) == (export,)
     upload = WebDBUploadEvent(
         "upload-1", second.id, "fbdd", "fbdd",
         "https://mxlive.example/upload_labworks/BL-5C/", now,
         "succeeded", 2, '[{"expri_id":"FragSC-1"}]',
         '{"created":2}', None,
     )
-    store.record_webdb_upload(upload)
-    assert store.list_webdb_uploads(second.id) == (upload,)
+    store.audit.record_webdb_upload(upload)
+    assert store.audit.list_webdb_uploads(second.id) == (upload,)
 
 
 def test_upload_outcome_is_updated_and_listed_for_every_revision_of_experiment(
@@ -284,32 +284,32 @@ def test_upload_outcome_is_updated_and_listed_for_every_revision_of_experiment(
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
     now = datetime.now(timezone.utc)
     project = Project(str(uuid4()), "Uploads", now, now)
-    store.save_project(project)
+    store.workspace.save_project(project)
     draft = PlanningDraft(
         "plan", project.id, "raw_crystal", "Plan", None, "", "", "0",
         "selection", now, now,
     )
-    store.save_planning_draft(draft)
-    first = store.finalize_plan_revision(
+    store.planning.save_planning_draft(draft)
+    first = store.planning.finalize_plan_revision(
         PlanRevision("revision-1", draft.id, 0, "RawCrystal-01", "{}", "jjh", now)
     )
-    second = store.finalize_plan_revision(
+    second = store.planning.finalize_plan_revision(
         PlanRevision("revision-2", draft.id, 0, "RawCrystal-01", "{\"v\":2}", "jjh", now)
     )
     pending = WebDBUploadEvent(
         "upload-1", first.id, "fbdd", "fbdd",
         "https://mxlive.example/upload_labworks/BL-5C/", now, "pending", 1, "[]",
     )
-    store.record_webdb_upload(pending)
+    store.audit.record_webdb_upload(pending)
 
     from dataclasses import replace
 
     unknown = replace(pending, status="unknown", error_message="ReadTimeout")
-    store.update_webdb_upload(unknown)
+    store.audit.update_webdb_upload(unknown)
 
-    assert store.list_webdb_uploads_for_experiment("RawCrystal-01") == (unknown,)
-    assert store.list_webdb_uploads(second.id) == ()
-    assert store.list_webdb_uploads_for_experiment("RawCrystal-02") == ()
+    assert store.audit.list_webdb_uploads_for_experiment("RawCrystal-01") == (unknown,)
+    assert store.audit.list_webdb_uploads(second.id) == ()
+    assert store.audit.list_webdb_uploads_for_experiment("RawCrystal-02") == ()
     store.close()
 
 
@@ -319,7 +319,7 @@ def test_only_planning_plan_with_upload_history_is_protected_from_deletion(
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
     now = datetime.now(timezone.utc)
     project = Project(str(uuid4()), "Deletion", now, now)
-    store.save_project(project)
+    store.workspace.save_project(project)
     removable = PlanningDraft(
         "draft-only", project.id, "raw_crystal", "Draft only", None, "", "",
         "0", "selection", now, now,
@@ -332,28 +332,28 @@ def test_only_planning_plan_with_upload_history_is_protected_from_deletion(
         "uploaded", project.id, "raw_crystal", "Uploaded", None, "", "",
         "0", "selection", now, now,
     )
-    store.save_planning_draft(removable)
-    store.save_planning_draft(finalized)
-    store.save_planning_draft(uploaded)
-    store.finalize_plan_revision(
+    store.planning.save_planning_draft(removable)
+    store.planning.save_planning_draft(finalized)
+    store.planning.save_planning_draft(uploaded)
+    store.planning.finalize_plan_revision(
         PlanRevision("revision", finalized.id, 0, "RawCrystal-01", "{}", "jjh", now)
     )
-    uploaded_revision = store.finalize_plan_revision(
+    uploaded_revision = store.planning.finalize_plan_revision(
         PlanRevision("uploaded-revision", uploaded.id, 0, "RawCrystal-02", "{}", "jjh", now)
     )
-    store.record_webdb_upload(WebDBUploadEvent(
+    store.audit.record_webdb_upload(WebDBUploadEvent(
         "uploaded-event", uploaded_revision.id, "jjh", "jjh",
         "https://mxlive.example/upload_labworks/BL-5C/", now, "succeeded",
         1, "[]", "{}", None,
     ))
 
-    store.delete_planning_draft(removable.id)
-    store.delete_planning_draft(finalized.id)
-    assert store.planning_plan_has_upload_history(uploaded.id)
+    store.planning.delete_planning_draft(removable.id)
+    store.planning.delete_planning_draft(finalized.id)
+    assert store.planning.planning_plan_has_upload_history(uploaded.id)
     with pytest.raises(ValueError, match="upload history"):
-        store.delete_planning_draft(uploaded.id)
+        store.planning.delete_planning_draft(uploaded.id)
 
-    assert [draft.id for draft in store.load_planning_drafts(project.id)] == [
+    assert [draft.id for draft in store.planning.load_planning_drafts(project.id)] == [
         uploaded.id
     ]
     store.close()
@@ -364,23 +364,23 @@ def test_existing_plan_inherits_latest_revision_experiment_id(tmp_path: Path) ->
     store = SQLiteReviewStore(database_path)
     now = datetime.now(timezone.utc)
     project = Project("project-1", "Test", now, now)
-    store.save_project(project)
+    store.workspace.save_project(project)
     draft = PlanningDraft(
         "plan-1", project.id, "raw_crystal", "Raw #1", None, "", "TEST",
         "0", "selection", now, now,
     )
-    store.save_planning_draft(draft)
-    store.finalize_plan_revision(
+    store.planning.save_planning_draft(draft)
+    store.planning.finalize_plan_revision(
         PlanRevision("r1", draft.id, 0, "RawCrystal-01", "{}", "jjh", now)
     )
-    store.finalize_plan_revision(
+    store.planning.finalize_plan_revision(
         PlanRevision("r2", draft.id, 0, "RawCrystal-02", "{\"v\":2}", "jjh", now)
     )
     store.close()
 
     reopened = SQLiteReviewStore(database_path)
 
-    assert reopened.load_planning_drafts(project.id)[0].experiment_id == "RawCrystal-02"
+    assert reopened.planning.load_planning_drafts(project.id)[0].experiment_id == "RawCrystal-02"
     reopened.close()
 
 
@@ -395,7 +395,7 @@ def test_checkpoint_rolls_back_targets_when_progress_write_fails(tmp_path: Path)
     )
     preferences = ReviewPreferences(3)
     store = SQLiteReviewStore(database_path)
-    store.save_checkpoint(image.image_key, (original,), progress, preferences)
+    store.workspace.save_checkpoint(image.image_key, (original,), progress, preferences)
     store._connection.execute(
         """
         CREATE TRIGGER reject_review_update BEFORE UPDATE ON review_plan
@@ -406,11 +406,11 @@ def test_checkpoint_rolls_back_targets_when_progress_write_fails(tmp_path: Path)
     from xtalflow.application import ReviewPersistenceError
 
     with pytest.raises(ReviewPersistenceError):
-        store.save_checkpoint(
+        store.workspace.save_checkpoint(
             image.image_key, (replacement,), progress, preferences
         )
 
-    assert store.load_images((image.image_key,)) == (original,)
+    assert store.workspace.load_images((image.image_key,)) == (original,)
     store.close()
 
 
@@ -420,18 +420,18 @@ def test_same_physical_image_set_is_isolated_between_projects(tmp_path: Path) ->
     second_project = Project.create("Second")
     first_set = first_project.add_image_set("1070", 5947, "profileID_1", "image")
     second_set = second_project.add_image_set("1070", 5947, "profileID_1", "image")
-    store.save_project(first_project)
-    store.save_project(second_project)
+    store.workspace.save_project(first_project)
+    store.workspace.save_project(second_project)
     target = TargetPoint("target-1", "image", 10, 20)
     progress = ReviewProgress.create("1070", 5947, "profileID_1", "image")
     preferences = ReviewPreferences(3)
 
-    store.scoped_to(first_set.id).save_checkpoint(
+    store.workspace.scoped_to(first_set.id).save_checkpoint(
         "image", (target,), progress, preferences
     )
 
-    assert store.scoped_to(first_set.id).load_images(("image",)) == (target,)
-    assert store.scoped_to(second_set.id).load_images(("image",)) == ()
+    assert store.workspace.scoped_to(first_set.id).load_images(("image",)) == (target,)
+    assert store.workspace.scoped_to(second_set.id).load_images(("image",)) == ()
     store.close()
 
 
@@ -439,8 +439,8 @@ def test_reviewed_images_are_scoped_and_restored(tmp_path: Path) -> None:
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
     project = Project.create("Review status")
     image_set = project.add_image_set("1070", 5947, "profileID_1", "first")
-    store.save_project(project)
-    scoped = store.scoped_to(image_set.id)
+    store.workspace.save_project(project)
+    scoped = store.workspace.scoped_to(image_set.id)
     progress = ReviewProgress.create("1070", 5947, "profileID_1", "second")
 
     scoped.save_checkpoint("first", (), progress, ReviewPreferences(1), True)
@@ -468,7 +468,7 @@ def test_deleted_imported_targets_stay_deleted_after_reopen(tmp_path: Path) -> N
     image_key = _create_standalone_target_database(database_path)
     image_set_id = "legacy:1070:5947:profileID_1"
     store = SQLiteReviewStore(database_path)
-    scoped = store.scoped_to(image_set_id)
+    scoped = store.workspace.scoped_to(image_set_id)
     assert len(scoped.load_images((image_key,))) == 1
     progress = ReviewProgress.create("1070", 5947, "profileID_1", image_key)
 
@@ -476,7 +476,7 @@ def test_deleted_imported_targets_stay_deleted_after_reopen(tmp_path: Path) -> N
     store.close()
 
     reopened = SQLiteReviewStore(database_path)
-    assert reopened.scoped_to(image_set_id).load_images((image_key,)) == ()
+    assert reopened.workspace.scoped_to(image_set_id).load_images((image_key,)) == ()
     reopened.close()
 
 
@@ -496,7 +496,7 @@ def test_upgrade_does_not_restore_targets_deleted_before_import_tracking(
 
     store = SQLiteReviewStore(database_path)
 
-    assert store.scoped_to(image_set_id).load_images((image_key,)) == ()
+    assert store.workspace.scoped_to(image_set_id).load_images((image_key,)) == ()
     store.close()
 
 
@@ -513,13 +513,13 @@ def test_standalone_targets_are_imported_into_a_project(tmp_path: Path) -> None:
     connection.close()
 
     store = SQLiteReviewStore(database_path)
-    imported = next(project for project in store.load_projects() if project.name.startswith("Imported"))
+    imported = next(project for project in store.workspace.load_projects() if project.name.startswith("Imported"))
     image_set = imported.active_image_sets[0]
 
     assert image_set.source_key == ("1070", 5947, "profileID_1")
     assert image_set.plate_format_id == SWISSCI_MIDI_3_LENS.id
     assert len(
-        store.scoped_to(image_set.id).load_images(("1070:5947:1:1:profileID_1",))
+        store.workspace.scoped_to(image_set.id).load_images(("1070:5947:1:1:profileID_1",))
     ) == 1
     store.close()
 
@@ -554,7 +554,7 @@ def test_schema_v9_assigns_all_existing_image_sets_to_three_lens(tmp_path: Path)
     connection.close()
 
     store = SQLiteReviewStore(database_path)
-    image_set = store.load_projects()[0].active_image_sets[0]
+    image_set = store.workspace.load_projects()[0].active_image_sets[0]
 
     assert image_set.plate_format_id == SWISSCI_MIDI_3_LENS.id
     assert image_set.plate_format_version == SWISSCI_MIDI_3_LENS.version
@@ -614,7 +614,7 @@ def test_interrupted_migration_leaves_database_unchanged(
     assert _schema(database_path) == before
     monkeypatch.undo()
     store = SQLiteReviewStore(database_path)
-    _, preferences = store.load_review_state("1070:5947:profileID_1")
+    _, preferences = store.workspace.load_review_state("1070:5947:profileID_1")
     assert preferences.auto_advance_target_count == 3
     store.close()
 
@@ -674,7 +674,7 @@ def test_damaged_experiment_project_does_not_hide_other_projects(tmp_path: Path)
             SWISSCI_MIDI_3_LENS.id,
         ),
     )
-    service = PlanningService(store)
+    service = PlanningService(store.planning)
     for plan_id in ("damaged", "healthy"):
         service.save_selection_snapshot(
             plan_id, plan_id, PlanType.RAW_CRYSTAL,
@@ -685,7 +685,7 @@ def test_damaged_experiment_project_does_not_hide_other_projects(tmp_path: Path)
     )
     store._connection.commit()
 
-    assert store.load_experiment_project("healthy").id == "healthy"
+    assert store.planning.load_experiment_project("healthy").id == "healthy"
     with pytest.raises(ReviewPersistenceError, match="experiment project damaged"):
-        store.load_experiment_project("damaged")
+        store.planning.load_experiment_project("damaged")
     store.close()

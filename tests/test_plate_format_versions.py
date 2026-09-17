@@ -130,7 +130,7 @@ def test_existing_v1_image_set_still_opens_and_plans_with_v1(
     tmp_path: Path, midi_v2_released
 ) -> None:
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
-    workspace = ProjectController(RockMakerImageRepository(FIXTURE_ROOT), store)
+    workspace = ProjectController(RockMakerImageRepository(FIXTURE_ROOT), store.workspace)
     project = workspace.create_project("Existing")
     image_set = workspace.add_pinned_image_set(
         "1070", 5947, "profileID_1", SWISSCI_MIDI_3_LENS
@@ -140,7 +140,7 @@ def test_existing_v1_image_set_still_opens_and_plans_with_v1(
     workspace.open_project(project.id)
     controller = workspace.review_controller
     controller.add_target(512, 512, 1024, 1024)
-    store.scoped_to(image_set.id).save_calibration(
+    store.workspace.scoped_to(image_set.id).save_calibration(
         replace(
             ImageCalibration.automatic(
                 controller.current_image.image_key, 512, 512, 500, 0.99, 2.77

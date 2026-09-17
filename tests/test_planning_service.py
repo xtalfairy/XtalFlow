@@ -92,9 +92,9 @@ def test_plan_status_distinguishes_finalized_changed_and_legacy_plans() -> None:
 def test_finalize_keeps_experiment_id_and_avoids_remote_ids(tmp_path: Path) -> None:
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
     project = Project.create("Planning")
-    store.save_project(project)
-    store.save_planning_draft(_draft(project))
-    service = PlanningService(store)
+    store.workspace.save_project(project)
+    store.planning.save_planning_draft(_draft(project))
+    service = PlanningService(store.planning)
     month = datetime.now()
     taken = f"RawCrystal-{month:%Y%m}-BRD4-01"
 
@@ -113,14 +113,14 @@ def test_finalize_keeps_experiment_id_and_avoids_remote_ids(tmp_path: Path) -> N
 
 def test_selection_snapshot_is_stored_as_experiment_project(tmp_path: Path) -> None:
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
-    service = PlanningService(store)
+    service = PlanningService(store.planning)
     selection = crystal_selection_from_selected_crystals("plan", _crystals())
 
     service.save_selection_snapshot(
         "plan", "Plan", PlanType.FRAGMENT_SCREENING, selection, NOW
     )
 
-    stored = store.load_experiment_project("plan")
+    stored = store.planning.load_experiment_project("plan")
     assert stored.plan.plan_type is PlanType.FRAGMENT_SCREENING
     assert stored.crystal_selection.wells[0].image_key == "image"
     store.close()

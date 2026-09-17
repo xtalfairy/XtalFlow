@@ -41,8 +41,8 @@ def test_calibration_is_persisted_per_project_image_set(tmp_path: Path) -> None:
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
     project = Project.create("Calibration")
     image_set = project.add_image_set("1070", 5947, "profileID_1", "image")
-    store.save_project(project)
-    scoped = store.scoped_to(image_set.id)
+    store.workspace.save_project(project)
+    scoped = store.workspace.scoped_to(image_set.id)
     image = CrystalImage("1070", 5947, 1, 1, "profileID_1", Path("image.jpg"))
 
     service = WellCalibrationService(OpenCVWellDetector(), 2.77, scoped)
@@ -61,8 +61,8 @@ def test_automatic_calibration_can_be_explicitly_confirmed(tmp_path: Path) -> No
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
     project = Project.create("Confirmation")
     image_set = project.add_image_set("1070", 5947, "profileID_1", "image")
-    store.save_project(project)
-    scoped = store.scoped_to(image_set.id)
+    store.workspace.save_project(project)
+    scoped = store.workspace.scoped_to(image_set.id)
     service = WellCalibrationService(OpenCVWellDetector(), 2.77, scoped)
     automatic = ImageCalibration.automatic("image", 100, 100, 50, 0.9, 2.77)
     service.save(automatic)
@@ -80,9 +80,9 @@ def test_schema_v7_corrects_previous_3_8_mm_calibration(tmp_path: Path) -> None:
     store = SQLiteReviewStore(database_path)
     project = Project.create("Old diameter")
     image_set = project.add_image_set("1070", 5947, "profileID_1", "image")
-    store.save_project(project)
+    store.workspace.save_project(project)
     old = ImageCalibration.automatic("image", 100, 100, 50, 0.9, 3.8)
-    store.scoped_to(image_set.id).save_calibration(old)
+    store.workspace.scoped_to(image_set.id).save_calibration(old)
     store.close()
     connection = sqlite3.connect(database_path)
     connection.execute("PRAGMA user_version = 6")
@@ -90,7 +90,7 @@ def test_schema_v7_corrects_previous_3_8_mm_calibration(tmp_path: Path) -> None:
     connection.close()
 
     migrated = SQLiteReviewStore(database_path)
-    calibration = migrated.scoped_to(image_set.id).load_calibration("image")
+    calibration = migrated.workspace.scoped_to(image_set.id).load_calibration("image")
 
     assert calibration.physical_diameter_mm == 2.77
     migrated.close()

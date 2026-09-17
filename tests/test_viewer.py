@@ -213,8 +213,8 @@ def test_viewer_starts_when_workspace_images_are_unavailable(tmp_path: Path) -> 
         "1070", 5947, "profileID_1", "1070:5947:1:1:profileID_1",
         SWISSCI_MIDI_3_LENS.id, SWISSCI_MIDI_3_LENS.version,
     )
-    store.save_project(project)
-    store.save_last_open_project(project.id)
+    store.workspace.save_project(project)
+    store.workspace.save_last_open_project(project.id)
 
     class OfflineRepository(RockMakerImageRepository):
         def load_plate_batch(self, *args, **kwargs):
@@ -466,7 +466,7 @@ def test_raw_crystal_plan_has_shifter_preview_without_echo(tmp_path: Path) -> No
     assert editor.webdb_table.item(0, columns["soak_smile"]).text() == ""
     assert editor.webdb_table.item(0, columns["project_id"]).text() != ""
     assert not hasattr(editor, "echo_table")
-    drafts = store.load_planning_drafts(window.project_controller.active_project.id)
+    drafts = store.planning.load_planning_drafts(window.project_controller.active_project.id)
     assert drafts[-1].plan_type == "raw_crystal"
 
     window._add_raw_crystal_plan((crystal,))
@@ -504,11 +504,11 @@ def test_draft_plan_can_be_deleted_from_planning_sidebar(
     assert window.plan_stack.currentIndex() == 0
     assert all(
         draft.id != plan_id
-        for draft in store.load_planning_drafts(
+        for draft in store.planning.load_planning_drafts(
             window.project_controller.active_project.id
         )
     )
-    assert store.load_experiment_project(plan_id) is None
+    assert store.planning.load_experiment_project(plan_id) is None
     window.close()
     app.processEvents()
 
@@ -577,7 +577,7 @@ def test_new_plan_owns_selection_snapshot_when_review_targets_change(
     window._main_tab_changed(window.planning_tab_index)
 
     assert editor.selection.wells[0].image_key == original.image_key
-    owned = store.load_experiment_project(editor.plan_id)
+    owned = store.planning.load_experiment_project(editor.plan_id)
     assert owned is not None
     assert owned.crystal_selection.wells[0].image_key == "original-image"
     window.close()
@@ -606,7 +606,7 @@ def test_legacy_draft_requires_explicit_selection_adoption(
         (CrystalTarget("new", Decimal("0.1"), Decimal("0.2"), now),),
         SWISSCI_MIDI_3_LENS.id,
     )
-    store.save_planning_draft(draft)
+    store.planning.save_planning_draft(draft)
     window._add_raw_crystal_plan((original,), restored=draft)
     editor = window.plan_stack.currentWidget()
     monkeypatch.setattr(
@@ -624,7 +624,7 @@ def test_legacy_draft_requires_explicit_selection_adoption(
 
     assert editor.selection_snapshot_owned
     assert editor.selection.wells[0].image_key == "adopted"
-    assert store.load_experiment_project(editor.plan_id) is not None
+    assert store.planning.load_experiment_project(editor.plan_id) is not None
     assert editor.adopt_selection_button.isHidden()
     window.close()
     app.processEvents()
@@ -684,7 +684,7 @@ def test_only_finalized_raw_revision_can_be_uploaded_and_is_audited(
     monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: QMessageBox.Ok)
     window._upload_plan_labworks(editor)
 
-    events = store.list_webdb_uploads(revision.id)
+    events = store.audit.list_webdb_uploads(revision.id)
     assert len(events) == 1
     assert events[0].status == "succeeded"
     assert events[0].account_id == events[0].username
@@ -770,7 +770,7 @@ def test_unknown_upload_result_locks_until_verified_on_mxlive(
 
     window._upload_plan_labworks(editor)
 
-    assert [event.status for event in store.list_webdb_uploads(revision.id)] == [
+    assert [event.status for event in store.audit.list_webdb_uploads(revision.id)] == [
         "unknown"
     ]
     assert editor.webdb_upload_button.text() == "Verify on MxLive…"
@@ -778,7 +778,7 @@ def test_unknown_upload_result_locks_until_verified_on_mxlive(
 
     window._upload_plan_labworks(editor)
     assert len(TimeoutWriter.posted) == 1
-    assert [event.status for event in store.list_webdb_uploads(revision.id)] == [
+    assert [event.status for event in store.audit.list_webdb_uploads(revision.id)] == [
         "failed"
     ]
     assert editor.webdb_upload_button.text() == "Upload Finalized Revision…"
@@ -803,7 +803,7 @@ def test_upload_is_not_sent_when_attempt_cannot_be_audited(
         raise ReviewPersistenceError("database is locked")
 
     monkeypatch.setattr("xtalflow.viewer.LegacyMxLiveWriteClient", Writer)
-    monkeypatch.setattr(store, "record_webdb_upload", audit_unavailable)
+    monkeypatch.setattr(store.audit, "record_webdb_upload", audit_unavailable)
 
     window._upload_plan_labworks(editor)
 
@@ -898,7 +898,7 @@ def test_unchecked_experiment_id_requires_confirmation(
 
     monkeypatch.setattr(QMessageBox, "question", answer(QMessageBox.No))
     assert window._finalize_plan(editor) is None
-    assert store.list_plan_revisions(editor.plan_id) == ()
+    assert store.planning.list_plan_revisions(editor.plan_id) == ()
 
     monkeypatch.setattr(QMessageBox, "question", answer(QMessageBox.Yes))
     assert window._finalize_plan(editor) is not None
@@ -950,7 +950,7 @@ def test_fragment_worksheets_are_saved_and_audited(tmp_path: Path, monkeypatch) 
     window._save_plan_worksheets(editor)
 
     revision = editor.last_revision
-    exports = store.list_worksheet_exports(revision.id)
+    exports = store.audit.list_worksheet_exports(revision.id)
     assert messages == ["Worksheets saved"]
     assert [event.status for event in exports] == ["succeeded"]
     assert Path(exports[0].echo_path).is_file()
@@ -987,7 +987,7 @@ def test_unavailable_instrument_share_can_use_alternate_root(
 
     window._save_plan_worksheets(editor)
 
-    exports = store.list_worksheet_exports(editor.last_revision.id)
+    exports = store.audit.list_worksheet_exports(editor.last_revision.id)
     assert [event.status for event in exports] == ["succeeded"]
     assert exports[0].echo_path.startswith(str(tmp_path / "chosen" / "echo650"))
     window.close()
@@ -1019,7 +1019,7 @@ def test_raw_plan_keeps_experiment_id_across_revisions(
     assert second.revision == 2
     assert second.experiment_id == first.experiment_id
     assert "fixed for this plan" in editor.experiment_id_label.text()
-    restored = store.load_planning_drafts(editor.project_id)
+    restored = store.planning.load_planning_drafts(editor.project_id)
     assert restored[-1].experiment_id == first.experiment_id
     window.close()
     app.processEvents()
@@ -1143,7 +1143,7 @@ def test_target_summary_uses_hidden_right_dock_and_jumps_to_image(
     window._remove_selected_targets()
     assert window.target_summary_table.rowCount() == 0
     assert window.controller.session.target_count == 0
-    assert window.review_store.target_count_for_image_set(
+    assert window.review_store.workspace.target_count_for_image_set(
         window.project_controller.active_image_set.id
     ) == 0
     window.close()
@@ -1261,7 +1261,7 @@ def test_unexpected_slot_error_saves_current_targets_and_reports(
         window.handle_unexpected_error(type(error), error, error.__traceback__)
 
     image_set = window.project_controller.active_image_set
-    assert len(store.scoped_to(image_set.id).load_images((image.image_key,))) == 1
+    assert len(store.workspace.scoped_to(image_set.id).load_images((image.image_key,))) == 1
     assert "Targets on the current image were saved." in messages[0]
     assert "Host is down" in window.error_log_path.read_text(encoding="utf-8")
     window.close()
@@ -1435,7 +1435,7 @@ def test_existing_targets_do_not_define_auto_advance_setting(tmp_path: Path) -> 
         for coordinate in (10, 20, 30)
     )
     store = SQLiteReviewStore(database_path)
-    store.save_image(image.image_key, targets)
+    store.workspace.save_image(image.image_key, targets)
     store.close()
 
     window = ViewerWindow(
@@ -1572,7 +1572,7 @@ def test_failed_checkpoint_does_not_move_and_shows_failed_state(
     )
     window.load_plate("1070", SWISSCI_MIDI_3_LENS)
     window._handle_image_click(100, 120, Qt.LeftButton)
-    original_checkpoint = window.controller.store.save_checkpoint
+    original_checkpoint = window.controller.store.workspace.save_checkpoint
 
     def fail_checkpoint(*args) -> None:
         raise ReviewPersistenceError("test storage failure")
@@ -1599,7 +1599,7 @@ def test_cancel_close_after_save_failure_keeps_window_and_store_open(
         SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
     )
     window.load_plate("1070", SWISSCI_MIDI_3_LENS)
-    original_checkpoint = window.controller.store.save_checkpoint
+    original_checkpoint = window.controller.store.workspace.save_checkpoint
 
     def fail_checkpoint(*args) -> None:
         raise ReviewPersistenceError("test storage failure")
@@ -1801,7 +1801,7 @@ def test_offline_library_folder_keeps_draft_library(tmp_path: Path) -> None:
     app.processEvents()
 
     store = SQLiteReviewStore(database_path)
-    assert store.load_planning_drafts(project_id)[0].library_id == library_id
+    assert store.planning.load_planning_drafts(project_id)[0].library_id == library_id
     store.close()
 
 
@@ -1820,7 +1820,7 @@ def test_experiment_id_preview_reports_database_errors(tmp_path: Path) -> None:
     def database_locked():
         raise ReviewPersistenceError("could not list experiment ids")
 
-    store.reserved_experiment_ids = database_locked
+    store.planning.reserved_experiment_ids = database_locked
     editor.protein_input.setText("BRD4")
 
     assert "could not list experiment ids" in editor.experiment_id_label.text()

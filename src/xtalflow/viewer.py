@@ -169,10 +169,10 @@ class ViewerWindow(QMainWindow):
         self.repository = repository
         self.review_store = review_store
         self.planning_service = (
-            PlanningService(review_store) if review_store is not None else None
+            PlanningService(review_store.planning) if review_store is not None else None
         )
         self.upload_service = (
-            LabworkUploadService(review_store) if review_store is not None else None
+            LabworkUploadService(review_store.audit) if review_store is not None else None
         )
         self.settings = settings or DEFAULT_SETTINGS
         self.preferences_store = preferences_store or JsonUserPreferencesStore()
@@ -197,7 +197,9 @@ class ViewerWindow(QMainWindow):
             self.mxlive_account = None
             self.mxlive_configuration_error = str(error)
         self.project_controller = ProjectController(
-            repository, review_store, self._global_auto_advance_target_count
+            repository,
+            review_store.workspace if review_store is not None else None,
+            self._global_auto_advance_target_count,
         )
         self.plate: PlateImages | None = None
         self.controller: ReviewController | None = None
@@ -722,7 +724,7 @@ class ViewerWindow(QMainWindow):
             try:
                 has_uploads = (
                     self.review_store is not None
-                    and self.review_store.planning_plan_has_upload_history(
+                    and self.review_store.planning.planning_plan_has_upload_history(
                         editor.plan_id
                     )
                 )
@@ -757,7 +759,7 @@ class ViewerWindow(QMainWindow):
             editor.autosave_timer.stop()
         if self.review_store is not None:
             try:
-                self.review_store.delete_planning_draft(editor.plan_id)
+                self.review_store.planning.delete_planning_draft(editor.plan_id)
             except (ValueError, ReviewPersistenceError) as error:
                 QMessageBox.warning(self, "Cannot delete plan", str(error))
                 return
@@ -781,7 +783,7 @@ class ViewerWindow(QMainWindow):
             return
         image_keys = tuple(well.image_key for well in editor.selection.wells)
         try:
-            usage = self.review_store.prior_selected_well_usage(
+            usage = self.review_store.planning.prior_selected_well_usage(
                 editor.plan_id, image_keys
             )
         except ReviewPersistenceError as error:
@@ -860,7 +862,7 @@ class ViewerWindow(QMainWindow):
         self, plan_id: str, crystals: tuple[SelectedCrystal, ...]
     ) -> tuple[ExperimentProject | None, CrystalSelection]:
         owned_project = (
-            self.review_store.load_experiment_project(plan_id)
+            self.review_store.planning.load_experiment_project(plan_id)
             if self.review_store is not None else None
         )
         selection = (
@@ -1525,7 +1527,7 @@ class ViewerWindow(QMainWindow):
     def _worksheet_export_service(self) -> WorksheetExportService:
         return WorksheetExportService(
             WorksheetExporter(self.settings, getpass.getuser()),
-            self.review_store,
+            self.review_store.audit if self.review_store is not None else None,
             getpass.getuser(),
         )
 
@@ -1608,7 +1610,7 @@ class ViewerWindow(QMainWindow):
                 crystals = ()
             unrestored: list[str] = []
             try:
-                drafts = self.review_store.load_planning_drafts(project_id)
+                drafts = self.review_store.planning.load_planning_drafts(project_id)
             except ReviewPersistenceError as error:
                 drafts = ()
                 unrestored.append(str(error))
@@ -1987,7 +1989,7 @@ class ViewerWindow(QMainWindow):
         ):
             return self.controller.session.target_count
         if self.review_store is not None:
-            return self.review_store.target_count_for_image_set(image_set_id)
+            return self.review_store.workspace.target_count_for_image_set(image_set_id)
         return 0
 
     def load_entered_plate(self) -> None:

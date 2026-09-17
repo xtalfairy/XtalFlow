@@ -93,15 +93,15 @@ def test_upload_service_records_attempt_before_outcome(tmp_path) -> None:
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
     now = datetime.now(timezone.utc)
     project = Project.create("Upload")
-    store.save_project(project)
-    store.save_planning_draft(PlanningDraft(
+    store.workspace.save_project(project)
+    store.planning.save_planning_draft(PlanningDraft(
         "plan", project.id, "raw_crystal", "Plan", None, "", "BRD4", "0",
         "selection", now, now,
     ))
-    revision = store.finalize_plan_revision(
+    revision = store.planning.finalize_plan_revision(
         PlanRevision("revision", "plan", 0, "RawCrystal-01", "{}", "jjh", now)
     )
-    service = LabworkUploadService(store)
+    service = LabworkUploadService(store.audit)
 
     pending = service.begin(
         revision, "fbdd", "fbdd", "https://mxlive.example/upload_labworks/BL-5C/",
@@ -113,7 +113,7 @@ def test_upload_service_records_attempt_before_outcome(tmp_path) -> None:
 
     service.complete(pending, UploadOutcome("unknown", error_message="ReadTimeout"))
     verified = service.verify(
-        store.list_webdb_uploads(revision.id)[0], "RawCrystal-01",
+        store.audit.list_webdb_uploads(revision.id)[0], "RawCrystal-01",
         (_labwork("RawCrystal-01"),),
     )
 

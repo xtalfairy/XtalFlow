@@ -110,12 +110,7 @@ from xtalflow.domain.plan_lifecycle import (
     PlanRevision,
     WebDBUploadEvent,
 )
-from xtalflow.domain.mxlive import (
-    MxLivePartialWriteError,
-    MxLiveReadError,
-    MxLiveUncertainWriteError,
-    MxLiveWriteError,
-)
+from xtalflow.domain.mxlive import MxLiveReadError
 from xtalflow.domain.worksheets import (
     ECHO_HEADER,
     SHIFTER_HEADER,
@@ -140,13 +135,11 @@ from xtalflow.application.worksheet_export import (
 from xtalflow.application.labwork_upload import (
     FAILED,
     PARTIAL,
-    PENDING,
     SUCCEEDED,
-    UNKNOWN,
+    LabworkUploadService,
     UploadAvailability,
     UploadLockState,
-    upload_lock_state,
-    verified_upload_event,
+    send_labworks,
 )
 from xtalflow.infrastructure import (
     LegacyMxLiveReadClient,
@@ -157,6 +150,7 @@ from xtalflow.infrastructure import (
     latest_image_source,
     natural_name_key,
 )
+from xtalflow.infrastructure.mxlive_client import labworks_endpoint
 from xtalflow.infrastructure.fragment_library_csv import (
     FragmentLibraryCsvError,
     load_fragment_library,
@@ -1348,6 +1342,9 @@ class ViewerWindow(QMainWindow):
         self.planning_service = (
             PlanningService(review_store) if review_store is not None else None
         )
+        self.upload_service = (
+            LabworkUploadService(review_store) if review_store is not None else None
+        )
         self.settings = settings or DEFAULT_SETTINGS
         self.preferences_store = preferences_store or JsonUserPreferencesStore()
         self.user_preferences = self.preferences_store.load()
@@ -2335,16 +2332,15 @@ class ViewerWindow(QMainWindow):
 
     def _webdb_upload_lock(self, experiment_id: str) -> UploadLockState | None:
         """Return None when upload history is unreadable, which blocks uploading."""
-        if self.review_store is None:
+        if self.upload_service is None:
             return UploadLockState(UploadAvailability.AVAILABLE)
         try:
-            events = self.review_store.list_webdb_uploads_for_experiment(experiment_id)
+            return self.upload_service.lock_state(experiment_id)
         except ReviewPersistenceError as error:
             self.status_message_label.show_message(
                 f"Upload history unavailable: {error}"
             )
             return None
-        return upload_lock_state(events)
 
     def _upload_plan_labworks(self, editor) -> None:
         if editor.current_plan is None:
@@ -2379,7 +2375,7 @@ class ViewerWindow(QMainWindow):
                 self, "Cannot upload", "\n".join(account.upload_blockers)
             )
             return
-        if self.review_store is None:
+        if self.upload_service is None:
             QMessageBox.warning(
                 self, "Cannot upload",
                 "Open a writable review database so the upload can be audited.",
@@ -2409,10 +2405,7 @@ class ViewerWindow(QMainWindow):
                 self, "Cannot upload", "Finalize the current plan revision first."
             )
             return
-        endpoint = (
-            f"{account.base_url.rstrip('/')}/upload_labworks/"
-            f"{account.beamline}/"
-        )
+        endpoint = labworks_endpoint(account.base_url, account.beamline)
         answer = QMessageBox.question(
             self,
             "Upload finalized revision",
@@ -2426,27 +2419,18 @@ class ViewerWindow(QMainWindow):
         if answer != QMessageBox.Yes:
             return
         payload = tuple(record.to_payload() for record in records)
-        payload_json = json.dumps(
-            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        )
-        pending = WebDBUploadEvent(
-            str(uuid4()), revision.id, account.username, account.account_id,
-            endpoint, datetime.now(timezone.utc), PENDING, len(records),
-            payload_json,
-        )
         try:
-            # Record the attempt first so a crash or audit failure cannot hide an
-            # upload that MxLive may already have stored.
-            self.review_store.record_webdb_upload(pending)
+            pending = self.upload_service.begin(
+                revision, account.username, account.account_id, endpoint, payload
+            )
         except ReviewPersistenceError as error:
             QMessageBox.critical(
                 self, "Upload was not sent",
                 f"The upload audit record could not be saved:\n{error}",
             )
             return
-        response_json = None
-        error_message = None
-        def upload() -> object:
+
+        def upload():
             client = LegacyMxLiveWriteClient(
                 account.base_url, account.beamline, account.username,
                 account.key_path, ca_bundle=account.ca_bundle,
@@ -2454,30 +2438,12 @@ class ViewerWindow(QMainWindow):
             )
             return client.upload_labworks(payload)
 
+        outcome = self._run_in_background(
+            f"Uploading {len(records)} records to MxLive…",
+            lambda: send_labworks(upload),
+        )
         try:
-            response = self._run_in_background(
-                f"Uploading {len(records)} records to MxLive…", upload
-            )
-            response_json = json.dumps(
-                response, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-            )
-            status = SUCCEEDED
-        except MxLivePartialWriteError as error:
-            status = PARTIAL
-            error_message = str(error)
-        except MxLiveUncertainWriteError as error:
-            status = UNKNOWN
-            error_message = str(error)
-        except (MxLiveWriteError, ValueError) as error:
-            status = FAILED
-            error_message = str(error)
-        try:
-            self.review_store.update_webdb_upload(
-                replace(
-                    pending, status=status, response_json=response_json,
-                    error_message=error_message,
-                )
-            )
+            self.upload_service.complete(pending, outcome)
         except ReviewPersistenceError as error:
             QMessageBox.critical(
                 self, "Upload audit could not be saved",
@@ -2486,34 +2452,36 @@ class ViewerWindow(QMainWindow):
             )
             self._sync_webdb_upload_state(editor)
             return
-        if status == FAILED:
+        if outcome.status == FAILED:
             self._sync_webdb_upload_state(editor, "Last upload failed")
-            QMessageBox.critical(self, "WebDB upload failed", error_message or "Unknown error")
+            QMessageBox.critical(
+                self, "WebDB upload failed", outcome.error_message or "Unknown error"
+            )
             return
         self._sync_webdb_upload_state(editor)
         self._refresh_project_well_usage()
-        if status == SUCCEEDED:
+        if outcome.status == SUCCEEDED:
             QMessageBox.information(
                 self, "WebDB upload complete",
                 f"Uploaded {len(records)} records for {revision.experiment_id}.",
             )
-        elif status == PARTIAL:
+        elif outcome.status == PARTIAL:
             QMessageBox.critical(
                 self, "WebDB upload partially completed",
-                error_message or "Some records may have been uploaded.",
+                outcome.error_message or "Some records may have been uploaded.",
             )
         else:
             QMessageBox.critical(
                 self, "WebDB upload result unknown",
-                f"{error_message}\n\nMxLive may have stored these records. Use "
-                "Verify on MxLive before uploading again.",
+                f"{outcome.error_message}\n\nMxLive may have stored these records. "
+                "Use Verify on MxLive before uploading again.",
             )
 
     def _verify_labworks_upload(
         self, editor, experiment_id: str, event: WebDBUploadEvent
     ) -> None:
         account = self.mxlive_account
-        if account is None or not account.upload_ready or self.review_store is None:
+        if account is None or not account.upload_ready or self.upload_service is None:
             QMessageBox.warning(
                 self, "Cannot verify upload", "MxLive access is not configured."
             )
@@ -2527,9 +2495,8 @@ class ViewerWindow(QMainWindow):
         except (MxLiveReadError, ValueError) as error:
             QMessageBox.warning(self, "Could not verify upload", str(error))
             return
-        verified = verified_upload_event(event, experiment_id, labworks)
         try:
-            self.review_store.update_webdb_upload(verified)
+            verified = self.upload_service.verify(event, experiment_id, labworks)
         except ReviewPersistenceError as error:
             QMessageBox.warning(self, "Could not record verification", str(error))
             return

@@ -233,7 +233,7 @@ class LegacyMxLiveWriteClient:
 
     @property
     def endpoint(self) -> str:
-        return f"{self.base_url}/upload_labworks/{self.beamline}/"
+        return labworks_endpoint(self.base_url, self.beamline)
 
     def upload_labworks(
         self, records: tuple[Mapping[str, Any], ...]
@@ -267,6 +267,11 @@ class LegacyMxLiveWriteClient:
                 raise
             responses.append(dict(response))
         return {"uploaded_count": len(responses), "responses": responses}
+
+
+def labworks_endpoint(base_url: str, beamline: str) -> str:
+    """Public labworks endpoint shown to users and stored in upload audits."""
+    return f"{base_url.rstrip('/')}/upload_labworks/{beamline}/"
 
 
 def _base62_encode(value: int) -> str:

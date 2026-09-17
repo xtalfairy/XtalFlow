@@ -56,3 +56,68 @@ def test_verification_resolves_unknown_upload_from_stored_records() -> None:
     assert incomplete.error_message == (
         "ReadTimeout; Verified on MxLive: 1 of 2 records found"
     )
+
+
+def test_send_labworks_classifies_upload_errors_by_retry_safety() -> None:
+    from xtalflow.application.labwork_upload import send_labworks
+    from xtalflow.domain.mxlive import (
+        MxLivePartialWriteError,
+        MxLiveUncertainWriteError,
+        MxLiveWriteError,
+    )
+
+    def raising(error):
+        def upload():
+            raise error
+        return upload
+
+    succeeded = send_labworks(lambda: {"uploaded_count": 2})
+
+    assert (succeeded.status, succeeded.response_json) == (
+        "succeeded", '{"uploaded_count":2}'
+    )
+    assert send_labworks(raising(MxLivePartialWriteError(1, 2, "HTTP 500"))).status == "partial"
+    assert send_labworks(raising(MxLiveUncertainWriteError("ReadTimeout"))).status == "unknown"
+    assert send_labworks(raising(MxLiveWriteError("HTTP 400"))).status == "failed"
+
+
+def test_upload_service_records_attempt_before_outcome(tmp_path) -> None:
+    from xtalflow.application.labwork_upload import (
+        LabworkUploadService,
+        UploadOutcome,
+    )
+    from xtalflow.domain import Project
+    from xtalflow.domain.plan_lifecycle import PlanningDraft, PlanRevision
+    from xtalflow.infrastructure import SQLiteReviewStore
+
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    now = datetime.now(timezone.utc)
+    project = Project.create("Upload")
+    store.save_project(project)
+    store.save_planning_draft(PlanningDraft(
+        "plan", project.id, "raw_crystal", "Plan", None, "", "BRD4", "0",
+        "selection", now, now,
+    ))
+    revision = store.finalize_plan_revision(
+        PlanRevision("revision", "plan", 0, "RawCrystal-01", "{}", "jjh", now)
+    )
+    service = LabworkUploadService(store)
+
+    pending = service.begin(
+        revision, "fbdd", "fbdd", "https://mxlive.example/upload_labworks/BL-5C/",
+        ({"expri_id": "RawCrystal-01"},),
+    )
+    assert service.lock_state("RawCrystal-01").availability is (
+        UploadAvailability.NEEDS_VERIFICATION
+    )
+
+    service.complete(pending, UploadOutcome("unknown", error_message="ReadTimeout"))
+    verified = service.verify(
+        store.list_webdb_uploads(revision.id)[0], "RawCrystal-01",
+        (_labwork("RawCrystal-01"),),
+    )
+
+    assert pending.payload_json == '[{"expri_id":"RawCrystal-01"}]'
+    assert verified.status == "succeeded"
+    assert service.lock_state("RawCrystal-01").availability is UploadAvailability.UPLOADED
+    store.close()

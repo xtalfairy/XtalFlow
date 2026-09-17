@@ -2366,14 +2366,16 @@ def test_solvent_test_runs_from_conditions_to_saved_worksheets_and_reopens(
     assert window._current_step is WorkflowStep.CONDITIONS
     assert editor.design_error == "Enter the source plate and well for DMSO."
     assert "Enter the source plate" in page.footer_status_label.text()
-    editor.source_plate_input.setText("LDV-1")
-    editor.source_well_input.setText("a1")
-    editor._additive_edited()
+    assert "source not set" in editor.additive_summary_label.text()
+    editor.update_additive(source_plate="LDV-1", source_well="a1")
     assert editor.design_error is None
-    assert editor.matrix_table.horizontalHeaderItem(2).text() == "10 %\n10 nL → 9.1 %"
+    assert "source LDV-1 A1" in editor.additive_summary_label.text()
+    assert editor.matrix_table.horizontalHeaderItem(2).text() == "10 %"
+    assert "10 % → 10 nL (9.1 %)" in editor.dose_label.text()
     editor._reduce_replicates()
     editor._toggle_cell(3, 3)
-    assert editor.matrix_table.item(3, 3).text() == "excluded"
+    assert editor.matrix_table.item(3, 3).text() == "–"
+    assert editor.matrix_table.item(3, 2).text() == "1"
     assert editor.design.required_crystals == 15
     assert page.footer_status_label.text() == "✓ 15 conditions · 15 crystals"
     assert page.primary_button.text() == "Select wells"

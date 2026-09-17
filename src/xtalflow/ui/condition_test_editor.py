@@ -1,28 +1,33 @@
-"""Condition test editor: additives, a notebook-style concentration × time table, and results."""
+"""Condition test editor: a notebook-style concentration × time table per additive."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
 from decimal import Decimal, InvalidOperation
+from uuid import uuid4
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor, QFont
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
-    QGridLayout,
+    QFormLayout,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMenu,
     QPushButton,
     QSpinBox,
-    QTabBar,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -46,11 +51,100 @@ from xtalflow.domain.worksheets import ECHO_HEADER, build_condition_echo_rounds,
 from xtalflow.ui import theme
 from xtalflow.ui.help_button import HelpButton
 from xtalflow.ui.plan_editors import PlanEditorBase, _plural, _preview_table
-from uuid import uuid4
+
+CELL_WIDTH = 64
+CELL_HEIGHT = 30
+
+CONDITIONS_STYLE = f"""
+QPushButton#SeriesChip {{ border: 1px solid {theme.BORDER}; border-radius: 14px;
+    padding: 3px 14px; background: {theme.SURFACE}; }}
+QPushButton#SeriesChip:checked {{ background: {theme.SELECTED}; border-color: {theme.BORDER_STRONG};
+    font-weight: 600; }}
+QPushButton#LinkButton {{ border: none; background: transparent; color: {theme.TEXT_MUTED};
+    padding: 3px 6px; }}
+QPushButton#LinkButton:hover {{ color: {theme.TEXT}; }}
+QTableWidget#ConditionMatrix {{ border: 1px solid {theme.BORDER_STRONG}; border-radius: 0;
+    gridline-color: {theme.BORDER_STRONG}; background: {theme.SURFACE}; }}
+QTableWidget#ConditionMatrix QHeaderView::section {{ background: {theme.SIDEBAR};
+    color: {theme.TEXT}; border: none; border-right: 1px solid {theme.BORDER_STRONG};
+    border-bottom: 1px solid {theme.BORDER_STRONG}; padding: 4px 6px; font-weight: 500; }}
+"""
 
 
 def _percent(value: Decimal) -> str:
     return f"{value.normalize():f}"
+
+
+class AdditiveDialog(QDialog):
+    """Everything about one additive and what, if anything, comes before it."""
+
+    def __init__(self, design: ConditionTestDesign, series, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        additive = design.additive(series.additive_id)
+        self.setWindowTitle(f"Edit {additive.name}")
+        self.name_input = QLineEdit(additive.name)
+        self.stock_input = QDoubleSpinBox()
+        self.stock_input.setRange(0.1, 100)
+        self.stock_input.setDecimals(1)
+        self.stock_input.setSuffix(" %")
+        self.stock_input.setValue(float(additive.stock_percent))
+        self.source_plate_input = QLineEdit(additive.source_plate)
+        self.source_plate_input.setPlaceholderText("e.g. LDV-01")
+        self.source_well_input = QLineEdit(additive.source_well)
+        self.source_well_input.setPlaceholderText("e.g. A1")
+        self.source_well_input.setMaximumWidth(80)
+        self.smiles_input = QLineEdit(additive.smiles)
+        self.smiles_input.setPlaceholderText("Optional, sent to MxLive")
+        self.before_additive_input = QComboBox()
+        self.before_additive_input.addItem("None", None)
+        for item in design.additives:
+            if item.id != additive.id:
+                self.before_additive_input.addItem(item.name, item.id)
+        before = series.before[0] if series.before else None
+        self.before_percent_input = QDoubleSpinBox()
+        self.before_percent_input.setRange(0, 99.9)
+        self.before_percent_input.setDecimals(1)
+        self.before_percent_input.setSuffix(" %")
+        self.before_minutes_input = QLineEdit()
+        self.before_minutes_input.setPlaceholderText("e.g. 1 h")
+        if before is not None:
+            self.before_additive_input.setCurrentIndex(
+                max(0, self.before_additive_input.findData(before.additive_id))
+            )
+            self.before_percent_input.setValue(float(before.final_percent))
+            self.before_minutes_input.setText(format_minutes(before.minutes))
+        source = QHBoxLayout()
+        source.addWidget(self.source_plate_input, 1)
+        source.addWidget(self.source_well_input)
+        before_row = QHBoxLayout()
+        before_row.addWidget(self.before_additive_input, 1)
+        before_row.addWidget(QLabel("at"))
+        before_row.addWidget(self.before_percent_input)
+        before_row.addWidget(QLabel("for"))
+        before_row.addWidget(self.before_minutes_input)
+        form = QFormLayout()
+        form.addRow("Name", self.name_input)
+        form.addRow("Stock", self.stock_input)
+        form.addRow("Source plate / well", source)
+        form.addRow("SMILES", self.smiles_input)
+        form.addRow("Earlier treatment", before_row)
+        hint = QLabel("An earlier treatment is added first and soaks for its time.")
+        hint.setObjectName("Muted")
+        form.addRow("", hint)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout = QVBoxLayout()
+        layout.addLayout(form)
+        layout.addWidget(buttons)
+        self.setLayout(layout)
+        self.before_additive_input.currentIndexChanged.connect(self._before_changed)
+        self._before_changed()
+
+    def _before_changed(self, *_args) -> None:
+        enabled = self.before_additive_input.currentData() is not None
+        self.before_percent_input.setEnabled(enabled)
+        self.before_minutes_input.setEnabled(enabled)
 
 
 class ConditionTestEditor(PlanEditorBase):
@@ -71,57 +165,53 @@ class ConditionTestEditor(PlanEditorBase):
         self.drop_volume_input.setSpecialValueText("Not set")
         self.drop_volume_input.setMaximumWidth(160)
 
-        self.series_tabs = QTabBar()
-        self.series_tabs.setTabsClosable(True)
-        self.series_tabs.setExpanding(False)
-        self.add_series_button = QPushButton("+ Additive")
-        self.additive_name_input = QLineEdit()
-        self.additive_name_input.setMaximumWidth(160)
-        self.stock_input = QDoubleSpinBox()
-        self.stock_input.setRange(0.1, 100)
-        self.stock_input.setDecimals(1)
-        self.stock_input.setSuffix(" %")
-        self.stock_input.setMaximumWidth(110)
-        self.source_plate_input = QLineEdit()
-        self.source_plate_input.setPlaceholderText("Plate")
-        self.source_plate_input.setMaximumWidth(140)
-        self.source_well_input = QLineEdit()
-        self.source_well_input.setPlaceholderText("Well")
-        self.source_well_input.setMaximumWidth(70)
-        self.smiles_input = QLineEdit()
-        self.smiles_input.setPlaceholderText("SMILES for MxLive (optional)")
-        self.smiles_input.setMaximumWidth(220)
-        self.before_additive_input = QComboBox()
-        self.before_percent_input = QDoubleSpinBox()
-        self.before_percent_input.setRange(0, 99.9)
-        self.before_percent_input.setDecimals(1)
-        self.before_percent_input.setSuffix(" %")
-        self.before_percent_input.setMaximumWidth(100)
-        self.before_minutes_input = QLineEdit()
-        self.before_minutes_input.setPlaceholderText("e.g. 30 min")
-        self.before_minutes_input.setMaximumWidth(110)
+        # One chip per additive; most tests have just one.
+        self.series_group = QButtonGroup(self)
+        self.series_group.setExclusive(True)
+        self.series_row = QHBoxLayout()
+        self.series_row.setSpacing(theme.SPACING_S)
+        self.add_series_button = QPushButton("+ Add additive")
+        self.add_series_button.setObjectName("LinkButton")
+        self.additive_summary_label = QLabel()
+        self.additive_summary_label.setTextFormat(Qt.RichText)
+        self.edit_additive_button = QPushButton("Edit…")
+        self.remove_series_button = QPushButton("Remove")
+        self.remove_series_button.setObjectName("LinkButton")
 
         self.matrix_table = QTableWidget()
+        self.matrix_table.setObjectName("ConditionMatrix")
         self.matrix_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.matrix_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.matrix_table.setFocusPolicy(Qt.NoFocus)
+        self.matrix_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.matrix_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.matrix_table.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.matrix_table.horizontalHeader().setContextMenuPolicy(Qt.CustomContextMenu)
-        self.matrix_table.verticalHeader().setContextMenuPolicy(Qt.CustomContextMenu)
-        self.matrix_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.matrix_table.verticalHeader().setDefaultSectionSize(40)
-        self.new_percent_input = QLineEdit()
-        self.new_percent_input.setPlaceholderText("e.g. 15")
-        self.new_percent_input.setMaximumWidth(90)
-        self.add_percent_button = QPushButton("Add %")
-        self.new_time_input = QLineEdit()
-        self.new_time_input.setPlaceholderText("e.g. 90 min")
-        self.new_time_input.setMaximumWidth(110)
-        self.add_time_button = QPushButton("Add time")
+        self.matrix_table.setCornerButtonEnabled(False)
+        horizontal = self.matrix_table.horizontalHeader()
+        horizontal.setContextMenuPolicy(Qt.CustomContextMenu)
+        horizontal.setSectionResizeMode(QHeaderView.Fixed)
+        horizontal.setDefaultSectionSize(CELL_WIDTH)
+        horizontal.setDefaultAlignment(Qt.AlignCenter)
+        vertical = self.matrix_table.verticalHeader()
+        vertical.setContextMenuPolicy(Qt.CustomContextMenu)
+        vertical.setSectionResizeMode(QHeaderView.Fixed)
+        vertical.setDefaultSectionSize(CELL_HEIGHT)
+        vertical.setDefaultAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.add_percent_button = QToolButton()
+        self.add_percent_button.setText("+ %")
+        self.add_percent_button.setToolTip("Add a final concentration column")
+        self.add_time_button = QToolButton()
+        self.add_time_button.setText("+ time")
+        self.add_time_button.setToolTip("Add a soak time row")
+        self.dose_label = QLabel()
+        self.dose_label.setWordWrap(True)
+        self.dose_label.setObjectName("Muted")
+
+        self.budget_label = QLabel()
         self.available_input = QSpinBox()
         self.available_input.setRange(0, 9999)
-        self.available_input.setSpecialValueText("Not set")
-        self.available_input.setMaximumWidth(110)
-        self.budget_label = QLabel()
+        self.available_input.setSpecialValueText("—")
+        self.available_input.setMaximumWidth(90)
         self.reduce_button = QPushButton()
         self.reduce_button.hide()
         self.design_error_label = QLabel()
@@ -140,28 +230,20 @@ class ConditionTestEditor(PlanEditorBase):
         self.preview_tabs.addTab(self.shifter_table, "SHIFTER worksheet")
 
         self.drop_volume_input.valueChanged.connect(self._drop_volume_changed)
-        self.series_tabs.currentChanged.connect(self._series_changed)
-        self.series_tabs.tabCloseRequested.connect(self._remove_series)
+        self.series_group.idClicked.connect(self._series_changed)
         self.add_series_button.clicked.connect(self._add_series)
-        for widget in (self.additive_name_input, self.source_plate_input,
-                       self.source_well_input, self.smiles_input):
-            widget.editingFinished.connect(self._additive_edited)
-        self.stock_input.valueChanged.connect(self._additive_edited)
-        self.before_additive_input.currentIndexChanged.connect(self._before_edited)
-        self.before_percent_input.valueChanged.connect(self._before_edited)
-        self.before_minutes_input.editingFinished.connect(self._before_edited)
+        self.edit_additive_button.clicked.connect(self.edit_additive)
+        self.remove_series_button.clicked.connect(lambda: self._remove_series(self._series_index))
         self.matrix_table.cellClicked.connect(self._toggle_cell)
         self.matrix_table.customContextMenuRequested.connect(self._show_cell_menu)
-        self.matrix_table.horizontalHeader().customContextMenuRequested.connect(
+        horizontal.customContextMenuRequested.connect(
             lambda position: self._show_axis_menu(position, columns=True)
         )
-        self.matrix_table.verticalHeader().customContextMenuRequested.connect(
+        vertical.customContextMenuRequested.connect(
             lambda position: self._show_axis_menu(position, columns=False)
         )
-        self.add_percent_button.clicked.connect(self._add_percent)
-        self.new_percent_input.returnPressed.connect(self._add_percent)
-        self.add_time_button.clicked.connect(self._add_time)
-        self.new_time_input.returnPressed.connect(self._add_time)
+        self.add_percent_button.clicked.connect(self._ask_percent)
+        self.add_time_button.clicked.connect(self._ask_time)
         self.available_input.valueChanged.connect(self._available_changed)
         self.reduce_button.clicked.connect(self._reduce_replicates)
         self.order_input.currentIndexChanged.connect(self.refresh_plan)
@@ -184,63 +266,63 @@ class ConditionTestEditor(PlanEditorBase):
         return [("Drop volume", row)]
 
     def conditions_widget(self) -> QWidget:
-        tabs_row = QHBoxLayout()
-        tabs_row.addWidget(self.series_tabs)
-        tabs_row.addWidget(self.add_series_button)
-        tabs_row.addStretch()
-        tabs_row.addWidget(QLabel("Crystals available"))
-        tabs_row.addWidget(self.available_input)
-        tabs_row.addWidget(self.budget_label)
-        tabs_row.addWidget(self.reduce_button)
+        """Additive on one line, then the table, then what it dispenses and costs."""
+        chips = QHBoxLayout()
+        chips.setSpacing(theme.SPACING_S)
+        chips.addLayout(self.series_row)
+        chips.addWidget(self.add_series_button)
+        chips.addStretch()
 
-        additive = QGridLayout()
-        additive.setHorizontalSpacing(theme.SPACING_M)
-        additive.setVerticalSpacing(theme.SPACING_S)
-        additive.addWidget(QLabel("Additive"), 0, 0)
-        additive.addWidget(self.additive_name_input, 0, 1)
-        additive.addWidget(QLabel("Stock"), 0, 2)
-        additive.addWidget(self.stock_input, 0, 3)
-        additive.addWidget(QLabel("Source"), 0, 4)
-        additive.addWidget(self.source_plate_input, 0, 5)
-        additive.addWidget(self.source_well_input, 0, 6)
-        additive.addWidget(self.smiles_input, 0, 7)
-        additive.addWidget(QLabel("After"), 1, 0)
-        additive.addWidget(self.before_additive_input, 1, 1)
-        additive.addWidget(QLabel("at"), 1, 2)
-        additive.addWidget(self.before_percent_input, 1, 3)
-        additive.addWidget(QLabel("for"), 1, 4)
-        additive.addWidget(self.before_minutes_input, 1, 5)
-        additive.addWidget(HelpButton(
-            "Combined treatment: this additive is added after an earlier one has "
-            "soaked for the given time. Leave as No earlier treatment for one additive."
-        ), 1, 6)
-        additive.setColumnStretch(8, 1)
+        additive = QHBoxLayout()
+        additive.setSpacing(theme.SPACING_M)
+        additive.addWidget(self.additive_summary_label)
+        additive.addWidget(self.edit_additive_button)
+        additive.addWidget(self.remove_series_button)
+        additive.addStretch()
 
-        axes = QHBoxLayout()
-        axes.addWidget(QLabel("Final concentration"))
-        axes.addWidget(self.new_percent_input)
-        axes.addWidget(self.add_percent_button)
-        axes.addSpacing(theme.SPACING_XL)
-        axes.addWidget(QLabel("Soak time"))
-        axes.addWidget(self.new_time_input)
-        axes.addWidget(self.add_time_button)
-        axes.addWidget(HelpButton(
-            "Columns are final concentrations and rows are soak times. Click a cell "
-            "to include or exclude it; excluded cells stay visible, crossed out. "
-            "Right-click a cell for replicates, or a header to change the whole row "
-            "or column. 0 % is the control."
+        caption = QHBoxLayout()
+        caption_label = QLabel("Rows: soak time · Columns: final concentration · click a cell to include or exclude it")
+        caption_label.setObjectName("Muted")
+        caption.addWidget(caption_label)
+        caption.addWidget(HelpButton(
+            "Each number is how many crystals get that condition. Right-click a cell "
+            "to change it, or a row or column header to change or remove the whole "
+            "row or column. Excluded cells stay in the table as –. 0 % is the control."
         ))
-        axes.addStretch()
+        caption.addStretch()
+
+        table_row = QHBoxLayout()
+        table_row.setSpacing(theme.SPACING_S)
+        table_row.addWidget(self.matrix_table, 0, Qt.AlignTop)
+        table_row.addWidget(self.add_percent_button, 0, Qt.AlignTop)
+        table_row.addStretch()
+
+        budget = QHBoxLayout()
+        budget.setSpacing(theme.SPACING_M)
+        budget.addWidget(self.budget_label)
+        budget.addSpacing(theme.SPACING_L)
+        available = QLabel("Crystals available")
+        available.setObjectName("Muted")
+        budget.addWidget(available)
+        budget.addWidget(self.available_input)
+        budget.addWidget(self.reduce_button)
+        budget.addStretch()
 
         widget = QWidget()
+        widget.setStyleSheet(CONDITIONS_STYLE)
         layout = QVBoxLayout()
         layout.setContentsMargins(0, theme.SPACING_S, 0, 0)
         layout.setSpacing(theme.SPACING_M)
-        layout.addLayout(tabs_row)
+        layout.addLayout(chips)
         layout.addLayout(additive)
         layout.addWidget(self.design_error_label)
-        layout.addWidget(self.matrix_table)
-        layout.addLayout(axes)
+        layout.addSpacing(theme.SPACING_S)
+        layout.addLayout(caption)
+        layout.addLayout(table_row)
+        layout.addWidget(self.add_time_button, 0, Qt.AlignLeft)
+        layout.addWidget(self.dose_label)
+        layout.addSpacing(theme.SPACING_S)
+        layout.addLayout(budget)
         layout.addStretch()
         widget.setLayout(layout)
         return widget
@@ -272,52 +354,29 @@ class ConditionTestEditor(PlanEditorBase):
         self.available_input.blockSignals(True)
         self.available_input.setValue(self.design.available_crystals or 0)
         self.available_input.blockSignals(False)
-        self.series_tabs.blockSignals(True)
-        while self.series_tabs.count():
-            self.series_tabs.removeTab(0)
-        for series in self.design.series:
-            self.series_tabs.addTab(self.design.additive(series.additive_id).name)
         self._series_index = min(self._series_index, len(self.design.series) - 1)
-        self.series_tabs.setCurrentIndex(self._series_index)
-        self.series_tabs.setTabsClosable(len(self.design.series) > 1)
-        self.series_tabs.blockSignals(False)
-        self._load_series_inputs()
+        self._render_chips()
 
-    def _load_series_inputs(self) -> None:
-        series = self._series
-        additive = self.design.additive(series.additive_id)
-        widgets = (
-            self.additive_name_input, self.stock_input, self.source_plate_input,
-            self.source_well_input, self.smiles_input, self.before_additive_input,
-            self.before_percent_input, self.before_minutes_input,
-        )
-        for widget in widgets:
-            widget.blockSignals(True)
-        self.additive_name_input.setText(additive.name)
-        self.stock_input.setValue(float(additive.stock_percent))
-        self.source_plate_input.setText(additive.source_plate)
-        self.source_well_input.setText(additive.source_well)
-        self.smiles_input.setText(additive.smiles)
-        self.before_additive_input.clear()
-        self.before_additive_input.addItem("No earlier treatment", None)
-        for item in self.design.additives:
-            if item.id != additive.id:
-                self.before_additive_input.addItem(item.name, item.id)
-        before = series.before[0] if series.before else None
-        index = self.before_additive_input.findData(before.additive_id) if before else 0
-        self.before_additive_input.setCurrentIndex(max(0, index))
-        self.before_percent_input.setValue(float(before.final_percent) if before else 0)
-        self.before_minutes_input.setText(format_minutes(before.minutes) if before else "")
-        has_before = before is not None
-        self.before_percent_input.setEnabled(has_before)
-        self.before_minutes_input.setEnabled(has_before)
-        for widget in widgets:
-            widget.blockSignals(False)
+    def _render_chips(self) -> None:
+        for button in self.series_group.buttons():
+            self.series_group.removeButton(button)
+            self.series_row.removeWidget(button)
+            # Hide now: a removed chip would otherwise paint until deleteLater runs.
+            button.hide()
+            button.deleteLater()
+        for index, series in enumerate(self.design.series):
+            chip = QPushButton(self.design.additive(series.additive_id).name)
+            chip.setObjectName("SeriesChip")
+            chip.setCheckable(True)
+            chip.setChecked(index == self._series_index)
+            self.series_group.addButton(chip, index)
+            self.series_row.addWidget(chip)
+        self.remove_series_button.setVisible(len(self.design.series) > 1)
 
     def _series_changed(self, index: int) -> None:
-        if 0 <= index < len(self.design.series):
+        if 0 <= index < len(self.design.series) and index != self._series_index:
             self._series_index = index
-            self._load_series_inputs()
+            self._render_chips()
             self.refresh_plan()
 
     def _add_series(self) -> None:
@@ -332,8 +391,6 @@ class ConditionTestEditor(PlanEditorBase):
         self._series_index = len(self.design.series) - 1
         self._load_design_inputs()
         self.refresh_plan()
-        self.additive_name_input.setFocus(Qt.OtherFocusReason)
-        self.additive_name_input.selectAll()
 
     def _remove_series(self, index: int) -> None:
         if len(self.design.series) <= 1:
@@ -352,44 +409,50 @@ class ConditionTestEditor(PlanEditorBase):
         self._load_design_inputs()
         self.refresh_plan()
 
-    def _additive_edited(self, *_args) -> None:
-        current = self.design.additive(self._series.additive_id)
-        try:
-            updated = Additive(
-                current.id,
-                self.additive_name_input.text().strip() or current.name,
-                Decimal(str(self.stock_input.value())),
-                self.smiles_input.text().strip(),
-                self.source_plate_input.text().strip(),
-                self.source_well_input.text().strip().upper(),
-            )
-        except (ValueError, InvalidOperation):
+    def edit_additive(self) -> None:
+        dialog = AdditiveDialog(self.design, self._series, self)
+        if dialog.exec_() != QDialog.Accepted:
             return
-        if updated == current:
+        try:
+            minutes = parse_minutes(dialog.before_minutes_input.text() or "0")
+        except ValueError:
+            minutes = 0
+        before_id = dialog.before_additive_input.currentData()
+        self.update_additive(
+            name=dialog.name_input.text(),
+            stock_percent=Decimal(str(dialog.stock_input.value())),
+            source_plate=dialog.source_plate_input.text(),
+            source_well=dialog.source_well_input.text(),
+            smiles=dialog.smiles_input.text(),
+            before=(
+                (Treatment(before_id, Decimal(str(dialog.before_percent_input.value())), minutes),)
+                if before_id is not None else ()
+            ),
+        )
+
+    def update_additive(self, *, before=None, **changes) -> None:
+        """Apply edits to the current additive; text fields are trimmed, wells upper-cased."""
+        current = self.design.additive(self._series.additive_id)
+        cleaned = {
+            key: (value.strip().upper() if key == "source_well" else value.strip())
+            if isinstance(value, str) else value
+            for key, value in changes.items()
+        }
+        if not cleaned.get("name", current.name):
+            cleaned.pop("name")
+        try:
+            updated = replace(current, **cleaned)
+        except (ValueError, InvalidOperation) as error:
+            self._show_design_error(str(error))
             return
         self.design = replace(
             self.design,
             additives=tuple(updated if item.id == current.id else item for item in self.design.additives),
         )
-        self.series_tabs.setTabText(self._series_index, updated.name)
+        if before is not None:
+            self._replace_series(replace(self._series, before=tuple(before)))
+        self._render_chips()
         self.refresh_plan()
-
-    def _before_edited(self, *_args) -> None:
-        additive_id = self.before_additive_input.currentData()
-        self.before_percent_input.setEnabled(additive_id is not None)
-        self.before_minutes_input.setEnabled(additive_id is not None)
-        before: tuple[Treatment, ...] = ()
-        if additive_id is not None:
-            try:
-                minutes = parse_minutes(self.before_minutes_input.text() or "0")
-            except ValueError:
-                minutes = 0
-            before = (
-                Treatment(additive_id, Decimal(str(self.before_percent_input.value())), minutes),
-            )
-        if before != self._series.before:
-            self._replace_series(replace(self._series, before=before))
-            self.refresh_plan()
 
     def _drop_volume_changed(self, value: float) -> None:
         self.design = replace(
@@ -424,7 +487,7 @@ class ConditionTestEditor(PlanEditorBase):
         menu = QMenu(self.matrix_table)
         toggle = menu.addAction("Exclude" if cell.included else "Include")
         toggle.triggered.connect(lambda: self._set_cells((cell,), included=not cell.included))
-        replicates = menu.addMenu("Replicates")
+        replicates = menu.addMenu("Crystals")
         for count in range(1, 7):
             action = replicates.addAction(str(count))
             action.setCheckable(True)
@@ -449,7 +512,7 @@ class ConditionTestEditor(PlanEditorBase):
         menu = QMenu(header)
         menu.addAction("Include all").triggered.connect(lambda: self._set_cells(cells, included=True))
         menu.addAction("Exclude all").triggered.connect(lambda: self._set_cells(cells, included=False))
-        replicates = menu.addMenu("Replicates")
+        replicates = menu.addMenu("Crystals")
         for count in range(1, 7):
             replicates.addAction(str(count)).triggered.connect(
                 lambda _=False, number=count: self._set_cells(cells, replicates=number)
@@ -470,10 +533,23 @@ class ConditionTestEditor(PlanEditorBase):
         self._replace_series(updated)
         self.refresh_plan()
 
-    def _add_percent(self) -> None:
-        text = self.new_percent_input.text().strip().rstrip("%").strip()
+    def _ask_percent(self) -> None:
+        text, accepted = QInputDialog.getText(
+            self, "Add concentration", "Final concentration (%):"
+        )
+        if accepted:
+            self.add_percent(text)
+
+    def _ask_time(self) -> None:
+        text, accepted = QInputDialog.getText(
+            self, "Add soak time", "Soak time (e.g. 30, 90 min, 2 h):"
+        )
+        if accepted:
+            self.add_time(text)
+
+    def add_percent(self, text: str) -> None:
         try:
-            value = Decimal(text)
+            value = Decimal(text.strip().rstrip("%").strip())
             if value < 0 or value >= 100:
                 raise ValueError
         except (InvalidOperation, ValueError):
@@ -481,18 +557,16 @@ class ConditionTestEditor(PlanEditorBase):
             return
         series = self._series
         self._replace_series(series.with_axes((*series.percents, value), series.times))
-        self.new_percent_input.clear()
         self.refresh_plan()
 
-    def _add_time(self) -> None:
+    def add_time(self, text: str) -> None:
         try:
-            minutes = parse_minutes(self.new_time_input.text())
+            minutes = parse_minutes(text)
         except ValueError:
             self._show_design_error("Enter a soak time such as 30, 90 min, or 2 h.")
             return
         series = self._series
         self._replace_series(series.with_axes(series.percents, (*series.times, minutes)))
-        self.new_time_input.clear()
         self.refresh_plan()
 
     def _reduce_replicates(self) -> None:
@@ -509,16 +583,60 @@ class ConditionTestEditor(PlanEditorBase):
 
     # -- Rendering -------------------------------------------------------------------
 
+    def _render_additive_summary(self) -> None:
+        series = self._series
+        additive = self.design.additive(series.additive_id)
+        parts = [f"<b>{additive.name}</b>", f"{_percent(additive.stock_percent)} % stock"]
+        if additive.source_plate and additive.source_well:
+            parts.append(f"source {additive.source_plate} {additive.source_well}")
+        else:
+            parts.append(f'<span style="color:{theme.ATTENTION}">source not set</span>')
+        for step in series.before:
+            earlier = self.design.additive(step.additive_id).name
+            parts.append(
+                f"after {earlier} {_percent(step.final_percent)} % for {format_minutes(step.minutes)}"
+            )
+        self.additive_summary_label.setText(" · ".join(parts))
+
     def _render_matrix(self) -> None:
         series = self._series
         table = self.matrix_table
         table.clear()
         table.setColumnCount(len(series.percents))
         table.setRowCount(len(series.times))
-        headers = []
+        table.setHorizontalHeaderLabels([f"{_percent(percent)} %" for percent in series.percents])
+        table.setVerticalHeaderLabels([format_minutes(minutes) for minutes in series.times])
+        conditions = {condition.id: condition for condition in series.conditions()}
+        for row, minutes in enumerate(series.times):
+            for column, percent in enumerate(series.percents):
+                cell = series.cell(percent, minutes)
+                item = QTableWidgetItem()
+                item.setTextAlignment(Qt.AlignCenter)
+                if cell is not None and cell.included:
+                    item.setText(str(cell.replicates))
+                    item.setToolTip(
+                        f"{self.design.label(conditions[cell.id])} · "
+                        f"{_plural(cell.replicates, 'crystal')}\nClick to exclude"
+                    )
+                elif cell is not None:
+                    item.setText("–")
+                    item.setForeground(QColor(theme.TEXT_TERTIARY))
+                    item.setBackground(QColor(theme.SUBTLE))
+                    item.setToolTip("Excluded · click to include")
+                table.setItem(row, column, item)
+        # Sized to its cells so it reads as a small notebook table, not a page-wide grid.
+        vertical = table.verticalHeader()
+        table.setFixedSize(
+            vertical.sizeHint().width() + CELL_WIDTH * len(series.percents) + 2 * table.frameWidth(),
+            table.horizontalHeader().sizeHint().height() + CELL_HEIGHT * len(series.times)
+            + 2 * table.frameWidth(),
+        )
+
+    def _render_doses(self) -> None:
+        series = self._series
+        parts = []
         for percent in series.percents:
             if percent == 0:
-                headers.append("0 %\ncontrol")
                 continue
             # Doses do not depend on soak time, so one probe per column is enough.
             probe = Condition(
@@ -527,62 +645,37 @@ class ConditionTestEditor(PlanEditorBase):
             )
             try:
                 dose = compute_doses(self.design, probe)[-1]
-                detail = f"{dose.volume_nl.normalize():f} nL → {dose.actual_percent} %"
             except ValueError:
-                detail = "set drop volume" if self.design.drop_volume_nl is None else "△ see note"
-            headers.append(f"{_percent(percent)} %\n{detail}")
-        table.setHorizontalHeaderLabels(headers)
-        table.setVerticalHeaderLabels([format_minutes(minutes) for minutes in series.times])
-        # The table is as tall as its rows, so the axis inputs stay right under it.
-        table.setFixedHeight(
-            table.horizontalHeader().sizeHint().height() + 2 * table.frameWidth()
-            + table.verticalHeader().defaultSectionSize() * len(series.times)
-        )
-        conditions = {condition.id: condition for condition in series.conditions()}
-        for row, minutes in enumerate(series.times):
-            for column, percent in enumerate(series.percents):
-                cell = series.cell(percent, minutes)
-                item = QTableWidgetItem()
-                item.setTextAlignment(Qt.AlignCenter)
-                if cell is None:
-                    table.setItem(row, column, item)
-                    continue
-                if cell.included:
-                    item.setText(f"× {cell.replicates}")
-                    item.setToolTip(
-                        f"{self.design.label(conditions[cell.id])}\n"
-                        f"{_plural(cell.replicates, 'crystal')} · click to exclude"
-                    )
-                else:
-                    item.setText("excluded")
-                    font = QFont(item.font())
-                    font.setStrikeOut(True)
-                    item.setFont(font)
-                    item.setForeground(QColor(theme.TEXT_TERTIARY))
-                    item.setBackground(QColor(theme.SUBTLE))
-                    item.setToolTip("Excluded · click to include")
-                table.setItem(row, column, item)
+                continue
+            parts.append(
+                f"{_percent(percent)} % → {dose.volume_nl.normalize():f} nL ({dose.actual_percent} %)"
+            )
+        if self.design.drop_volume_nl is None:
+            self.dose_label.setText("Enter the drop volume in Setup to see dispensed volumes.")
+        elif parts:
+            self.dose_label.setText("Dispensed per well: " + " · ".join(parts))
+        else:
+            self.dose_label.setText("")
 
     def _update_budget(self) -> None:
         needed = self.design.required_crystals
         available = self.design.available_crystals
         conditions = len(self.design.conditions())
         text = f"{_plural(conditions, 'condition')} · {_plural(needed, 'crystal')} needed"
-        kind = "muted"
+        attention = False
         self.reduce_button.hide()
         if available:
             if needed > available:
                 text += f" · {needed - available} short"
-                kind = "attention"
-                single = conditions
-                if single < needed:
-                    self.reduce_button.setText(f"Use 1 replicate each ({single})")
+                attention = True
+                if conditions < needed:
+                    self.reduce_button.setText(f"Use 1 crystal each ({conditions})")
                     self.reduce_button.show()
             else:
                 text += f" · {available - needed} spare"
         self.budget_label.setText(text)
         self.budget_label.setStyleSheet(
-            theme.status_style("attention") if kind == "attention" else f"color: {theme.TEXT_MUTED};"
+            theme.status_style("attention") if attention else f"color: {theme.TEXT};"
         )
 
     def _check_design(self) -> str | None:
@@ -601,10 +694,15 @@ class ConditionTestEditor(PlanEditorBase):
         return None
 
     def refresh_plan(self) -> None:
+        self._render_additive_summary()
         self._render_matrix()
+        self._render_doses()
         self._update_budget()
         self.design_error = self._check_design()
-        self._show_design_error(self.design_error or "")
+        current = self.design.additive(self._series.additive_id)
+        # A missing source for the additive on screen is already marked in its summary line.
+        repeated = self.design_error == f"Enter the source plate and well for {current.name}."
+        self._show_design_error("" if repeated else self.design_error or "")
         self.selection_error = None
         try:
             if self.design_error:

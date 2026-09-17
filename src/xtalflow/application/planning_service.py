@@ -140,6 +140,9 @@ def saved_plan_status(
     if last_revision is not None and last_revision_snapshot == current_snapshot:
         finalized = f"Finalized r{last_revision.revision}"
         return PlanStatus(finalized, finalized, finalized=True)
+    if last_revision is not None:
+        changed = f"Draft changes after r{last_revision.revision}"
+        return PlanStatus(changed, changed)
     return PlanStatus("Draft · saved", "Draft")
 
 
@@ -158,7 +161,8 @@ def restored_plan_status(
     if last_revision.snapshot_json == current_snapshot:
         finalized = f"Finalized r{last_revision.revision}"
         return PlanStatus(finalized, finalized, finalized=True)
-    return PlanStatus("Draft · restored with changes", "Draft")
+    changed = f"Draft changes after r{last_revision.revision}"
+    return PlanStatus(changed, changed)
 
 
 class PlanningService:

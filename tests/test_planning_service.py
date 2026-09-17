@@ -79,10 +79,13 @@ def test_plan_status_distinguishes_finalized_changed_and_legacy_plans() -> None:
     revision = PlanRevision("r", "plan", 2, "RawCrystal-01", "{}", "jjh", NOW)
 
     assert saved_plan_status(revision, "{}", "{}").label == "Finalized r2"
-    assert saved_plan_status(revision, "{}", '{"v":2}').list_status == "Draft"
+    assert saved_plan_status(revision, "{}", '{"v":2}').list_status == (
+        "Draft changes after r2"
+    )
+    assert saved_plan_status(None, None, "{}").list_status == "Draft"
     assert restored_plan_status(None, "{}", selection_owned=True) is None
     assert restored_plan_status(revision, '{"v":2}', True).label == (
-        "Draft · restored with changes"
+        "Draft changes after r2"
     )
     assert restored_plan_status(revision, "{}", False).list_status == (
         "Legacy · Review selection"

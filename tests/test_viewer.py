@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import QApplication, QInputDialog, QMessageBox
 
 from xtalflow.domain import (
     PLATE_FORMATS,
+    PlanType,
     ImageFilter,
     ReviewSession,
     SWISSCI_MIDI_3_LENS,
@@ -29,7 +30,7 @@ from xtalflow.domain.fragment_screening import (
 )
 from xtalflow.application import ReviewPersistenceError
 from xtalflow.infrastructure import RockMakerImageRepository, SQLiteReviewStore
-from xtalflow.ui.plan_editors import FragmentScreeningDialog
+from xtalflow.ui.plan_editors import FragmentScreeningDialog, RawCrystalEditor
 from xtalflow.ui.load_plates_dialog import LoadPlatesDialog
 from xtalflow.viewer import ViewerWindow
 from xtalflow.viewer import main
@@ -294,7 +295,7 @@ def test_main_window_separates_image_review_and_planning_tabs(
     assert window.main_tabs.tabText(window.planning_tab_index) == "Planning"
     assert window.main_tabs.currentIndex() == window.image_review_tab_index
     assert window.plan_list.count() == 0
-    assert window.new_plan_button.text() == "+ New Project"
+    assert window.new_plan_button.toolTip() == "New Project…"
     assert window.new_workspace_action.text() == "New Workspace…"
 
     window.close()
@@ -781,7 +782,7 @@ def test_unknown_upload_result_locks_until_verified_on_mxlive(
     assert [event.status for event in store.audit.list_webdb_uploads(revision.id)] == [
         "failed"
     ]
-    assert editor.webdb_upload_button.text() == "Upload Finalized Revision…"
+    assert editor.webdb_upload_button.text() == "Upload to MxLive…"
     assert editor.webdb_upload_button.isEnabled()
     assert dialogs[-1][0] == "information"
     window.close()
@@ -954,6 +955,17 @@ def test_fragment_worksheets_are_saved_and_audited(tmp_path: Path, monkeypatch) 
     revision = editor.last_revision
     exports = store.audit.list_worksheet_exports(revision.id)
     assert messages == ["Worksheets saved"]
+    assert editor.readiness_label.text() == "✓ Finalized r1"
+    assert editor.worksheet_status_label.text() == "✓ Worksheets saved r1 · 3 instruments"
+    assert "SHIFTER 2: " in editor.worksheet_status_label.toolTip()
+    assert editor.settings_panel.isHidden()
+    assert editor.webdb_delivery_label.text() == "WebDB: MxLive not configured"
+    assert not editor.finalize_button.isEnabled()
+    editor.protein_input.setText("BRD4-B")
+    window._persist_draft(editor)
+    assert editor.readiness_label.text() == "△ Draft changes after r1"
+    assert editor.finalize_button.isEnabled()
+    assert "Draft changes after r1" in window.plan_list.item(0).text()
     assert [event.status for event in exports] == ["succeeded"]
     assert Path(exports[0].path_for("echo650")).is_file()
     assert Path(exports[0].path_for("shifter2")).is_file()
@@ -994,6 +1006,64 @@ def test_unavailable_instrument_share_can_use_alternate_root(
     exports = store.audit.list_worksheet_exports(editor.last_revision.id)
     assert [event.status for event in exports] == ["succeeded"]
     assert exports[0].path_for("echo650").startswith(str(tmp_path / "chosen" / "echo650"))
+    window.close()
+    app.processEvents()
+
+
+def test_new_project_dialog_names_follow_plan_type_until_edited() -> None:
+    from xtalflow.ui.new_project_dialog import NewProjectDialog
+
+    app = QApplication.instance() or QApplication([])
+    dialog = NewProjectDialog(
+        3, 5,
+        {PlanType.FRAGMENT_SCREENING: "Fragment Screening Project #1",
+         PlanType.RAW_CRYSTAL: "Raw Crystal Project #1"},
+    )
+
+    assert dialog.plan_type is PlanType.FRAGMENT_SCREENING
+    dialog.select_plan_type(PlanType.RAW_CRYSTAL)
+    assert dialog.project_name == "Raw Crystal Project #1"
+    dialog.name_input.setText("BRD4 harvest")
+    dialog.name_input.textEdited.emit("BRD4 harvest")
+    dialog.select_plan_type(PlanType.FRAGMENT_SCREENING)
+    assert dialog.project_name == "BRD4 harvest"
+    dialog.close()
+    app.processEvents()
+
+
+def test_new_project_from_selection_creates_named_plan_of_chosen_type(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from xtalflow.ui.new_project_dialog import NewProjectDialog
+
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(
+        RockMakerImageRepository(tmp_path), SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    )
+    crystal = SelectedCrystal(
+        "image", "1070", "A01a",
+        (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
+        SWISSCI_MIDI_3_LENS.id,
+    )
+    monkeypatch.setattr(
+        window.project_controller, "selected_crystals_for_plan", lambda: (crystal,)
+    )
+
+    def choose_raw(dialog):
+        dialog.select_plan_type(PlanType.RAW_CRYSTAL)
+        dialog.name_input.setText("BRD4 harvest")
+        return dialog.Accepted
+
+    monkeypatch.setattr(NewProjectDialog, "exec_", choose_raw)
+    window.new_project_from_selection_button.setEnabled(True)
+    window.new_project_from_selection_button.click()
+
+    editor = window.plan_stack.currentWidget()
+    assert isinstance(editor, RawCrystalEditor)
+    assert editor.title_label.text() == "BRD4 harvest"
+    assert window.plan_list.item(0).text().startswith("BRD4 harvest\nRaw Crystal · 1 well")
+    assert window.main_tabs.currentIndex() == window.planning_tab_index
+    assert window.main_tabs.tabText(window.planning_tab_index) == "Planning · 1"
     window.close()
     app.processEvents()
 

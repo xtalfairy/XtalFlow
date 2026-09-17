@@ -152,6 +152,7 @@ from xtalflow.ui.plan_editors import FragmentScreeningEditor, RawCrystalEditor
 from xtalflow.ui import theme
 from xtalflow.ui.calibration_inspector import CalibrationInspector, calibration_status
 from xtalflow.ui.load_plates_dialog import LoadPlatesDialog, PlateSource
+from xtalflow.ui.new_project_dialog import NewProjectDialog
 from xtalflow.ui.plate_list import PlateCardDelegate
 
 
@@ -491,15 +492,30 @@ class ViewerWindow(QMainWindow):
             "Experiment projects: each owns a selected-well snapshot and one plan"
         )
         self.plan_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.new_plan_button = QPushButton("+ New Project")
+        self.plan_list.setWordWrap(True)
+        self.plan_list.setSpacing(2)
+        projects_title = QLabel("PROJECTS")
+        projects_title.setObjectName("SectionTitle")
+        self.new_plan_button = QToolButton()
+        self.new_plan_button.setText("+")
+        self.new_plan_button.setToolTip("New Project…")
+        self.new_plan_button.setAccessibleName("New project")
+        self.project_filter_input = QLineEdit()
+        self.project_filter_input.setPlaceholderText("Find project…")
+        self.project_filter_input.setClearButtonEnabled(True)
         self.plan_list_empty_label = QLabel(
             "No experiment projects yet.\nCreate one from the current selection."
         )
         self.plan_list_empty_label.setAlignment(Qt.AlignCenter)
         self.plan_list_empty_label.setObjectName("Muted")
+        projects_header = QHBoxLayout()
+        projects_header.addWidget(projects_title)
+        projects_header.addStretch()
+        projects_header.addWidget(self.new_plan_button)
         plan_sidebar_layout = QVBoxLayout()
-        plan_sidebar_layout.addWidget(QLabel("Experiment Projects"))
-        plan_sidebar_layout.addWidget(self.new_plan_button)
+        plan_sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        plan_sidebar_layout.addLayout(projects_header)
+        plan_sidebar_layout.addWidget(self.project_filter_input)
         plan_sidebar_layout.addWidget(self.plan_list_empty_label)
         plan_sidebar_layout.addWidget(self.plan_list, 1)
         plan_sidebar = QWidget()
@@ -518,7 +534,7 @@ class ViewerWindow(QMainWindow):
         planning_splitter.setSizes([230, 870])
         planning_tab = QWidget()
         planning_tab_layout = QVBoxLayout()
-        planning_tab_layout.setContentsMargins(0, 0, 0, 0)
+        planning_tab_layout.setContentsMargins(0, theme.SPACING_M, 0, theme.SPACING_M)
         planning_tab_layout.addWidget(planning_splitter)
         planning_tab.setLayout(planning_tab_layout)
         return planning_tab
@@ -591,9 +607,10 @@ class ViewerWindow(QMainWindow):
         self.plate_filter_input.textChanged.connect(self._filter_plate_list)
         self.target_summary_button.toggled.connect(self.target_summary_dock.setVisible)
         self.new_project_from_selection_button.clicked.connect(
-            self._show_new_project_menu_from_selection
+            self.create_project_from_selection
         )
-        self.new_plan_button.clicked.connect(self._show_new_plan_menu)
+        self.new_plan_button.clicked.connect(self.create_project_from_selection)
+        self.project_filter_input.textChanged.connect(self._filter_project_list)
         self.plan_list.currentRowChanged.connect(self._planning_row_changed)
         self.plan_list.customContextMenuRequested.connect(self._show_plan_context_menu)
         self.main_tabs.currentChanged.connect(self._main_tab_changed)
@@ -700,11 +717,6 @@ class ViewerWindow(QMainWindow):
         if crystals is not None:
             self._add_fragment_plan(None, crystals)
 
-    def _open_raw_crystal_plan(self) -> None:
-        crystals = self._crystals_for_new_plan("raw crystal plan")
-        if crystals is not None:
-            self._add_raw_crystal_plan(crystals)
-
     def _crystals_for_new_plan(
         self, plan_label: str
     ) -> tuple[SelectedCrystal, ...] | None:
@@ -758,28 +770,30 @@ class ViewerWindow(QMainWindow):
                 return None
         return crystals
 
-    def _show_new_project_menu_from_selection(self) -> None:
-        self.main_tabs.setCurrentIndex(self.planning_tab_index)
-        self._show_new_plan_menu()
-
-    def _show_new_plan_menu(self) -> None:
-        menu = QMenu(self.new_plan_button)
-        raw_action = menu.addAction("Raw Crystal Plan")
-        fragment_action = menu.addAction("Fragment Screening")
-        menu.addSeparator()
-        for label in (
-            "Solvent Duration (coming later)",
-            "Cryo Plan (coming later)",
-            "Custom Soaking (coming later)",
-        ):
-            menu.addAction(label).setEnabled(False)
-        fragment_action.triggered.connect(self._open_fragment_screening)
-        raw_action.triggered.connect(self._open_raw_crystal_plan)
-        menu.exec_(
-            self.new_plan_button.mapToGlobal(
-                self.new_plan_button.rect().bottomLeft()
-            )
+    def create_project_from_selection(self) -> None:
+        crystals = self._crystals_for_new_plan("project")
+        if crystals is None:
+            return
+        project = self._require_planning_workspace()
+        existing = self._planning_drafts.get(project.id, [])
+        default_names = {
+            PlanType.FRAGMENT_SCREENING: "Fragment Screening Project #"
+            f"{sum(isinstance(item[1], FragmentScreeningEditor) for item in existing) + 1}",
+            PlanType.RAW_CRYSTAL: "Raw Crystal Project #"
+            f"{sum(isinstance(item[1], RawCrystalEditor) for item in existing) + 1}",
+        }
+        dialog = NewProjectDialog(
+            len(crystals),
+            sum(len(crystal.targets) for crystal in crystals),
+            default_names,
+            self,
         )
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        if dialog.plan_type is PlanType.RAW_CRYSTAL:
+            self._add_raw_crystal_plan(crystals, name=dialog.project_name)
+        else:
+            self._add_fragment_plan(None, crystals, name=dialog.project_name)
 
     def _planning_row_changed(self, row: int) -> None:
         self.plan_stack.setCurrentIndex(max(0, row + 1))
@@ -880,12 +894,12 @@ class ViewerWindow(QMainWindow):
         library: FragmentLibrary | None,
         crystals: tuple[SelectedCrystal, ...],
         restored: PlanningDraft | None = None,
+        name: str | None = None,
     ) -> None:
         project = self._require_planning_workspace()
         existing = self._planning_drafts.setdefault(project.id, [])
-        name = (
-            restored.name if restored
-            else f"Fragment Screening Project #{len(existing) + 1}"
+        name = restored.name if restored else name or (
+            f"Fragment Screening Project #{len(existing) + 1}"
         )
         plan_id = restored.id if restored else str(uuid4())
         owned_project, selection = self._plan_selection(plan_id, crystals)
@@ -909,12 +923,12 @@ class ViewerWindow(QMainWindow):
     def _add_raw_crystal_plan(
         self, crystals: tuple[SelectedCrystal, ...],
         restored: PlanningDraft | None = None,
+        name: str | None = None,
     ) -> None:
         project = self._require_planning_workspace()
         existing = self._planning_drafts.setdefault(project.id, [])
-        name = (
-            restored.name if restored
-            else "Raw Crystal Project #"
+        name = restored.name if restored else name or (
+            "Raw Crystal Project #"
             f"{sum(isinstance(item[1], RawCrystalEditor) for item in existing) + 1}"
         )
         plan_id = restored.id if restored else str(uuid4())
@@ -922,7 +936,7 @@ class ViewerWindow(QMainWindow):
         editor = RawCrystalEditor(selection, self.plan_stack)
         if restored is not None:
             editor.restore_draft(restored)
-        editor.save_worksheet_requested.connect(
+        editor.save_worksheets_requested.connect(
             lambda selected_editor=editor: self._save_plan_worksheets(selected_editor)
         )
         self._register_plan_editor(
@@ -964,6 +978,7 @@ class ViewerWindow(QMainWindow):
         editor.plan_id = plan_id
         editor.project_id = project.id
         editor.plan_name = name
+        editor.set_title(name)
         editor.plan_created_at = restored.created_at if restored else datetime.now(timezone.utc)
         editor.last_revision = None
         editor.last_revision_snapshot = None
@@ -1000,7 +1015,7 @@ class ViewerWindow(QMainWindow):
         )
         self._planning_drafts.setdefault(project.id, []).append((name, editor))
         self.plan_stack.addWidget(editor)
-        self.plan_list.addItem(name)
+        self.plan_list.addItem(self._plan_list_text(editor, "Draft"))
         self.plan_list_empty_label.hide()
         self.plan_list.setCurrentRow(self.plan_list.count() - 1)
         self._update_planning_tab_title()
@@ -1024,6 +1039,7 @@ class ViewerWindow(QMainWindow):
             editor.last_revision is not None
             and snapshot == editor.last_revision_snapshot
         ):
+            editor.settings_toggle.setChecked(False)
             self._sync_webdb_upload_state(editor)
         if not editor.selection_snapshot_owned:
             editor.adopt_selection_button.show()
@@ -1139,6 +1155,87 @@ class ViewerWindow(QMainWindow):
     def _show_plan_status(self, editor, status: PlanStatus) -> None:
         editor.lifecycle_label.setText(status.label)
         self._set_plan_list_status(editor, status.list_status)
+        self._refresh_delivery_bar(editor)
+
+    def _refresh_delivery_bar(self, editor) -> None:
+        """Show plan confirmation, worksheet delivery, and WebDB upload separately."""
+        revision = getattr(editor, "last_revision", None)
+        finalized = (
+            revision is not None
+            and self._plan_snapshot(editor) == editor.last_revision_snapshot
+        )
+        if editor.current_plan is None:
+            readiness = (
+                f"{theme.SYMBOL_ERROR} {editor.error_label.text() or 'Plan is not valid'}",
+                "error",
+            )
+        elif revision is None:
+            readiness = (f"{theme.SYMBOL_OK} Ready to finalize", "ok")
+        elif finalized:
+            readiness = (f"{theme.SYMBOL_OK} Finalized r{revision.revision}", "ok")
+        else:
+            readiness = (
+                f"{theme.SYMBOL_ATTENTION} Draft changes after r{revision.revision}",
+                "attention",
+            )
+        editor.finalize_button.setEnabled(editor.current_plan is not None and not finalized)
+        editor.show_delivery(
+            readiness,
+            self._worksheet_delivery_state(revision),
+            self._webdb_delivery_state(editor, revision),
+        )
+        editor.worksheet_status_label.setToolTip(self._worksheet_delivery_details(revision))
+
+    def _worksheet_delivery_details(self, revision) -> str:
+        if revision is None or self.review_store is None:
+            return ""
+        try:
+            exports = self.review_store.audit.list_worksheet_exports(revision.id)
+        except ReviewPersistenceError:
+            return ""
+        if not exports:
+            return ""
+        latest = exports[-1]
+        lines = [f"{latest.status} · {latest.exported_at:%Y-%m-%d %H:%M} · {latest.username}"]
+        lines.extend(
+            f"{self._instrument_label(output)}: {output.path}" for output in latest.outputs
+        )
+        if latest.error_message:
+            lines.append(latest.error_message)
+        return "\n".join(lines)
+
+    def _worksheet_delivery_state(self, revision) -> tuple[str, str]:
+        if revision is None or self.review_store is None:
+            return ("Worksheets: not saved", "muted")
+        try:
+            exports = self.review_store.audit.list_worksheet_exports(revision.id)
+        except ReviewPersistenceError:
+            return ("Worksheets: history unavailable", "attention")
+        if not exports:
+            return (f"Worksheets: not saved for r{revision.revision}", "muted")
+        latest = exports[-1]
+        if latest.status == WORKSHEETS_SUCCEEDED:
+            count = len(latest.outputs)
+            return (
+                f"{theme.SYMBOL_OK} Worksheets saved r{revision.revision} · "
+                f"{_count(count, 'instrument')}",
+                "ok",
+            )
+        if latest.status == WORKSHEETS_CANCELLED:
+            return (f"Worksheets: not saved for r{revision.revision}", "muted")
+        return (f"{theme.SYMBOL_ERROR} Last worksheet save failed", "error")
+
+    def _webdb_delivery_state(self, editor, revision) -> tuple[str, str]:
+        if self.mxlive_account is None or not self.mxlive_account.upload_ready:
+            return ("WebDB: MxLive not configured", "muted")
+        state = editor.webdb_upload_state
+        if not state:
+            return ("WebDB: not uploaded" if revision else "WebDB: finalize first", "muted")
+        if state.startswith("Uploaded"):
+            return (f"{theme.SYMBOL_OK} WebDB: {state}", "ok")
+        if "failed" in state:
+            return (f"{theme.SYMBOL_ERROR} WebDB: {state}", "error")
+        return (f"{theme.SYMBOL_ATTENTION} WebDB: {state}", "attention")
 
     def _suggest_experiment_id(self, plan_type: PlanType, protein: str) -> str:
         if self.planning_service is None:
@@ -1182,6 +1279,8 @@ class ViewerWindow(QMainWindow):
         editor.last_revision = revision
         editor.assigned_experiment_id = revision.experiment_id
         editor.last_revision_snapshot = snapshot
+        # A finalized plan is mostly reviewed and delivered, not edited.
+        editor.settings_toggle.setChecked(False)
         editor._refresh_experiment_id()
         self._persist_draft(editor)
         self._sync_webdb_upload_state(editor)
@@ -1195,12 +1294,32 @@ class ViewerWindow(QMainWindow):
             return
         for index, (_, candidate) in enumerate(self._planning_drafts.get(project.id, [])):
             if candidate is editor and index < self.plan_list.count():
-                self.plan_list.item(index).setText(f"{editor.plan_name} · {status}")
+                self.plan_list.item(index).setText(self._plan_list_text(editor, status))
                 return
 
+    @staticmethod
+    def _plan_list_text(editor, status: str) -> str:
+        wells = len(editor.selection.wells)
+        return (
+            f"{editor.plan_name}\n{editor.PLAN_TYPE_LABEL} · {wells} "
+            f"well{'s' if wells != 1 else ''} · {status}"
+        )
+
+    def _filter_project_list(self, text: str) -> None:
+        query = text.strip().casefold()
+        for row in range(self.plan_list.count()):
+            item = self.plan_list.item(row)
+            item.setHidden(bool(query) and query not in item.text().casefold())
+
     def _sync_webdb_upload_state(self, editor, failure: str = "") -> None:
+        try:
+            self._update_webdb_upload_controls(editor, failure)
+        finally:
+            self._refresh_delivery_bar(editor)
+
+    def _update_webdb_upload_controls(self, editor, failure: str = "") -> None:
         editor.webdb_upload_button.setEnabled(False)
-        editor.webdb_upload_button.setText("Upload Finalized Revision…")
+        editor.webdb_upload_button.setText("Upload to MxLive…")
         self._set_webdb_upload_state(editor, failure)
         account = self.mxlive_account
         revision = getattr(editor, "last_revision", None)
@@ -1540,6 +1659,7 @@ class ViewerWindow(QMainWindow):
             if result is None:
                 return
         self._record_worksheet_export(service, revision, WORKSHEETS_SUCCEEDED, result=result)
+        self._refresh_delivery_bar(editor)
         editor.experiment_id_label.setText(
             f"Experiment ID: {result.experiment_id} · Saved as {result.file_stem}"
         )
@@ -1719,8 +1839,9 @@ class ViewerWindow(QMainWindow):
         for name, editor in self._planning_drafts.get(project_id, []):
             editor.setParent(self.plan_stack)
             self.plan_stack.addWidget(editor)
-            status = getattr(editor, "plan_list_status", "")
-            self.plan_list.addItem(f"{name} · {status}" if status else name)
+            self.plan_list.addItem(
+                self._plan_list_text(editor, getattr(editor, "plan_list_status", "Draft"))
+            )
         if self.plan_list.count():
             self.plan_list_empty_label.hide()
             self.plan_list.setCurrentRow(0)

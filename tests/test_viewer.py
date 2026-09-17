@@ -15,7 +15,6 @@ from PyQt5.QtWidgets import QApplication, QInputDialog, QMessageBox
 from xtalflow.domain import (
     PLATE_FORMATS,
     ImageFilter,
-    PlanType,
     ReviewSession,
     SWISSCI_MIDI_3_LENS,
     SWISSCI_MRC_2_WELL,
@@ -29,7 +28,9 @@ from xtalflow.domain.fragment_screening import (
 )
 from xtalflow.application import ReviewPersistenceError
 from xtalflow.infrastructure import RockMakerImageRepository, SQLiteReviewStore
-from xtalflow.viewer import FragmentScreeningDialog, PlateSourceDialog, ViewerWindow
+from xtalflow.ui.plan_editors import FragmentScreeningDialog
+from xtalflow.ui.plate_source_dialog import PlateSourceDialog
+from xtalflow.viewer import ViewerWindow
 from xtalflow.viewer import main
 from xtalflow.settings import DEFAULT_SETTINGS
 from xtalflow.infrastructure.user_preferences import JsonUserPreferencesStore
@@ -1796,7 +1797,7 @@ def test_experiment_id_preview_reports_database_errors(tmp_path: Path) -> None:
 def test_canvas_leaves_pan_mode_when_focus_is_lost() -> None:
     from PyQt5.QtGui import QFocusEvent
 
-    from xtalflow.viewer import ImageCanvas
+    from xtalflow.ui.review_widgets import ImageCanvas
 
     app = QApplication.instance() or QApplication([])
     canvas = ImageCanvas()

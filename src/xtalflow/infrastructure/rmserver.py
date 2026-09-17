@@ -14,6 +14,29 @@ class PlateImagesNotFoundError(FileNotFoundError):
     """Raised when no usable images exist for a plate/profile."""
 
 
+def natural_name_key(value: str) -> tuple:
+    return tuple(
+        int(part) if part.isdigit() else part.casefold()
+        for part in re.split(r"(\d+)", value)
+    )
+
+
+def latest_image_source(repository, plate_code: str) -> tuple[int, str]:
+    """Return the newest batch that already has images and its highest profile.
+
+    RockMaker creates batch folders for scheduled inspections before imaging, so
+    the newest folder alone may still be empty.
+    """
+    batches = repository.available_batches(plate_code)
+    if not batches:
+        raise PlateImagesNotFoundError(f"no batches found for plate {plate_code}")
+    for batch_id in sorted(batches, reverse=True):
+        profiles = repository.available_profiles(plate_code, batch_id)
+        if profiles:
+            return batch_id, max(profiles, key=natural_name_key)
+    raise PlateImagesNotFoundError(f"no imaged batches found for plate {plate_code}")
+
+
 class RockMakerImageRepository:
     """Read crystal images from the legacy RockMaker directory layout."""
 

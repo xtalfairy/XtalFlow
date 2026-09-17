@@ -149,3 +149,24 @@ def test_specific_batch_can_be_pinned_and_reloaded(tmp_path: Path) -> None:
     assert repository.available_profiles("1070", 1) == ("profileID_1",)
     assert repository.load_plate_batch("1070", 1).batch_id == 1
     assert repository.load_plate("1070").batch_id == 2
+
+
+def test_latest_image_source_skips_scheduled_batches_without_images() -> None:
+    from xtalflow.infrastructure import PlateImagesNotFoundError, latest_image_source
+
+    class Repository:
+        def available_batches(self, plate_code):
+            return (7, 12, 15)
+
+        def available_profiles(self, plate_code, batch_id):
+            return {7: ("profileID_1",), 12: ("profileID_2", "profileID_10")}.get(
+                batch_id, ()
+            )
+
+    class EmptyRepository(Repository):
+        def available_profiles(self, plate_code, batch_id):
+            return ()
+
+    assert latest_image_source(Repository(), "1070") == (12, "profileID_10")
+    with pytest.raises(PlateImagesNotFoundError, match="no imaged batches"):
+        latest_image_source(EmptyRepository(), "1070")

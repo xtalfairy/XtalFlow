@@ -212,3 +212,22 @@ def test_project_totals_reuse_image_listings_until_image_set_is_reopened(
     workspace.activate_image_set(first.id)
     assert repository.scans == [("1070", 5947)]
     store.close()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_image_filter_survives_image_set_and_workspace_switches(tmp_path: Path) -> None:
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    workspace = ProjectController(RockMakerImageRepository(FIXTURE_ROOT), store)
+    project = workspace.create_project("Filtered review")
+    first = workspace.add_latest_image_set("1070", SWISSCI_MIDI_3_LENS)
+    workspace.add_latest_image_set("1100", SWISSCI_MIDI_3_LENS)
+    workspace.review_controller.change_image_filter(ImageFilter.UNREVIEWED)
+
+    workspace.activate_image_set(first.id)
+    assert workspace.review_controller.image_filter is ImageFilter.UNREVIEWED
+
+    workspace.create_project("Other")
+    workspace.open_project(project.id)
+    assert workspace.review_controller.image_filter is ImageFilter.UNREVIEWED
+    store.close()

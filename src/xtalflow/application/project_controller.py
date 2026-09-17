@@ -108,13 +108,16 @@ class ProjectController:
         # Statistics and summaries run after each click, so reuse the listing
         # until the user opens that image set again.
         self._plate_cache: dict[tuple[str, int, str], PlateImages] = {}
+        # The review filter belongs to the user's pass through the workspace,
+        # not to one plate, so it survives switching image sets.
+        self._image_filter = ImageFilter.ALL
 
     def create_project(self, name: str) -> Project:
         self._checkpoint_active_review()
         project = Project.create(name)
         self.projects.append(project)
         self.active_project = project
-        self.review_controller = None
+        self._release_review_controller()
         self._save_project(project)
         self._save_last_open_project(project.id)
         return project
@@ -124,7 +127,7 @@ class ProjectController:
         self._checkpoint_active_review()
         self.active_project = project
         self._save_last_open_project(project.id)
-        self.review_controller = None
+        self._release_review_controller()
         if project.active_image_set_id is not None:
             self.activate_image_set(project.active_image_set_id)
         return project
@@ -531,6 +534,11 @@ class ProjectController:
         controller = ReviewController(
             plate, progress, preferences, session, scoped_store
         )
+        controller.image_filter = (
+            self.review_controller.image_filter
+            if self.review_controller is not None
+            else self._image_filter
+        )
         try:
             controller.persist_state()
             project.activate(image_set.id)
@@ -582,6 +590,11 @@ class ProjectController:
         if not candidates:
             return None
         return candidates[0] if direction > 0 else candidates[-1]
+
+    def _release_review_controller(self) -> None:
+        if self.review_controller is not None:
+            self._image_filter = self.review_controller.image_filter
+        self.review_controller = None
 
     def _checkpoint_active_review(self) -> None:
         if self.review_controller is not None:

@@ -1148,6 +1148,41 @@ def test_unexpected_slot_error_saves_current_targets_and_reports(
 
 @pytest.mark.requires_rmserver_fixture
 @pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_auto_well_asks_before_replacing_confirmed_calibration(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from xtalflow.domain import CalibrationMethod
+
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+    )
+    window.load_plate("1070", SWISSCI_MIDI_3_LENS)
+    manual = replace(
+        window.current_calibration,
+        method=CalibrationMethod.MANUAL_THREE_POINT,
+        confirmed=True,
+    )
+    window.calibration_service.save(manual)
+    window._load_current_calibration()
+    questions = []
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        lambda *args, **kwargs: questions.append(args[1]) or QMessageBox.No,
+    )
+
+    window._auto_detect_calibration()
+
+    assert questions == ["Replace well calibration"]
+    assert window.current_calibration.method is CalibrationMethod.MANUAL_THREE_POINT
+    assert window.current_calibration.confirmed
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
 def test_manual_calibration_clicks_do_not_create_targets(tmp_path: Path) -> None:
     app = QApplication.instance() or QApplication([])
     window = ViewerWindow(
@@ -1541,6 +1576,150 @@ def test_plate_source_dialog_defaults_to_latest_batch_and_profile() -> None:
     assert dialog.batch_input.isEnabled()
     assert dialog.profile_input.isEnabled()
     dialog.close()
+    app.processEvents()
+
+
+def test_plate_source_dialog_skips_batch_that_is_not_imaged_yet() -> None:
+    app = QApplication.instance() or QApplication([])
+
+    class Repository:
+        def available_batches(self, plate_code):
+            return (7, 12)
+
+        def available_profiles(self, plate_code, batch_id):
+            return ("profileID_1",) if batch_id == 7 else ()
+
+    dialog = PlateSourceDialog(Repository(), "1070")
+    ok_button = dialog.buttons.button(dialog.buttons.Ok)
+
+    assert dialog.batch_id == 7
+    assert ok_button.isEnabled()
+    dialog.load_latest_for_all.setChecked(False)
+    dialog.batch_input.setCurrentIndex(dialog.batch_input.findData(12))
+    assert dialog.profile_input.currentText() == "No images yet"
+    assert not ok_button.isEnabled()
+    dialog.close()
+    app.processEvents()
+
+
+def test_restoring_saved_plans_keeps_image_review_tab_and_plan_status(
+    tmp_path: Path,
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    database_path = tmp_path / "reviews.sqlite3"
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), SQLiteReviewStore(database_path))
+    crystal = SelectedCrystal(
+        "image", "1070", "A01a",
+        (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
+        SWISSCI_MIDI_3_LENS.id,
+    )
+    window._add_raw_crystal_plan((crystal,))
+    editor = window.plan_stack.currentWidget()
+    editor.protein_input.setText("BRD4")
+    monkeypatch_warning = QMessageBox.warning
+    QMessageBox.warning = lambda *args, **kwargs: QMessageBox.Ok
+    try:
+        assert window._finalize_raw_crystal_plan(editor) is not None
+    finally:
+        QMessageBox.warning = monkeypatch_warning
+    window.main_tabs.setCurrentIndex(window.image_review_tab_index)
+    window.close()
+    app.processEvents()
+
+    restored = ViewerWindow(RockMakerImageRepository(tmp_path), SQLiteReviewStore(database_path))
+    assert restored.main_tabs.currentIndex() == restored.image_review_tab_index
+    assert restored.plan_list.item(0).text().endswith("· Finalized r1")
+
+    workspace = restored.project_controller.active_project.id
+    restored._switch_planning_project(None)
+    restored._switch_planning_project(workspace)
+    assert restored.plan_list.item(0).text().endswith("· Finalized r1")
+    restored.close()
+    app.processEvents()
+
+
+def test_offline_library_folder_keeps_draft_library(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    library_directory = tmp_path / "libraries"
+    library_directory.mkdir()
+    library_path = library_directory / "library.csv"
+    library_path.write_text(
+        "Vendor,Library,No,ID,Formula,MW,Smile,Conc_mM,Solvent,Plate_ID,Plate_well\n"
+        "Vendor,Lib,1,CMP-1,C2H6O,46.07,CCO,100,DMSO,SRC-1,A01\n",
+        encoding="utf-8",
+    )
+    database_path = tmp_path / "reviews.sqlite3"
+    settings = replace(DEFAULT_SETTINGS, fragment_library_directory=library_directory)
+    window = ViewerWindow(
+        RockMakerImageRepository(tmp_path), SQLiteReviewStore(database_path), settings=settings
+    )
+    crystal = SelectedCrystal(
+        "image", "1070", "A01a",
+        (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
+        SWISSCI_MIDI_3_LENS.id,
+    )
+    window._add_fragment_plan(None, (crystal,))
+    editor = window.plan_stack.currentWidget()
+    editor.library_input.setCurrentIndex(1)
+    window._persist_planning_draft(editor)
+    project_id = editor.project_id
+    library_id = editor.library_input.currentData(Qt.UserRole)
+    window.close()
+    app.processEvents()
+
+    offline = replace(settings, fragment_library_directory=tmp_path / "unmounted")
+    reopened = ViewerWindow(
+        RockMakerImageRepository(tmp_path), SQLiteReviewStore(database_path), settings=offline
+    )
+    editor = reopened.plan_stack.widget(1)
+    assert editor.library_input.currentData(Qt.UserRole) == library_id
+    assert "Library unavailable" in editor.library_label.text()
+    reopened._persist_planning_draft(editor)
+    reopened.close()
+    app.processEvents()
+
+    store = SQLiteReviewStore(database_path)
+    assert store.load_planning_drafts(project_id)[0].library_id == library_id
+    store.close()
+
+
+def test_experiment_id_preview_reports_database_errors(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store)
+    crystal = SelectedCrystal(
+        "image", "1070", "A01a",
+        (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
+        SWISSCI_MIDI_3_LENS.id,
+    )
+    window._add_raw_crystal_plan((crystal,))
+    editor = window.plan_stack.currentWidget()
+
+    def database_locked():
+        raise ReviewPersistenceError("could not list experiment ids")
+
+    store.reserved_experiment_ids = database_locked
+    editor.protein_input.setText("BRD4")
+
+    assert "could not list experiment ids" in editor.experiment_id_label.text()
+    window.close()
+    app.processEvents()
+
+
+def test_canvas_leaves_pan_mode_when_focus_is_lost() -> None:
+    from PyQt5.QtGui import QFocusEvent
+
+    from xtalflow.viewer import ImageCanvas
+
+    app = QApplication.instance() or QApplication([])
+    canvas = ImageCanvas()
+    QTest.keyPress(canvas, Qt.Key_Space)
+    assert canvas._space_pressed
+
+    canvas.focusOutEvent(QFocusEvent(QFocusEvent.FocusOut))
+
+    assert not canvas._space_pressed
+    canvas.close()
     app.processEvents()
 
 

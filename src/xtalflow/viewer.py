@@ -140,6 +140,8 @@ from xtalflow.infrastructure import (
     OpenCVWellDetector,
     RockMakerImageRepository,
     SQLiteReviewStore,
+    latest_image_source,
+    natural_name_key,
 )
 from xtalflow.infrastructure.fragment_library_csv import (
     FragmentLibraryCsvError,
@@ -321,6 +323,7 @@ class ImageCanvas(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt API
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
         painter.fillRect(self.rect(), QColor("#15181c"))
         transform = self.transform()
         if transform is None:
@@ -419,6 +422,13 @@ class ImageCanvas(QWidget):
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def focusOutEvent(self, event) -> None:  # noqa: N802 - Qt API
+        # The key release is lost when focus leaves while Space is held.
+        self._space_pressed = False
+        if self._pan_start is None:
+            self.setCursor(Qt.ArrowCursor)
+        super().focusOutEvent(event)
 
     def keyReleaseEvent(self, event) -> None:  # noqa: N802 - Qt API
         if event.key() == Qt.Key_Space and not event.isAutoRepeat():
@@ -724,7 +734,7 @@ class FragmentScreeningEditor(QWidget):
             return
         try:
             experiment_id = self._experiment_id_provider(self.protein_input.text())
-        except ValueError as error:
+        except (ValueError, ReviewPersistenceError) as error:
             self.current_experiment_id = None
             self.experiment_id_label.setText(f"Experiment ID: {error}")
             self.save_worksheets_button.setEnabled(False)
@@ -749,10 +759,20 @@ class FragmentScreeningEditor(QWidget):
             self.library_input.setItemData(
                 self.library_input.count() - 1, library, Qt.UserRole + 1
             )
-        selected_index = self.library_input.findData(previous_id, Qt.UserRole)
-        self.library_input.setCurrentIndex(max(0, selected_index))
+        self._select_library_id(previous_id)
         self.library_input.blockSignals(False)
         self._library_changed(self.library_input.currentIndex())
+
+    def _select_library_id(self, library_id: str | None) -> None:
+        index = self.library_input.findData(library_id, Qt.UserRole)
+        if index < 0 and library_id is not None:
+            # Keep the draft's library while its folder is offline instead of
+            # saving the draft without one.
+            self.library_input.addItem(
+                f"Unavailable: {Path(library_id).name}", library_id
+            )
+            index = self.library_input.count() - 1
+        self.library_input.setCurrentIndex(max(0, index))
 
     def _library_changed(self, index: int) -> None:
         library = self.library_input.itemData(index, Qt.UserRole + 1)
@@ -761,17 +781,23 @@ class FragmentScreeningEditor(QWidget):
         changed = library_id != self.library_id
         self.library = library
         self.library_id = library_id
-        if library is None:
-            self.library_label.setText("No library selected")
-            if changed:
+        self._update_library_label()
+        if changed:
+            if library is None:
                 self.rows_input.clear()
-        else:
-            self.library_label.setText(
-                f"{library.name} · {len(library.fragments)} imported data rows"
-            )
-            if changed:
+            else:
                 self.rows_input.setText(f"1-{len(library.fragments)}")
         self.refresh_plan()
+
+    def _update_library_label(self) -> None:
+        if self.library is not None:
+            self.library_label.setText(
+                f"{self.library.name} · {len(self.library.fragments)} imported data rows"
+            )
+        elif self.library_id:
+            self.library_label.setText(f"Library unavailable: {self.library_id}")
+        else:
+            self.library_label.setText("No library selected")
 
     def refresh_plan(self) -> None:
         try:
@@ -852,12 +878,12 @@ class FragmentScreeningEditor(QWidget):
                    self.volume_input, self.order_input)
         for widget in widgets:
             widget.blockSignals(True)
-        index = self.library_input.findData(draft.library_id, Qt.UserRole)
-        self.library_input.setCurrentIndex(max(0, index))
+        self._select_library_id(draft.library_id)
         self.library = self.library_input.itemData(
             self.library_input.currentIndex(), Qt.UserRole + 1
         )
         self.library_id = self.library_input.currentData(Qt.UserRole)
+        self._update_library_label()
         self.rows_input.setText(draft.library_rows)
         self.protein_input.setText(draft.protein)
         self.assigned_experiment_id = draft.experiment_id
@@ -1037,7 +1063,7 @@ class RawCrystalEditor(QWidget):
             return
         try:
             experiment_id = self._experiment_id_provider(self.protein_input.text())
-        except ValueError as error:
+        except (ValueError, ReviewPersistenceError) as error:
             self.current_experiment_id = None
             self.experiment_id_label.setText(f"Experiment ID: {error}")
             self.save_worksheet_button.setEnabled(False)
@@ -1235,15 +1261,15 @@ class PlateSourceDialog(QDialog):
         self.profile_input = QComboBox()
         self.load_latest_for_all = QCheckBox("Load latest for all plates")
         self.load_latest_for_all.setToolTip(
-            "Use the latest available batch and profile for this and all remaining "
+            "Use the latest imaged batch and profile for this and all remaining "
             "plate codes without showing another selection window."
         )
+        latest_batch, _ = latest_image_source(repository, plate_code)
         for batch_id in reversed(repository.available_batches(plate_code)):
             self.batch_input.addItem(str(batch_id), batch_id)
-        if self.batch_input.count() == 0:
-            raise PlateImagesNotFoundError(
-                f"no batches found for plate {plate_code}"
-            )
+        self._latest_index = self.batch_input.findData(latest_batch)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.batch_input.setCurrentIndex(self._latest_index)
         self.batch_input.currentIndexChanged.connect(self._refresh_profiles)
         self.load_latest_for_all.toggled.connect(self._latest_mode_changed)
         self._refresh_profiles()
@@ -1255,15 +1281,14 @@ class PlateSourceDialog(QDialog):
         profile_row = QHBoxLayout()
         profile_row.addWidget(QLabel("Profile:"))
         profile_row.addWidget(self.profile_input, 1)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
         layout = QVBoxLayout()
         layout.addWidget(QLabel(f"Plate {plate_code}"))
         layout.addLayout(batch_row)
         layout.addLayout(profile_row)
         layout.addWidget(self.load_latest_for_all)
-        layout.addWidget(buttons)
+        layout.addWidget(self.buttons)
         self.setLayout(layout)
 
     @property
@@ -1277,29 +1302,24 @@ class PlateSourceDialog(QDialog):
     def _refresh_profiles(self) -> None:
         batch_id = self.batch_input.currentData()
         self.profile_input.clear()
-        if batch_id is None:
-            return
-        profiles = self.repository.available_profiles(self.plate_code, int(batch_id))
+        profiles = (
+            self.repository.available_profiles(self.plate_code, int(batch_id))
+            if batch_id is not None
+            else ()
+        )
         if not profiles:
-            raise PlateImagesNotFoundError(
-                f"no profiles found for plate {self.plate_code}, batch {batch_id}"
-            )
-        for profile in sorted(profiles, key=_natural_name_key, reverse=True):
+            # Scheduled inspections exist as folders before images are written.
+            self.profile_input.addItem("No images yet", None)
+        for profile in sorted(profiles, key=natural_name_key, reverse=True):
             self.profile_input.addItem(profile, profile)
+        self.buttons.button(QDialogButtonBox.Ok).setEnabled(bool(profiles))
 
     def _latest_mode_changed(self, enabled: bool) -> None:
         if enabled:
-            self.batch_input.setCurrentIndex(0)
+            self.batch_input.setCurrentIndex(self._latest_index)
             self.profile_input.setCurrentIndex(0)
         self.batch_input.setEnabled(not enabled)
         self.profile_input.setEnabled(not enabled)
-
-
-def _natural_name_key(value: str) -> tuple:
-    return tuple(
-        int(part) if part.isdigit() else part.casefold()
-        for part in re.split(r"(\d+)", value)
-    )
 
 
 class ViewerWindow(QMainWindow):
@@ -2011,8 +2031,8 @@ class ViewerWindow(QMainWindow):
         self.plan_list.addItem(name)
         self.plan_list_empty_label.hide()
         self.plan_list.setCurrentRow(self.plan_list.count() - 1)
-        self.main_tabs.setCurrentIndex(self.planning_tab_index)
         if restored is None:
+            self.main_tabs.setCurrentIndex(self.planning_tab_index)
             self._save_selection_snapshot(
                 editor, selection, PlanType.FRAGMENT_SCREENING
             )
@@ -2114,8 +2134,8 @@ class ViewerWindow(QMainWindow):
         self.plan_list.addItem(name)
         self.plan_list_empty_label.hide()
         self.plan_list.setCurrentRow(self.plan_list.count() - 1)
-        self.main_tabs.setCurrentIndex(self.planning_tab_index)
         if restored is None:
+            self.main_tabs.setCurrentIndex(self.planning_tab_index)
             self._save_selection_snapshot(editor, selection, PlanType.RAW_CRYSTAL)
             self._persist_raw_crystal_draft(editor)
         elif self.review_store is not None:
@@ -2312,6 +2332,7 @@ class ViewerWindow(QMainWindow):
         return revision
 
     def _set_plan_list_status(self, editor: FragmentScreeningEditor, status: str) -> None:
+        editor.plan_list_status = status
         project = self.project_controller.active_project
         if project is None or project.id != self._planning_project_id:
             return
@@ -3042,7 +3063,8 @@ class ViewerWindow(QMainWindow):
         for name, editor in self._planning_drafts.get(project_id, []):
             editor.setParent(self.plan_stack)
             self.plan_stack.addWidget(editor)
-            self.plan_list.addItem(name)
+            status = getattr(editor, "plan_list_status", "")
+            self.plan_list.addItem(f"{name} · {status}" if status else name)
         if self.plan_list.count():
             self.plan_list_empty_label.hide()
             self.plan_list.setCurrentRow(0)
@@ -3441,16 +3463,7 @@ class ViewerWindow(QMainWindow):
     def _add_latest_plate(
         self, plate_code: str, plate_format: PlateFormat
     ) -> None:
-        batches = self.repository.available_batches(plate_code)
-        if not batches:
-            raise PlateImagesNotFoundError(f"no batches found for plate {plate_code}")
-        batch_id = batches[-1]
-        profiles = self.repository.available_profiles(plate_code, batch_id)
-        if not profiles:
-            raise PlateImagesNotFoundError(
-                f"no profiles found for plate {plate_code}, batch {batch_id}"
-            )
-        profile = max(profiles, key=_natural_name_key)
+        batch_id, profile = latest_image_source(self.repository, plate_code)
         self.project_controller.add_pinned_image_set(
             plate_code, batch_id, profile, plate_format
         )
@@ -4020,6 +4033,23 @@ class ViewerWindow(QMainWindow):
             self._toggle_auto_confirm_for_active_plate(True)
 
     def _auto_detect_calibration(self) -> None:
+        current = self.current_calibration
+        if current is not None and current.confirmed:
+            method = (
+                "manual three-point"
+                if current.method is CalibrationMethod.MANUAL_THREE_POINT
+                else "confirmed automatic"
+            )
+            if QMessageBox.question(
+                self,
+                "Replace well calibration",
+                f"Replace the {method} well boundary with a new automatic detection?"
+                "\n\nSoaking positions on this image will be converted with the "
+                "new boundary.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            ) != QMessageBox.Yes:
+                return
         self._cancel_manual_calibration()
         self._load_current_calibration(force_detection=True)
 

@@ -353,7 +353,9 @@ class ProjectController:
         for summaries in grouped.values():
             first = summaries[0]
             image_set = image_sets[first.image_set_id]
-            plate_format = plate_format_by_id(image_set.plate_format_id)
+            plate_format = plate_format_by_id(
+                image_set.plate_format_id, image_set.plate_format_version
+            )
             if plate_format is None:
                 raise ValueError("all target image sets need a supported plate format")
             address = str(
@@ -385,6 +387,10 @@ class ProjectController:
                     tuple(targets),
                     plate_format.id,
                     str(first.image.path),
+                    plate_format.version,
+                    image_set.id,
+                    image_set.batch_id,
+                    image_set.profile,
                 )
             )
         return tuple(crystals)
@@ -465,8 +471,10 @@ class ProjectController:
     def _load_image_set_plate(
         self, image_set: ProjectImageSet, refresh: bool = False
     ) -> PlateImages:
-        plate_format = plate_format_by_id(image_set.plate_format_id)
-        if plate_format is None or plate_format.version != image_set.plate_format_version:
+        plate_format = plate_format_by_id(
+            image_set.plate_format_id, image_set.plate_format_version
+        )
+        if plate_format is None:
             raise ValueError("image set uses an unsupported plate format")
         plate = None if refresh else self._plate_cache.get(image_set.source_key)
         if plate is None:

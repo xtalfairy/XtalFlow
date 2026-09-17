@@ -2053,13 +2053,9 @@ class ViewerWindow(QMainWindow):
         image_set = self.project_controller.active_image_set
         if image_set is None:
             return None
-        plate_format = plate_format_by_id(image_set.plate_format_id)
-        if (
-            plate_format is None
-            or image_set.plate_format_version != plate_format.version
-        ):
-            return None
-        return plate_format
+        return plate_format_by_id(
+            image_set.plate_format_id, image_set.plate_format_version
+        )
 
     def _show_image_set_context_menu(self, position) -> None:
         index = self.image_set_list.indexAt(position)
@@ -2166,7 +2162,9 @@ class ViewerWindow(QMainWindow):
             self.target_summary_table.setRowCount(len(summaries))
             for row, summary in enumerate(summaries):
                 image_set = image_sets[summary.image_set_id]
-                plate_format = plate_format_by_id(image_set.plate_format_id)
+                plate_format = plate_format_by_id(
+                    image_set.plate_format_id, image_set.plate_format_version
+                )
                 well = (
                     str(
                         plate_format.address_for(

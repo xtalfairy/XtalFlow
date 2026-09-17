@@ -37,12 +37,18 @@ class SelectedCrystal:
     targets: tuple[CrystalTarget, ...]
     plate_format_id: str = ""
     image_path: str = ""
+    plate_format_version: int = 1
+    image_set_id: str | None = None
+    batch_id: int | None = None
+    profile: str = ""
 
     def __post_init__(self) -> None:
         if not self.image_key or not self.destination_plate or not self.destination_well:
             raise ValueError("crystal destination identity must not be empty")
         if not self.targets:
             raise ValueError("a selected crystal must contain at least one target")
+        if self.plate_format_version < 1:
+            raise ValueError("plate format version must be positive")
 
     @property
     def selected_at(self) -> datetime:

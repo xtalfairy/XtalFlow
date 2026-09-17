@@ -16,8 +16,8 @@ LABWORK_COLUMNS = (
 )
 
 
-def _mxlive_plate_type(plate_format_id: str) -> str:
-    plate_format = plate_format_by_id(plate_format_id)
+def _mxlive_plate_type(plate_format_id: str, plate_format_version: int) -> str:
+    plate_format = plate_format_by_id(plate_format_id, plate_format_version)
     if plate_format is None:
         # Preserve the source value for old or externally supplied formats so
         # the preview remains useful instead of silently losing information.
@@ -79,7 +79,9 @@ def build_fragment_labworks(
         selected_well = assignment.selected_well
         records.append(LabworkRecord(
             username, experiment_id, protein_name,
-            _mxlive_plate_type(selected_well.plate_format_id),
+            _mxlive_plate_type(
+                selected_well.plate_format_id, selected_well.plate_format_version
+            ),
             selected_well.plate_code,
             selected_well.image_path or selected_well.image_key,
             selected_well.well_address,
@@ -102,7 +104,9 @@ def build_raw_crystal_labworks(
     return tuple(
         LabworkRecord(
             username, experiment_id, protein_name,
-            _mxlive_plate_type(selected_well.plate_format_id),
+            _mxlive_plate_type(
+                selected_well.plate_format_id, selected_well.plate_format_version
+            ),
             selected_well.plate_code,
             selected_well.image_path or selected_well.image_key,
             selected_well.well_address, Decimal("0"), Decimal("0"), index,

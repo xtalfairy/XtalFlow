@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Protocol
 from uuid import uuid4
 
-from xtalflow.domain.crystal_selection import CrystalSelection
+from xtalflow.domain.crystal_selection import CrystalSelection, SelectedWell
 from xtalflow.domain.experiment_naming import suggest_experiment_id
 from xtalflow.domain.experiment_project import ExperimentPlan, ExperimentProject, PlanType
 from xtalflow.domain.fragment_screening import FragmentScreenPlan
@@ -69,7 +69,7 @@ def fragment_plan_snapshot(
                 "image_path": item.selected_well.image_path,
                 "plate": item.selected_well.plate_code,
                 "well": item.selected_well.well_address,
-                "plate_format_id": item.selected_well.plate_format_id,
+                **_plate_format_fields(item.selected_well),
                 "fragment": {
                     "vendor": item.fragment.vendor,
                     "library": item.fragment.library,
@@ -108,7 +108,7 @@ def raw_crystal_plan_snapshot(plan: RawCrystalPlan, protein: str) -> str:
              "image_path": selection.selected_well.image_path,
              "plate": selection.selected_well.plate_code,
              "well": selection.selected_well.well_address,
-             "plate_format_id": selection.selected_well.plate_format_id,
+             **_plate_format_fields(selection.selected_well),
              "target": {"id": selection.position.source_target_id,
                         "x_mm": str(selection.position.x_mm),
                         "y_mm": str(selection.position.y_mm),
@@ -116,6 +116,16 @@ def raw_crystal_plan_snapshot(plan: RawCrystalPlan, protein: str) -> str:
             for selection in plan.selections
         ],
     })
+
+
+def _plate_format_fields(selected_well: SelectedWell) -> dict[str, object]:
+    # Schema 1 snapshots finalized before format versions were recorded mean
+    # version 1. Omitting that default keeps them byte-identical, so existing
+    # finalized plans still match; any later version is always written.
+    fields: dict[str, object] = {"plate_format_id": selected_well.plate_format_id}
+    if selected_well.plate_format_version != 1:
+        fields["plate_format_version"] = selected_well.plate_format_version
+    return fields
 
 
 def _canonical_json(payload: dict) -> str:

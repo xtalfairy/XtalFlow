@@ -33,7 +33,9 @@ class ProjectImageSetListModel(QAbstractListModel):
         image_set = self.image_sets[index.row()]
         if role == Qt.DisplayRole:
             count = self._target_count(image_set.id)
-            plate_format = plate_format_by_id(image_set.plate_format_id)
+            plate_format = plate_format_by_id(
+                image_set.plate_format_id, image_set.plate_format_version
+            )
             format_label = (
                 plate_format.display_name if plate_format else "Unsupported plate format"
             )

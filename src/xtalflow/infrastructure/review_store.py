@@ -1117,6 +1117,7 @@ def _project_from_legacy_snapshot(
                 "plate": str(item["plate"]),
                 "well": str(item["well"]),
                 "plate_format_id": str(item.get("plate_format_id") or ""),
+                "plate_format_version": int(item.get("plate_format_version") or 1),
                 "targets": [],
             },
         )
@@ -1161,6 +1162,7 @@ def _project_from_legacy_snapshot(
                 soaking_positions=tuple(positions),
                 image_path=entry["image_path"],
                 plate_format_id=entry["plate_format_id"],
+                plate_format_version=entry["plate_format_version"],
             )
         )
     created_at = datetime.fromisoformat(created_at_value)

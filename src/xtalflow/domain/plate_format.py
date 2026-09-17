@@ -150,10 +150,27 @@ SWISSCI_MRC_2_WELL = PlateFormat(
     instrument_name="SwissCI-MRC-2d",
 )
 
+# Formats offered for new image sets: the current version of each plate type.
 PLATE_FORMATS = (SWISSCI_MIDI_3_LENS, SWISSCI_MRC_2_WELL)
 
+# Every definition that stored selections or finalized plans may refer to.
+# When a format's geometry or ECHO corrections change, add a new version here
+# and keep the old one so existing plans are rebuilt with the values they used.
+PLATE_FORMAT_VERSIONS: tuple[PlateFormat, ...] = PLATE_FORMATS
 
-def plate_format_by_id(format_id: str | None) -> PlateFormat | None:
+
+def plate_format_by_id(
+    format_id: str | None, version: int | None = None
+) -> PlateFormat | None:
+    """Return one exact format version, or the current version when none is given."""
     if format_id is None:
         return None
-    return next((item for item in PLATE_FORMATS if item.id == format_id), None)
+    if version is None:
+        return next((item for item in PLATE_FORMATS if item.id == format_id), None)
+    return next(
+        (
+            item for item in PLATE_FORMAT_VERSIONS
+            if item.id == format_id and item.version == version
+        ),
+        None,
+    )

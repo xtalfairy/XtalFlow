@@ -91,15 +91,23 @@ class ShifterWorksheetRow:
         )
 
 
+def _plate_format_for(selected_well: SelectedWell):
+    plate_format = plate_format_by_id(
+        selected_well.plate_format_id, selected_well.plate_format_version
+    )
+    if plate_format is None:
+        raise ValueError(
+            f"unsupported plate format {selected_well.plate_format_id} "
+            f"v{selected_well.plate_format_version} for {selected_well.image_key}"
+        )
+    return plate_format
+
+
 def build_echo_worksheet(plan: FragmentScreenPlan) -> tuple[EchoWorksheetRow, ...]:
     rows: list[EchoWorksheetRow] = []
     for assignment in plan.assignments:
         selected_well = assignment.selected_well
-        plate_format = plate_format_by_id(selected_well.plate_format_id)
-        if plate_format is None:
-            raise ValueError(
-                f"unsupported plate format for {selected_well.image_key}"
-            )
+        plate_format = _plate_format_for(selected_well)
         destination_well = plate_format.echo_destination_well(
             selected_well.well_address
         )
@@ -141,11 +149,7 @@ def build_shifter_worksheet_for_selected_wells(
 ) -> tuple[ShifterWorksheetRow, ...]:
     rows: list[ShifterWorksheetRow] = []
     for selected_well in selected_wells:
-        plate_format = plate_format_by_id(selected_well.plate_format_id)
-        if plate_format is None:
-            raise ValueError(
-                f"unsupported plate format for {selected_well.image_key}"
-            )
+        plate_format = _plate_format_for(selected_well)
         well = selected_well.well_address
         rows.append(
             ShifterWorksheetRow(

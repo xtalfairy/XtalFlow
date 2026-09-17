@@ -139,8 +139,12 @@ def crystal_selection_from_selected_crystals(
                 well_order,
                 crystal.selected_at,
                 positions,
+                image_set_id=crystal.image_set_id,
                 image_path=crystal.image_path,
+                batch_id=crystal.batch_id,
+                profile=crystal.profile,
                 plate_format_id=crystal.plate_format_id,
+                plate_format_version=crystal.plate_format_version,
             )
         )
     timestamp = created_at or min(well.selected_at for well in wells)
@@ -169,6 +173,10 @@ def selected_crystals_from_crystal_selection(
             ),
             well.plate_format_id,
             well.image_path,
+            well.plate_format_version,
+            well.image_set_id,
+            well.batch_id,
+            well.profile,
         )
         for well in sorted(selection.wells, key=lambda item: item.selection_order)
     )

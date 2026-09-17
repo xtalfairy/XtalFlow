@@ -155,6 +155,9 @@ class HomePage(QWidget):
         header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         header.setSectionResizeMode(QHeaderView.ResizeToContents)
         header.setSectionResizeMode(0, QHeaderView.Stretch)
+        self.delete_button = QPushButton("Delete…")
+        self.delete_button.setToolTip("Delete the selected experiment (Delete)")
+        self.delete_button.setEnabled(False)
         self.resume_button = QPushButton("Open")
         self.resume_button.setObjectName("HomePrimary")
         self.resume_button.setEnabled(False)
@@ -165,6 +168,7 @@ class HomePage(QWidget):
         recent_header.addWidget(recent_title)
         recent_header.addWidget(self.recent_count)
         recent_header.addStretch()
+        recent_header.addWidget(self.delete_button)
         recent_header.addWidget(self.resume_button)
 
         content = QVBoxLayout()
@@ -184,8 +188,9 @@ class HomePage(QWidget):
         self.setLayout(content)
 
         self._recent: tuple[RecentExperiment, ...] = ()
-        self.recent_table.itemSelectionChanged.connect(
-            lambda: self.resume_button.setEnabled(bool(self.recent_table.selectedItems()))
+        self.recent_table.itemSelectionChanged.connect(self._selection_changed)
+        self.delete_button.clicked.connect(
+            lambda: self._delete_row(self.recent_table.currentRow())
         )
         self.recent_table.cellDoubleClicked.connect(lambda row, _: self._resume_row(row))
         self.resume_button.clicked.connect(
@@ -263,7 +268,17 @@ class HomePage(QWidget):
         self.recent_table.setVisible(bool(experiments))
         self.recent_empty_label.setVisible(not experiments)
         self._bottom_stretch.setVisible(not experiments)
-        self.resume_button.setEnabled(False)
+        self._selection_changed()
+
+    def _selection_changed(self) -> None:
+        selected = bool(self.recent_table.selectedItems())
+        self.resume_button.setEnabled(selected)
+        self.delete_button.setEnabled(selected)
+
+    def _delete_row(self, row: int) -> None:
+        if 0 <= row < len(self._recent):
+            experiment = self._recent[row]
+            self.delete_requested.emit(experiment.workspace_id, experiment.plan_id)
 
     def _resume_row(self, row: int) -> None:
         if 0 <= row < len(self._recent):
@@ -278,6 +293,14 @@ class HomePage(QWidget):
             and event.modifiers() == Qt.NoModifier
         ):
             self._resume_row(self.recent_table.currentRow())
+            return True
+        if (
+            watched is self.recent_table
+            and event.type() == QEvent.KeyPress
+            and event.key() in (Qt.Key_Delete, Qt.Key_Backspace)
+            and self.recent_table.selectedItems()
+        ):
+            self._delete_row(self.recent_table.currentRow())
             return True
         return super().eventFilter(watched, event)
 

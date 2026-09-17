@@ -2205,3 +2205,38 @@ def test_examples_panel_lists_captioned_images_or_explains_setup(tmp_path: Path)
     assert "--examples-dir" in ExamplesPanel((), None).empty_label.text()
     panel.close()
     app.processEvents()
+
+
+def test_opening_a_new_experiment_saves_no_draft_until_it_has_content(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store)
+    workspace_id = window.project_controller.active_project.id
+
+    looked = window.start_experiment(PlanType.FRAGMENT_SCREENING)
+    assert window.experiment_page.lifecycle_label.text() == "Not saved yet"
+    assert "△" not in window.experiment_page.stepper.buttons[WorkflowStep.CONDITIONS].text()
+    window.go_to_step(WorkflowStep.CONDITIONS)
+    assert window.experiment_page.lifecycle_label.text() == "Not saved yet"
+    window.experiment_page.home_button.click()
+
+    assert store.planning.load_planning_drafts(workspace_id) == ()
+    assert window.home_page.recent_table.rowCount() == 0
+    assert looked.plan_id not in window._editors
+
+    kept = window.start_experiment(PlanType.RAW_CRYSTAL)
+    kept.protein_input.setText("BRD4")
+    window.experiment_page.home_button.click()
+    assert [draft.id for draft in store.planning.load_planning_drafts(workspace_id)] == [
+        kept.plan_id
+    ]
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    window.resume_experiment(workspace_id, kept.plan_id)
+    window.experiment_page.delete_action.trigger()
+    assert window.pages.currentWidget() is window.home_page
+    assert store.planning.load_planning_drafts(workspace_id) == ()
+    window.close()
+    app.processEvents()

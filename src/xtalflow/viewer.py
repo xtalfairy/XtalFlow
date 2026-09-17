@@ -612,6 +612,7 @@ class ViewerWindow(QMainWindow):
         self.home_page.resume_requested.connect(self.resume_experiment)
         self.home_page.delete_requested.connect(self.delete_experiment)
         self.experiment_page.home_requested.connect(self.show_home)
+        self.experiment_page.delete_requested.connect(self.delete_current_experiment)
         self.experiment_page.back_requested.connect(self._go_back)
         self.experiment_page.primary_requested.connect(self._primary_action)
         self.experiment_page.stepper.step_selected.connect(self.go_to_step)
@@ -758,8 +759,7 @@ class ViewerWindow(QMainWindow):
             if self._current_step is WorkflowStep.SELECT_WELLS:
                 self._selection_sync_timer.stop()
                 self._sync_editor_selection(editor)
-            editor.autosave_timer.stop()
-            self._persist_draft(editor)
+            self._leave_experiment(editor)
         self._set_target_summary_available(False)
         self.home_page.show_recent_work(self._recent_experiments())
         self.pages.setCurrentWidget(self.home_page)
@@ -942,25 +942,37 @@ class ViewerWindow(QMainWindow):
             QMessageBox.No,
         ) != QMessageBox.Yes:
             return
+        try:
+            self._remove_experiment(plan_id)
+        except (ValueError, ReviewPersistenceError, *IMAGE_SOURCE_ERRORS) as error:
+            QMessageBox.warning(self, "Cannot delete experiment", str(error))
+            return
+        self._refresh_project_well_usage()
+        self.show_home()
+
+    def delete_current_experiment(self) -> None:
+        editor = self.current_editor
+        if editor is None:
+            return
+        if not editor.persisted:
+            self._remove_experiment(editor.plan_id)
+            self.show_home()
+            return
+        self.delete_experiment(editor.project_id, editor.plan_id)
+
+    def _remove_experiment(self, plan_id: str) -> None:
+        """Delete an experiment's draft, revisions, and positions without asking."""
         editor = self._editors.get(plan_id)
         if editor is not None:
             editor.autosave_timer.stop()
         if self.project_controller.experiment_id == plan_id:
             # Save the open review into its own scope before that scope is removed.
-            try:
-                self.project_controller.open_experiment(WORKSPACE_REVIEW)
-            except IMAGE_SOURCE_ERRORS as error:
-                QMessageBox.warning(self, "Cannot delete experiment", str(error))
-                return
+            self.project_controller.open_experiment(WORKSPACE_REVIEW)
             self._adopt_active_review()
             self._sync_project_widgets()
         if self.review_store is not None:
-            try:
-                self.review_store.planning.delete_planning_draft(plan_id)
-                self.review_store.workspace.delete_experiment_positions(plan_id)
-            except (ValueError, ReviewPersistenceError) as error:
-                QMessageBox.warning(self, "Cannot delete experiment", str(error))
-                return
+            self.review_store.planning.delete_planning_draft(plan_id)
+            self.review_store.workspace.delete_experiment_positions(plan_id)
         if editor is not None:
             del self._editors[plan_id]
             if editor is self.current_editor:
@@ -968,8 +980,29 @@ class ViewerWindow(QMainWindow):
                 self._current_step = None
                 self.experiment_page.set_pages({})
             editor.deleteLater()
-        self._refresh_project_well_usage()
-        self.show_home()
+
+    @staticmethod
+    def _has_content(editor) -> bool:
+        """Whether a new experiment holds anything worth keeping as a draft."""
+        return bool(
+            editor.protein_input.text().strip()
+            or editor.plan_name != editor.default_name
+            or editor.selected_well_count
+            or getattr(editor, "library_id", None)
+            or editor.last_revision is not None
+        )
+
+    def _leave_experiment(self, editor) -> None:
+        """Save a draft that has content; drop a new one that was only opened."""
+        editor.autosave_timer.stop()
+        if editor.persisted or self._has_content(editor):
+            self._persist_draft(editor)
+            return
+        try:
+            self._remove_experiment(editor.plan_id)
+        except (ValueError, ReviewPersistenceError, *IMAGE_SOURCE_ERRORS):
+            # Nothing was saved for it; leftover review marks are harmless.
+            self._editors.pop(editor.plan_id, None)
 
     def _create_editor(
         self,
@@ -1012,6 +1045,8 @@ class ViewerWindow(QMainWindow):
         editor.selected_position_count = 0
         editor.wells_needing_attention = 0
         editor.save_failed = False
+        editor.persisted = restored is not None
+        editor.default_name = name
         editor.experiment_status = None
         if restored is not None:
             editor.restore_draft(restored)
@@ -1076,9 +1111,8 @@ class ViewerWindow(QMainWindow):
 
     def _open_editor(self, editor, step: WorkflowStep) -> None:
         previous = self.current_editor
-        if previous is not None and previous is not editor:
-            previous.autosave_timer.stop()
-            self._persist_draft(previous)
+        if previous is not None and previous is not editor and previous.plan_id in self._editors:
+            self._leave_experiment(previous)
         self.current_editor = editor
         self._current_step = None
         try:
@@ -1242,11 +1276,8 @@ class ViewerWindow(QMainWindow):
         if plan is not None:
             conditions_error = None
         elif editor.selection is None:
-            conditions_error = (
-                "Choose a fragment library."
-                if editor.plan_type is PlanType.FRAGMENT_SCREENING and editor.library is None
-                else None
-            )
+            # Before wells are chosen an empty library is a step not yet done, not a problem.
+            conditions_error = None
         else:
             conditions_error = editor.error_label.text() or "The plan is not valid."
         revision = editor.last_revision
@@ -1553,6 +1584,11 @@ class ViewerWindow(QMainWindow):
         )
 
     def _persist_draft(self, editor) -> None:
+        if not editor.persisted and not self._has_content(editor):
+            # Opening a new experiment to look at it does not create a draft.
+            editor.lifecycle_label.setText("Not saved yet")
+            self._refresh_experiment_status(editor)
+            return
         if self.planning_service is None:
             editor.lifecycle_label.setText("Draft · memory only")
             self._refresh_experiment_status(editor)
@@ -1566,6 +1602,7 @@ class ViewerWindow(QMainWindow):
             self._show_persistence_error(error)
             return
         editor.save_failed = False
+        editor.persisted = True
         status = saved_plan_status(
             editor.last_revision, editor.last_revision_snapshot,
             self._plan_snapshot(editor),
@@ -1575,7 +1612,7 @@ class ViewerWindow(QMainWindow):
             self._sync_webdb_upload_state(editor)
 
     def _show_plan_status(self, editor, status: PlanStatus) -> None:
-        editor.lifecycle_label.setText(status.label)
+        editor.lifecycle_label.setText(status.label if editor.persisted else "Not saved yet")
         self._refresh_experiment_status(editor)
 
     def _suggest_experiment_id(self, plan_type: PlanType, protein: str) -> str:
@@ -3188,9 +3225,8 @@ class ViewerWindow(QMainWindow):
             self._refresh_experiment_status(self.current_editor)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
-        for editor in self._editors.values():
-            editor.autosave_timer.stop()
-            self._persist_draft(editor)
+        for editor in tuple(self._editors.values()):
+            self._leave_experiment(editor)
         while self.controller is not None:
             try:
                 self.controller.checkpoint_current()

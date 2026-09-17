@@ -7,8 +7,10 @@ from PyQt5.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QStackedWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -29,6 +31,7 @@ QPushButton#HomeLink:hover {{ color: {theme.TEXT}; background: {theme.SUBTLE}; }
 
 class ExperimentPage(QWidget):
     home_requested = pyqtSignal()
+    delete_requested = pyqtSignal()
     back_requested = pyqtSignal()
     primary_requested = pyqtSignal()
 
@@ -43,6 +46,15 @@ class ExperimentPage(QWidget):
         self.type_label.setObjectName("Muted")
         self.lifecycle_label = QLabel()
         self.lifecycle_label.setObjectName("Muted")
+        self.more_button = QToolButton()
+        self.more_button.setText("⋯")
+        self.more_button.setToolTip("Experiment actions")
+        self.more_button.setAccessibleName("Experiment actions")
+        self.more_button.setPopupMode(QToolButton.InstantPopup)
+        more_menu = QMenu(self.more_button)
+        self.delete_action = more_menu.addAction("Delete experiment…")
+        self.delete_action.triggered.connect(self.delete_requested.emit)
+        self.more_button.setMenu(more_menu)
         self.stepper = Stepper()
         # One sentence at most; details live next to the controls they explain.
         self.step_hint_label = QLabel()
@@ -68,6 +80,7 @@ class ExperimentPage(QWidget):
         header.addWidget(self.type_label)
         header.addStretch()
         header.addWidget(self.lifecycle_label)
+        header.addWidget(self.more_button)
         navigation = QHBoxLayout()
         navigation.setContentsMargins(0, 0, 0, 0)
         navigation.addWidget(self.stepper)

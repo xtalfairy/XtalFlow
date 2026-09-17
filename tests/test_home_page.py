@@ -47,3 +47,23 @@ def test_home_keyboard_resume_and_clear():
     assert not page.resume_button.isEnabled()
     assert page.recent_count.text() == "0 experiments"
     page.close()
+
+
+def test_home_delete_button_and_key_request_deletion():
+    app = QApplication.instance() or QApplication([])
+    page = HomePage()
+    page.show_recent_work((RecentExperiment(
+        "workspace", "Demo", "plan", "Example", PlanType.RAW_CRYSTAL,
+        "Draft", datetime.now(timezone.utc),
+    ),))
+    page.show()
+    app.processEvents()
+    deleted = []
+    page.delete_requested.connect(lambda *identity: deleted.append(identity))
+    assert not page.delete_button.isEnabled()
+    page.recent_table.selectRow(0)
+    assert page.delete_button.isEnabled()
+    page.delete_button.click()
+    QTest.keyClick(page.recent_table, Qt.Key_Delete)
+    assert deleted == [("workspace", "plan"), ("workspace", "plan")]
+    page.close()

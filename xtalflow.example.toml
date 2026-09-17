@@ -12,3 +12,25 @@ ca_bundle = "/etc/pki/tls/certs/ca-bundle.crt"
 username = "mxlive_user"
 account_id = "mxlive_account_id"
 key_path = "/data/users/local_user/.config/mxdc/keys.dsa"
+
+# Instruments that receive worksheets. Each entry reads one worksheet kind:
+# "echo" (ECHO dispensing) or "shifter" (SHIFTER harvesting). Every worksheet a
+# plan produces is delivered to all instruments of that kind. Omit this section
+# to use the built-in ECHO 650, SHIFTER 1, and SHIFTER 2 folders below.
+[[instruments]]
+id = "echo650"
+worksheet = "echo"
+directory = "/smbmount/echo650"
+label = "ECHO 650"
+
+[[instruments]]
+id = "shifter1"
+worksheet = "shifter"
+directory = "/smbmount/shifter1"
+label = "SHIFTER 1"
+
+[[instruments]]
+id = "shifter2"
+worksheet = "shifter"
+directory = "/smbmount/shifter2"
+label = "SHIFTER 2"

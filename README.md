@@ -85,6 +85,19 @@ xtalflow-viewer \
   --shifter2-dir /smbmount/shifter2
 ```
 
+### 장비 폴더 설정
+
+worksheet를 받는 장비는 `/etc/xtalflow/xtalflow.toml`(또는 `--mxlive-config`로
+지정한 파일)의 `[[instruments]]` 항목으로 설정합니다. 각 항목은 장비 ID, worksheet
+종류(`echo` 또는 `shifter`), 출력 폴더, 표시 이름을 가집니다. 계획이 만드는 각
+worksheet는 같은 종류의 모든 장비 폴더에 저장됩니다. 예를 들어 SHIFTER를 한 대 더
+연결하려면 `worksheet = "shifter"` 항목을 추가합니다. 예시는
+[`xtalflow.example.toml`](./xtalflow.example.toml)에 있습니다.
+
+`[[instruments]]`가 없으면 ECHO 650, SHIFTER 1, SHIFTER 2 기본 구성을 사용합니다.
+`--echo-dir`, `--shifter1-dir`, `--shifter2-dir`는 설정된 `echo650`, `shifter1`,
+`shifter2` 장비의 폴더만 바꿉니다.
+
 ECHO/SHIFTER 경로가 저장소 밖에 있으면 XtalFlow은 해당 폴더가 실제로 마운트된
 네트워크 공유(cifs, smb3, nfs)인지 확인합니다. 공유가 마운트되지 않아 빈
 mountpoint만 남아 있으면 worksheet를 로컬 디스크에 쓰지 않고 저장 위치를 다시

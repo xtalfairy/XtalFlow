@@ -87,6 +87,7 @@ from xtalflow.domain.plan_lifecycle import (
     PlanRevision,
     WebDBUploadEvent,
 )
+from xtalflow.domain.instruments import ECHO_650, SHIFTER_1, SHIFTER_2, InstrumentOutput
 from xtalflow.domain.mxlive import MxLiveReadError
 from xtalflow.application.planning_service import (
     EXPERIMENT_ID_PREFIXES,
@@ -133,6 +134,7 @@ from xtalflow.infrastructure.mxlive_config import (
     MxLiveConfigurationError,
     resolve_mxlive_account,
 )
+from xtalflow.infrastructure.instrument_config import load_instrument_destinations
 from xtalflow.infrastructure.user_preferences import JsonUserPreferencesStore
 from xtalflow.presentation import ProjectImageSetListModel
 from xtalflow.settings import (
@@ -1468,8 +1470,15 @@ class ViewerWindow(QMainWindow):
         QMessageBox.information(
             self,
             "SHIFTER worksheets saved" if raw_crystal else "Worksheets saved",
-            "\n\n".join(f"{output.label}:\n{output.path}" for output in result.outputs),
+            "\n\n".join(
+                f"{self._instrument_label(output)}:\n{output.path}"
+                for output in result.outputs
+            ),
         )
+
+    def _instrument_label(self, output: InstrumentOutput) -> str:
+        destination = self.settings.instrument(output.instrument)
+        return destination.label if destination is not None else output.label
 
     def _deliver_worksheets_to_alternate_root(
         self, service: WorksheetExportService, revision: PlanRevision, plan,
@@ -2966,20 +2975,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--echo-dir",
         type=Path,
-        default=DEFAULT_SETTINGS.echo_output_directory,
-        help="ECHO worksheet output directory",
+        help="ECHO 650 worksheet output directory (overrides the configured echo650)",
     )
     parser.add_argument(
         "--shifter1-dir",
         type=Path,
-        default=DEFAULT_SETTINGS.shifter1_output_directory,
-        help="SHIFTER 1 worksheet output directory",
+        help="SHIFTER 1 worksheet output directory (overrides the configured shifter1)",
     )
     parser.add_argument(
         "--shifter2-dir",
         type=Path,
-        default=DEFAULT_SETTINGS.shifter2_output_directory,
-        help="SHIFTER 2 worksheet output directory",
+        help="SHIFTER 2 worksheet output directory (overrides the configured shifter2)",
     )
     parser.add_argument(
         "--allow-local-instrument-dirs",
@@ -3003,9 +3009,34 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mxlive-ca", type=Path, default=DEFAULT_SETTINGS.mxlive_ca_bundle)
     parser.add_argument(
         "--mxlive-config", type=Path, default=DEFAULT_SETTINGS.mxlive_config_path,
-        help="external TOML file containing OS-user to MxLive account mappings",
+        help="site TOML file with MxLive account mappings and [[instruments]]",
     )
     return parser
+
+
+def settings_from_arguments(args: argparse.Namespace) -> ApplicationSettings:
+    """Combine built-in defaults, the site TOML file, and command-line overrides."""
+    settings = replace(
+        DEFAULT_SETTINGS,
+        rmserver_root=args.root,
+        fragment_library_directory=args.library_dir,
+        worksheet_staging_directory=args.worksheet_dir,
+        mxlive_base_url=args.mxlive_url,
+        mxlive_key_path=args.mxlive_key,
+        mxlive_ca_bundle=args.mxlive_ca,
+        mxlive_config_path=args.mxlive_config,
+    )
+    configured = load_instrument_destinations(args.mxlive_config)
+    if configured is not None:
+        settings = replace(settings, instruments=configured)
+    for instrument_id, directory in (
+        (ECHO_650, args.echo_dir),
+        (SHIFTER_1, args.shifter1_dir),
+        (SHIFTER_2, args.shifter2_dir),
+    ):
+        if directory is not None:
+            settings = settings.with_instrument_directory(instrument_id, directory)
+    return with_instrument_output_policy(settings, args.allow_local_instrument_dirs)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -3019,22 +3050,11 @@ def main(argv: list[str] | None = None) -> int:
         Path(QStandardPaths.writableLocation(QStandardPaths.AppDataLocation))
         / DEFAULT_SETTINGS.review_database_filename
     )
-    settings = replace(
-        DEFAULT_SETTINGS,
-        rmserver_root=args.root,
-        fragment_library_directory=args.library_dir,
-        worksheet_staging_directory=args.worksheet_dir,
-        echo_output_directory=args.echo_dir,
-        shifter1_output_directory=args.shifter1_dir,
-        shifter2_output_directory=args.shifter2_dir,
-        mxlive_base_url=args.mxlive_url,
-        mxlive_key_path=args.mxlive_key,
-        mxlive_ca_bundle=args.mxlive_ca,
-        mxlive_config_path=args.mxlive_config,
-    )
-    settings = with_instrument_output_policy(
-        settings, args.allow_local_instrument_dirs
-    )
+    try:
+        settings = settings_from_arguments(args)
+    except ValueError as error:
+        print(f"xtalflow-viewer: {error}", file=sys.stderr)
+        return 2
     try:
         review_store = SQLiteReviewStore(database_path)
     except ReviewPersistenceError as error:

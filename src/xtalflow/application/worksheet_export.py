@@ -20,16 +20,11 @@ WorksheetPlan = Union[FragmentScreenPlan, RawCrystalPlan]
 
 
 class InstrumentWorksheetExporter(Protocol):
-    def export(self, plan: FragmentScreenPlan, experiment_id: str): ...
-
-    def export_to_alternate_root(
-        self, plan: FragmentScreenPlan, experiment_id: str, root: Path
-    ): ...
-
-    def export_shifter(self, plan: RawCrystalPlan, experiment_id: str): ...
-
-    def export_shifter_to_alternate_root(
-        self, plan: RawCrystalPlan, experiment_id: str, root: Path
+    def export(
+        self,
+        plan: WorksheetPlan,
+        experiment_id: str,
+        alternate_root: Path | None = None,
     ): ...
 
 
@@ -38,7 +33,7 @@ class WorksheetExportAuditPort(Protocol):
 
 
 class WorksheetExportService:
-    """Write worksheets for a plan type; raw crystal plans need no ECHO worksheet.
+    """Write a plan's worksheets to the instruments that read them.
 
     ``deliver`` only touches instrument folders and may run on a worker thread.
     ``record`` writes the audit database and must run on the thread that owns it.
@@ -60,15 +55,7 @@ class WorksheetExportService:
         experiment_id: str,
         alternate_root: Path | None = None,
     ):
-        if isinstance(plan, RawCrystalPlan):
-            if alternate_root is None:
-                return self.exporter.export_shifter(plan, experiment_id)
-            return self.exporter.export_shifter_to_alternate_root(
-                plan, experiment_id, alternate_root
-            )
-        if alternate_root is None:
-            return self.exporter.export(plan, experiment_id)
-        return self.exporter.export_to_alternate_root(plan, experiment_id, alternate_root)
+        return self.exporter.export(plan, experiment_id, alternate_root)
 
     def record(
         self,

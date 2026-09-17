@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 
 
 ECHO_650 = "echo650"
 SHIFTER_1 = "shifter1"
 SHIFTER_2 = "shifter2"
+
+class WorksheetKind(str, Enum):
+    """Worksheet file formats XtalFlow can generate from a plan."""
+
+    ECHO = "echo"
+    SHIFTER = "shifter"
+
 
 INSTRUMENT_LABELS = {
     ECHO_650: "ECHO 650",

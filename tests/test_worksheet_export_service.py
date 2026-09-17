@@ -6,7 +6,7 @@ from xtalflow.application.worksheet_export import WorksheetExportService
 from xtalflow.domain.plan_lifecycle import PlanRevision
 from xtalflow.domain.raw_crystal import build_raw_crystal_plan
 from xtalflow.infrastructure.worksheet_exporter import WorksheetExporter
-from xtalflow.settings import DEFAULT_SETTINGS
+from xtalflow.settings import DEFAULT_SETTINGS, standard_instruments
 
 from test_worksheet_exporter import fragment_plan
 
@@ -23,9 +23,11 @@ def _service(tmp_path: Path, audit: AuditStore) -> WorksheetExportService:
     settings = replace(
         DEFAULT_SETTINGS,
         worksheet_staging_directory=tmp_path / "staging",
-        echo_output_directory=tmp_path / "echo650",
-        shifter1_output_directory=tmp_path / "shifter1",
-        shifter2_output_directory=tmp_path / "shifter2",
+        instruments=standard_instruments(
+            tmp_path / "echo650",
+            tmp_path / "shifter1",
+            tmp_path / "shifter2",
+        ),
         create_missing_instrument_roots=True,
     )
     return WorksheetExportService(WorksheetExporter(settings, "scientist"), audit, "scientist")

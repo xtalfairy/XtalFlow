@@ -33,7 +33,7 @@ from xtalflow.ui.plan_editors import FragmentScreeningDialog
 from xtalflow.ui.plate_source_dialog import PlateSourceDialog
 from xtalflow.viewer import ViewerWindow
 from xtalflow.viewer import main
-from xtalflow.settings import DEFAULT_SETTINGS
+from xtalflow.settings import DEFAULT_SETTINGS, standard_instruments
 from xtalflow.infrastructure.user_preferences import JsonUserPreferencesStore
 from xtalflow.domain.plan_lifecycle import PlanningDraft
 
@@ -936,9 +936,11 @@ def test_fragment_worksheets_are_saved_and_audited(tmp_path: Path, monkeypatch) 
     settings = replace(
         DEFAULT_SETTINGS,
         worksheet_staging_directory=tmp_path / "staging",
-        echo_output_directory=tmp_path / "echo650",
-        shifter1_output_directory=tmp_path / "shifter1",
-        shifter2_output_directory=tmp_path / "shifter2",
+        instruments=standard_instruments(
+            tmp_path / "echo650",
+            tmp_path / "shifter1",
+            tmp_path / "shifter2",
+        ),
         create_missing_instrument_roots=True,
     )
     window, store, editor, = _fragment_plan_window(tmp_path, settings)
@@ -966,9 +968,11 @@ def test_unavailable_instrument_share_can_use_alternate_root(
     settings = replace(
         DEFAULT_SETTINGS,
         worksheet_staging_directory=tmp_path / "staging",
-        echo_output_directory=tmp_path / "missing-echo",
-        shifter1_output_directory=tmp_path / "missing-shifter1",
-        shifter2_output_directory=tmp_path / "missing-shifter2",
+        instruments=standard_instruments(
+            tmp_path / "missing-echo",
+            tmp_path / "missing-shifter1",
+            tmp_path / "missing-shifter2",
+        ),
         create_missing_instrument_roots=False,
     )
     window, store, editor = _fragment_plan_window(tmp_path, settings)

@@ -19,7 +19,7 @@ from xtalflow.infrastructure.worksheet_exporter import (
     WorksheetDestinationUnavailable,
     WorksheetExporter,
 )
-from xtalflow.settings import DEFAULT_SETTINGS
+from xtalflow.settings import DEFAULT_SETTINGS, standard_instruments
 
 
 def fragment_plan():
@@ -54,9 +54,11 @@ def test_development_export_writes_user_scoped_echo_and_shifter_files(
     settings = replace(
         DEFAULT_SETTINGS,
         worksheet_staging_directory=tmp_path / "staging",
-        echo_output_directory=tmp_path / "echo650",
-        shifter1_output_directory=tmp_path / "shifter1",
-        shifter2_output_directory=tmp_path / "shifter2",
+        instruments=standard_instruments(
+            tmp_path / "echo650",
+            tmp_path / "shifter1",
+            tmp_path / "shifter2",
+        ),
         create_missing_instrument_roots=True,
     )
     exporter = WorksheetExporter(settings, "scientist")
@@ -84,9 +86,11 @@ def test_missing_operating_mount_requires_explicit_alternate_root(
     settings = replace(
         DEFAULT_SETTINGS,
         worksheet_staging_directory=tmp_path / "staging",
-        echo_output_directory=tmp_path / "missing-echo",
-        shifter1_output_directory=tmp_path / "missing-shifter1",
-        shifter2_output_directory=tmp_path / "missing-shifter2",
+        instruments=standard_instruments(
+            tmp_path / "missing-echo",
+            tmp_path / "missing-shifter1",
+            tmp_path / "missing-shifter2",
+        ),
         create_missing_instrument_roots=False,
     )
     exporter = WorksheetExporter(settings, "scientist")
@@ -94,7 +98,7 @@ def test_missing_operating_mount_requires_explicit_alternate_root(
     with pytest.raises(WorksheetDestinationUnavailable, match="unavailable"):
         exporter.export(fragment_plan(), "FragSC-202607-BRD4-01")
 
-    result = exporter.export_to_alternate_root(
+    result = exporter.export(
         fragment_plan(), "FragSC-202607-BRD4-01", tmp_path / "chosen"
     )
     assert result.path_for("echo650") == (
@@ -112,9 +116,11 @@ def test_permission_error_preparing_output_is_reported_without_crashing(
     settings = replace(
         DEFAULT_SETTINGS,
         worksheet_staging_directory=tmp_path / "staging",
-        echo_output_directory=tmp_path / "echo650",
-        shifter1_output_directory=tmp_path / "shifter1",
-        shifter2_output_directory=tmp_path / "shifter2",
+        instruments=standard_instruments(
+            tmp_path / "echo650",
+            tmp_path / "shifter1",
+            tmp_path / "shifter2",
+        ),
         create_missing_instrument_roots=True,
     )
     original_mkdir = Path.mkdir
@@ -140,9 +146,11 @@ def test_offline_instrument_share_is_reported_as_unavailable_at_export(
     offline = tmp_path / "shifter1"
     settings = replace(
         DEFAULT_SETTINGS,
-        echo_output_directory=tmp_path / "echo650",
-        shifter1_output_directory=offline,
-        shifter2_output_directory=tmp_path / "shifter2",
+        instruments=standard_instruments(
+            tmp_path / "echo650",
+            offline,
+            tmp_path / "shifter2",
+        ),
         create_missing_instrument_roots=False,
     )
     original_is_dir = Path.is_dir
@@ -163,15 +171,17 @@ def test_raw_crystal_export_writes_only_shifter_files(tmp_path: Path) -> None:
     settings = replace(
         DEFAULT_SETTINGS,
         worksheet_staging_directory=tmp_path / "staging",
-        echo_output_directory=tmp_path / "echo650",
-        shifter1_output_directory=tmp_path / "shifter1",
-        shifter2_output_directory=tmp_path / "shifter2",
+        instruments=standard_instruments(
+            tmp_path / "echo650",
+            tmp_path / "shifter1",
+            tmp_path / "shifter2",
+        ),
         create_missing_instrument_roots=True,
     )
     fragment = fragment_plan()
     raw_plan = build_raw_crystal_plan(fragment.selection)
 
-    result = WorksheetExporter(settings, "scientist").export_shifter(
+    result = WorksheetExporter(settings, "scientist").export(
         raw_plan, "RawCrystal-202607-BRD4-01"
     )
 
@@ -184,9 +194,11 @@ def _development_settings(tmp_path: Path):
     return replace(
         DEFAULT_SETTINGS,
         worksheet_staging_directory=tmp_path / "staging",
-        echo_output_directory=tmp_path / "echo650",
-        shifter1_output_directory=tmp_path / "shifter1",
-        shifter2_output_directory=tmp_path / "shifter2",
+        instruments=standard_instruments(
+            tmp_path / "echo650",
+            tmp_path / "shifter1",
+            tmp_path / "shifter2",
+        ),
         create_missing_instrument_roots=True,
     )
 
@@ -292,3 +304,72 @@ def test_unmounted_share_directory_is_not_used_for_instrument_output(
         )
 
     assert _worksheet_files(tmp_path) == []
+
+
+def _configured_settings(tmp_path: Path, instruments):
+    return replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        instruments=instruments,
+        create_missing_instrument_roots=True,
+    )
+
+
+def test_each_worksheet_goes_to_every_instrument_that_reads_it(tmp_path: Path) -> None:
+    from xtalflow.domain.instruments import WorksheetKind
+    from xtalflow.settings import InstrumentDestination
+
+    instruments = (
+        *standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
+        ),
+        InstrumentDestination("shifter3", WorksheetKind.SHIFTER, tmp_path / "shifter3"),
+    )
+    exporter = WorksheetExporter(_configured_settings(tmp_path, instruments), "scientist")
+
+    fragment = exporter.export(fragment_plan(), "FragSC-202607-BRD4-01")
+    raw = exporter.export(
+        build_raw_crystal_plan(fragment_plan().selection), "RawCrystal-202607-BRD4-01"
+    )
+    alternate = exporter.export(
+        fragment_plan(), "FragSC-202607-BRD4-02", tmp_path / "chosen"
+    )
+
+    assert [output.instrument for output in fragment.outputs] == [
+        "echo650", "shifter1", "shifter2", "shifter3"
+    ]
+    assert fragment.path_for("shifter3").read_text(encoding="utf-8") == (
+        fragment.path_for("shifter1").read_text(encoding="utf-8")
+    )
+    assert fragment.path_for("echo650").read_text(encoding="utf-8") != (
+        fragment.path_for("shifter1").read_text(encoding="utf-8")
+    )
+    assert [output.instrument for output in raw.outputs] == [
+        "shifter1", "shifter2", "shifter3"
+    ]
+    assert alternate.path_for("shifter3") == (
+        tmp_path / "chosen" / "shifter3" / "scientist" / "FragSC-202607-BRD4-02.csv"
+    )
+
+
+def test_plan_needing_an_unconfigured_worksheet_is_not_partly_exported(
+    tmp_path: Path,
+) -> None:
+    from xtalflow.domain.instruments import WorksheetKind
+    from xtalflow.settings import InstrumentDestination
+
+    shifter_only = (
+        InstrumentDestination("shifter1", WorksheetKind.SHIFTER, tmp_path / "shifter1"),
+    )
+    exporter = WorksheetExporter(_configured_settings(tmp_path, shifter_only), "scientist")
+
+    with pytest.raises(
+        WorksheetDestinationUnavailable, match="no instrument is configured for echo"
+    ):
+        exporter.export(fragment_plan(), "FragSC-202607-BRD4-01")
+
+    assert not (tmp_path / "shifter1").exists()
+    raw = exporter.export(
+        build_raw_crystal_plan(fragment_plan().selection), "RawCrystal-202607-BRD4-01"
+    )
+    assert [output.instrument for output in raw.outputs] == ["shifter1"]

@@ -10,10 +10,45 @@ LEGACY_PLATE_FORMAT_ID = "swissci-midi-3-lens-hr3-194"
 LEGACY_PLATE_FORMAT_VERSION = 1
 
 
+class ReviewDatabaseTooNewError(sqlite3.DatabaseError):
+    """The database was upgraded by a newer XtalFlow than the one opening it."""
+
+    def __init__(self, database_version: int) -> None:
+        self.database_version = database_version
+        super().__init__(
+            f"review database schema {database_version} is newer than this "
+            f"XtalFlow supports ({LATEST_SCHEMA_VERSION}); use a newer XtalFlow"
+        )
+
+
+def schema_version(connection: sqlite3.Connection) -> int:
+    return connection.execute("PRAGMA user_version").fetchone()[0]
+
+
+def needs_upgrade(connection: sqlite3.Connection) -> bool:
+    """True when an existing database will be changed by the next migration."""
+    version = schema_version(connection)
+    if version > LATEST_SCHEMA_VERSION:
+        raise ReviewDatabaseTooNewError(version)
+    has_tables = connection.execute(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table')"
+    ).fetchone()[0]
+    return bool(has_tables) and version < LATEST_SCHEMA_VERSION
+
+
 def migrate_review_database(connection: sqlite3.Connection) -> None:
-    """Upgrade both unversioned legacy databases and new databases in place."""
-    starting_version = connection.execute("PRAGMA user_version").fetchone()[0]
-    with connection:
+    """Upgrade both unversioned legacy databases and new databases in place.
+
+    Every step runs in one transaction. Python's sqlite3 module otherwise
+    commits schema changes made before the first data change, so an
+    interrupted upgrade could leave a partly migrated database behind.
+    """
+    starting_version = schema_version(connection)
+    if starting_version > LATEST_SCHEMA_VERSION:
+        # Writing our version would silently downgrade the marker.
+        raise ReviewDatabaseTooNewError(starting_version)
+    connection.execute("BEGIN IMMEDIATE")
+    try:
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS target_point (
@@ -103,6 +138,10 @@ def migrate_review_database(connection: sqlite3.Connection) -> None:
                 """
             )
         connection.execute(f"PRAGMA user_version = {LATEST_SCHEMA_VERSION}")
+    except BaseException:
+        connection.rollback()
+        raise
+    connection.commit()
 
 
 def _create_experiment_project_schema(connection: sqlite3.Connection) -> None:

@@ -37,7 +37,12 @@ from xtalflow.infrastructure.fragment_library_csv import (
     FragmentLibraryCatalogEntry,
     load_fragment_library as load_fragment_library_csv,
 )
-from xtalflow.infrastructure.review_migrations import migrate_review_database
+from xtalflow.infrastructure.review_migrations import (
+    ReviewDatabaseTooNewError,
+    migrate_review_database,
+    needs_upgrade,
+    schema_version,
+)
 
 
 @dataclass(frozen=True)
@@ -54,18 +59,42 @@ class SQLiteReviewStore:
     def __init__(self, database_path: Path | str) -> None:
         self.database_path = Path(database_path).expanduser()
         self._closed = False
+        self.upgrade_backup_path: Path | None = None
         try:
             self.database_path.parent.mkdir(parents=True, exist_ok=True)
             self._connection = sqlite3.connect(self.database_path)
             self._connection.execute("PRAGMA foreign_keys = ON")
+            if needs_upgrade(self._connection):
+                self.upgrade_backup_path = self._backup_before_upgrade()
             migrate_review_database(self._connection)
             self.planning_project_migration = (
                 self._migrate_finalized_planning_projects()
             )
+        except ReviewDatabaseTooNewError as error:
+            self._connection.close()
+            raise ReviewPersistenceError(
+                f"cannot open review database {self.database_path}: {error}"
+            ) from error
         except (OSError, sqlite3.Error) as error:
+            if hasattr(self, "_connection"):
+                self._connection.close()
             raise ReviewPersistenceError(
                 f"cannot open review database: {self.database_path}"
             ) from error
+
+    def _backup_before_upgrade(self) -> Path:
+        """Copy the database before changing its schema; no backup, no upgrade."""
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        version = schema_version(self._connection)
+        backup_path = self.database_path.with_name(
+            f"{self.database_path.name}.schema{version}-{stamp}.bak"
+        )
+        backup = sqlite3.connect(backup_path)
+        try:
+            self._connection.backup(backup)
+        finally:
+            backup.close()
+        return backup_path
 
     def _migrate_finalized_planning_projects(
         self,
@@ -201,89 +230,74 @@ class SQLiteReviewStore:
             ) from error
 
     def load_experiment_projects(self) -> tuple[ExperimentProject, ...]:
+        return self._load_experiment_projects(None)
+
+    def load_experiment_project(
+        self, project_id: str
+    ) -> ExperimentProject | None:
+        projects = self._load_experiment_projects(project_id)
+        return projects[0] if projects else None
+
+    def _load_experiment_projects(
+        self, project_id: str | None
+    ) -> tuple[ExperimentProject, ...]:
+        # Load one project on its own so a damaged record cannot hide the others.
+        project_filter = "" if project_id is None else " WHERE project_id = ?"
+        selection_filter = "" if project_id is None else (
+            " WHERE selection_id IN (SELECT selection_id FROM crystal_selection"
+            " WHERE project_id = ?)"
+        )
+        parameters = () if project_id is None else (project_id,)
         try:
             project_rows = self._connection.execute(
-                """SELECT project_id, name, created_at, updated_at
-                   FROM experiment_project ORDER BY created_at, project_id"""
+                "SELECT project_id, name, created_at, updated_at FROM experiment_project"
+                f"{project_filter} ORDER BY created_at, project_id",
+                parameters,
             ).fetchall()
             selection_rows = self._connection.execute(
-                """SELECT selection_id, project_id, created_at, updated_at
-                   FROM crystal_selection"""
+                "SELECT selection_id, project_id, created_at, updated_at"
+                f" FROM crystal_selection{project_filter}",
+                parameters,
             ).fetchall()
             well_rows = self._connection.execute(
                 """SELECT selected_well_id, selection_id, image_set_id,
                           image_key, image_path, plate_code, well_address,
                           batch_id, profile, plate_format_id,
                           plate_format_version, selection_order, selected_at
-                   FROM selected_well ORDER BY selection_id, selection_order"""
+                   FROM selected_well"""
+                f"{selection_filter} ORDER BY selection_id, selection_order",
+                parameters,
             ).fetchall()
             position_rows = self._connection.execute(
                 """SELECT position_id, selected_well_id, source_target_id,
                           position_order, x_mm, y_mm, selected_at
-                   FROM soaking_position
-                   ORDER BY selected_well_id, position_order"""
+                   FROM soaking_position"""
+                + (
+                    "" if project_id is None else
+                    " WHERE selected_well_id IN (SELECT selected_well_id FROM"
+                    " selected_well" + selection_filter + ")"
+                )
+                + " ORDER BY selected_well_id, position_order",
+                parameters,
             ).fetchall()
             plan_rows = self._connection.execute(
-                """SELECT plan_id, project_id, plan_type, created_at, updated_at
-                   FROM experiment_plan"""
+                "SELECT plan_id, project_id, plan_type, created_at, updated_at"
+                f" FROM experiment_plan{project_filter}",
+                parameters,
             ).fetchall()
         except sqlite3.Error as error:
             raise ReviewPersistenceError(
                 "could not load experiment projects"
             ) from error
-
-        positions_by_well: dict[str, list[SoakingPosition]] = {}
-        for row in position_rows:
-            positions_by_well.setdefault(row[1], []).append(
-                SoakingPosition(
-                    row[0], row[1], row[2], row[3], Decimal(row[4]),
-                    Decimal(row[5]), datetime.fromisoformat(row[6]),
-                )
+        try:
+            return _experiment_projects_from_rows(
+                project_rows, selection_rows, well_rows, position_rows, plan_rows
             )
-        wells_by_selection: dict[str, list[SelectedWell]] = {}
-        for row in well_rows:
-            wells_by_selection.setdefault(row[1], []).append(
-                SelectedWell(
-                    id=row[0], crystal_selection_id=row[1], image_set_id=row[2],
-                    image_key=row[3], image_path=row[4], plate_code=row[5],
-                    well_address=row[6], batch_id=row[7], profile=row[8],
-                    plate_format_id=row[9], plate_format_version=row[10],
-                    selection_order=row[11], selected_at=datetime.fromisoformat(row[12]),
-                    soaking_positions=tuple(positions_by_well.get(row[0], [])),
-                )
+        except (KeyError, TypeError, ValueError, ArithmeticError) as error:
+            subject = "experiment projects" if project_id is None else (
+                f"experiment project {project_id}"
             )
-        selections = {
-            row[1]: CrystalSelection(
-                row[0], row[1], tuple(wells_by_selection.get(row[0], [])),
-                datetime.fromisoformat(row[2]), datetime.fromisoformat(row[3]),
-            )
-            for row in selection_rows
-        }
-        plans = {
-            row[1]: ExperimentPlan(
-                row[0], row[1], PlanType(row[2]),
-                datetime.fromisoformat(row[3]), datetime.fromisoformat(row[4]),
-            )
-            for row in plan_rows
-        }
-        return tuple(
-            ExperimentProject(
-                row[0], row[1], selections[row[0]], plans[row[0]],
-                datetime.fromisoformat(row[2]), datetime.fromisoformat(row[3]),
-            )
-            for row in project_rows
-        )
-
-    def load_experiment_project(
-        self, project_id: str
-    ) -> ExperimentProject | None:
-        return next(
-            (
-                project for project in self.load_experiment_projects()
-                if project.id == project_id
-            ),
-            None,
-        )
+            raise ReviewPersistenceError(f"stored {subject} is invalid: {error}") from error
 
     def prior_selected_well_usage(
         self, current_project_id: str, image_keys: tuple[str, ...]
@@ -1015,6 +1029,53 @@ class SQLiteReviewStore:
             )
             for row in rows
         )
+
+
+
+def _experiment_projects_from_rows(
+    project_rows, selection_rows, well_rows, position_rows, plan_rows
+) -> tuple[ExperimentProject, ...]:
+    positions_by_well: dict[str, list[SoakingPosition]] = {}
+    for row in position_rows:
+        positions_by_well.setdefault(row[1], []).append(
+            SoakingPosition(
+                row[0], row[1], row[2], row[3], Decimal(row[4]),
+                Decimal(row[5]), datetime.fromisoformat(row[6]),
+            )
+        )
+    wells_by_selection: dict[str, list[SelectedWell]] = {}
+    for row in well_rows:
+        wells_by_selection.setdefault(row[1], []).append(
+            SelectedWell(
+                id=row[0], crystal_selection_id=row[1], image_set_id=row[2],
+                image_key=row[3], image_path=row[4], plate_code=row[5],
+                well_address=row[6], batch_id=row[7], profile=row[8],
+                plate_format_id=row[9], plate_format_version=row[10],
+                selection_order=row[11], selected_at=datetime.fromisoformat(row[12]),
+                soaking_positions=tuple(positions_by_well.get(row[0], [])),
+            )
+        )
+    selections = {
+        row[1]: CrystalSelection(
+            row[0], row[1], tuple(wells_by_selection.get(row[0], [])),
+            datetime.fromisoformat(row[2]), datetime.fromisoformat(row[3]),
+        )
+        for row in selection_rows
+    }
+    plans = {
+        row[1]: ExperimentPlan(
+            row[0], row[1], PlanType(row[2]),
+            datetime.fromisoformat(row[3]), datetime.fromisoformat(row[4]),
+        )
+        for row in plan_rows
+    }
+    return tuple(
+        ExperimentProject(
+            row[0], row[1], selections[row[0]], plans[row[0]],
+            datetime.fromisoformat(row[2]), datetime.fromisoformat(row[3]),
+        )
+        for row in project_rows
+    )
 
 
 def _project_from_legacy_snapshot(

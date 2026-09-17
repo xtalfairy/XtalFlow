@@ -1,4 +1,5 @@
 import os
+import sqlite3
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -380,6 +381,39 @@ def test_refreshing_libraries_keeps_selected_library_rows(tmp_path: Path) -> Non
     assert editor.library_input.currentIndex() == 1
     assert editor.rows_input.text() == "2-3"
     window.close()
+    app.processEvents()
+
+
+def test_damaged_saved_plan_does_not_block_other_plans(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    database_path = tmp_path / "reviews.sqlite3"
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), SQLiteReviewStore(database_path))
+    crystal = SelectedCrystal(
+        "image", "1070", "A01a",
+        (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
+        SWISSCI_MIDI_3_LENS.id,
+    )
+    for protein in ("DAMAGED", "HEALTHY"):
+        window._add_raw_crystal_plan((crystal,))
+        editor = window.plan_stack.currentWidget()
+        editor.protein_input.setText(protein)
+        window._persist_draft(editor)
+    damaged_id = window.plan_stack.widget(1).plan_id
+    window.close()
+    app.processEvents()
+    connection = sqlite3.connect(database_path)
+    connection.execute(
+        "UPDATE experiment_plan SET plan_type = 'retired' WHERE project_id = ?",
+        (damaged_id,),
+    )
+    connection.commit()
+    connection.close()
+
+    restored = ViewerWindow(RockMakerImageRepository(tmp_path), SQLiteReviewStore(database_path))
+
+    assert restored.plan_list.count() == 1
+    assert restored.plan_stack.widget(1).protein_input.text() == "HEALTHY"
+    restored.close()
     app.processEvents()
 
 

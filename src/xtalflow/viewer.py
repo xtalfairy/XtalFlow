@@ -612,6 +612,12 @@ class ViewerWindow(QMainWindow):
                 f"{plan_id}: {error}"
                 for plan_id, error in report.invalid_snapshots
             )
+        if self.review_store.upgrade_backup_path is not None:
+            details.insert(
+                0,
+                "Review database upgraded · backup saved to "
+                f"{self.review_store.upgrade_backup_path}",
+            )
         if details:
             self.status_message_label.show_message(" · ".join(details))
 
@@ -1600,11 +1606,27 @@ class ViewerWindow(QMainWindow):
                 crystals = self.project_controller.selected_crystals_for_plan()
             except IMAGE_SOURCE_ERRORS:
                 crystals = ()
-            for draft in self.review_store.load_planning_drafts(project_id):
-                if draft.plan_type == "fragment_screening":
-                    self._add_fragment_plan(None, crystals, draft)
-                elif draft.plan_type == "raw_crystal":
-                    self._add_raw_crystal_plan(crystals, draft)
+            unrestored: list[str] = []
+            try:
+                drafts = self.review_store.load_planning_drafts(project_id)
+            except ReviewPersistenceError as error:
+                drafts = ()
+                unrestored.append(str(error))
+            for draft in drafts:
+                try:
+                    if draft.plan_type == PlanType.FRAGMENT_SCREENING.value:
+                        self._add_fragment_plan(None, crystals, draft)
+                    elif draft.plan_type == PlanType.RAW_CRYSTAL.value:
+                        self._add_raw_crystal_plan(crystals, draft)
+                except (ValueError, ReviewPersistenceError) as error:
+                    # One damaged plan must not keep the others, or the window,
+                    # from opening.
+                    unrestored.append(f"{draft.name}: {error}")
+            if unrestored:
+                self.status_message_label.show_message(
+                    f"{len(unrestored)} saved plan(s) could not be restored · "
+                    + " · ".join(unrestored)
+                )
             return
         for name, editor in self._planning_drafts.get(project_id, []):
             editor.setParent(self.plan_stack)

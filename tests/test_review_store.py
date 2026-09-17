@@ -559,3 +559,133 @@ def test_schema_v9_assigns_all_existing_image_sets_to_three_lens(tmp_path: Path)
     assert image_set.plate_format_id == SWISSCI_MIDI_3_LENS.id
     assert image_set.plate_format_version == SWISSCI_MIDI_3_LENS.version
     store.close()
+
+
+def _legacy_required_count_database(database_path: Path) -> None:
+    connection = sqlite3.connect(database_path)
+    connection.executescript(
+        """
+        CREATE TABLE review_plan (
+            plan_key TEXT PRIMARY KEY, plate_code TEXT NOT NULL,
+            batch_id INTEGER NOT NULL, profile TEXT NOT NULL,
+            required_target_count INTEGER NOT NULL, current_image_key TEXT NOT NULL,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        INSERT INTO review_plan VALUES (
+            '1070:5947:profileID_1', '1070', 5947, 'profileID_1', 3,
+            '1070:5947:1:1:profileID_1', '2026-01-01T00:00:00+00:00',
+            '2026-01-01T00:00:00+00:00'
+        );
+        """
+    )
+    connection.close()
+
+
+def _schema(database_path: Path) -> tuple[int, set[str], set[str]]:
+    connection = sqlite3.connect(database_path)
+    version = connection.execute("PRAGMA user_version").fetchone()[0]
+    tables = {
+        row[0] for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(review_plan)")}
+    connection.close()
+    return version, tables, columns
+
+
+def test_interrupted_migration_leaves_database_unchanged(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from xtalflow.application import ReviewPersistenceError
+    from xtalflow.infrastructure import review_migrations
+
+    database_path = tmp_path / "reviews.sqlite3"
+    _legacy_required_count_database(database_path)
+    before = _schema(database_path)
+
+    def interrupted(connection):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(review_migrations, "_import_standalone_reviews", interrupted)
+    with pytest.raises(ReviewPersistenceError):
+        SQLiteReviewStore(database_path)
+
+    assert _schema(database_path) == before
+    monkeypatch.undo()
+    store = SQLiteReviewStore(database_path)
+    _, preferences = store.load_review_state("1070:5947:profileID_1")
+    assert preferences.auto_advance_target_count == 3
+    store.close()
+
+
+def test_database_from_newer_xtalflow_is_not_opened_or_downgraded(
+    tmp_path: Path,
+) -> None:
+    from xtalflow.application import ReviewPersistenceError
+
+    database_path = tmp_path / "reviews.sqlite3"
+    SQLiteReviewStore(database_path).close()
+    connection = sqlite3.connect(database_path)
+    connection.execute(f"PRAGMA user_version = {LATEST_SCHEMA_VERSION + 1}")
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(ReviewPersistenceError, match="newer than this XtalFlow"):
+        SQLiteReviewStore(database_path)
+
+    assert _schema(database_path)[0] == LATEST_SCHEMA_VERSION + 1
+
+
+def test_existing_database_is_backed_up_only_before_upgrade(tmp_path: Path) -> None:
+    database_path = tmp_path / "reviews.sqlite3"
+    fresh = SQLiteReviewStore(database_path)
+    assert fresh.upgrade_backup_path is None
+    fresh.close()
+    assert SQLiteReviewStore(database_path).upgrade_backup_path is None
+
+    legacy_path = tmp_path / "legacy.sqlite3"
+    _legacy_required_count_database(legacy_path)
+    upgraded = SQLiteReviewStore(legacy_path)
+    backup_path = upgraded.upgrade_backup_path
+    upgraded.close()
+
+    assert backup_path is not None and backup_path.name.startswith(
+        "legacy.sqlite3.schema0-"
+    )
+    version, tables, columns = _schema(backup_path)
+    assert (version, tables) == (0, {"review_plan"})
+    assert "auto_advance_target_count" not in columns
+    assert _schema(legacy_path)[0] == LATEST_SCHEMA_VERSION
+
+
+def test_damaged_experiment_project_does_not_hide_other_projects(tmp_path: Path) -> None:
+    from xtalflow.application import ReviewPersistenceError
+    from xtalflow.application.planning_service import PlanningService
+
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    now = datetime.now(timezone.utc)
+    image = CrystalImage("1070", 5947, 1, 1, "profileID_1", Path("image.jpg"))
+    target = ReviewSession().add_target(image, 10, 20, 100, 100)
+    crystals = (
+        SelectedCrystal(
+            image.image_key, "1070", "A01a",
+            (CrystalTarget(target.id, Decimal(0), Decimal(0), now),),
+            SWISSCI_MIDI_3_LENS.id,
+        ),
+    )
+    service = PlanningService(store)
+    for plan_id in ("damaged", "healthy"):
+        service.save_selection_snapshot(
+            plan_id, plan_id, PlanType.RAW_CRYSTAL,
+            crystal_selection_from_selected_crystals(plan_id, crystals), now,
+        )
+    store._connection.execute(
+        "UPDATE experiment_plan SET plan_type = 'retired' WHERE project_id = 'damaged'"
+    )
+    store._connection.commit()
+
+    assert store.load_experiment_project("healthy").id == "healthy"
+    with pytest.raises(ReviewPersistenceError, match="experiment project damaged"):
+        store.load_experiment_project("damaged")
+    store.close()

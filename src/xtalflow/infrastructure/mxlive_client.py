@@ -16,6 +16,7 @@ from xtalflow.domain.mxlive import (
     MxLiveReadError,
     MxLiveSample,
     MxLivePartialWriteError,
+    MxLiveUncertainWriteError,
     MxLiveWriteError,
 )
 
@@ -77,9 +78,30 @@ class RequestsJsonTransport:
         except requests.RequestException as error:
             status = error.response.status_code if error.response is not None else None
             detail = f"HTTP {status}" if status is not None else type(error).__name__
+            if _write_may_have_been_stored(error, status):
+                raise MxLiveUncertainWriteError(
+                    f"MxLive upload result is unknown ({detail})"
+                ) from error
             raise MxLiveWriteError(f"MxLive upload failed ({detail})") from error
         except ValueError as error:
-            raise MxLiveWriteError("MxLive returned invalid JSON after upload") from error
+            raise MxLiveUncertainWriteError(
+                "MxLive returned invalid JSON after accepting the upload"
+            ) from error
+
+
+def _write_may_have_been_stored(
+    error: requests.RequestException, status: int | None
+) -> bool:
+    """Only errors raised before the request reached the server are safe to retry."""
+    if status is not None:
+        return status >= 500
+    if isinstance(
+        error,
+        (requests.ConnectTimeout, requests.exceptions.SSLError,
+         requests.exceptions.ProxyError, requests.exceptions.InvalidURL),
+    ):
+        return False
+    return isinstance(error, (requests.Timeout, requests.ConnectionError))
 
 
 class DsaUrlSigner:
@@ -233,13 +255,14 @@ class LegacyMxLiveWriteClient:
                     ca_bundle=self.ca_bundle,
                 )
                 if not isinstance(response, Mapping):
-                    raise MxLiveWriteError(
+                    raise MxLiveUncertainWriteError(
                         "MxLive upload response must be an object"
                     )
             except MxLiveWriteError as error:
                 if responses:
                     raise MxLivePartialWriteError(
-                        len(responses), len(records), str(error)
+                        len(responses), len(records), str(error),
+                        outcome_uncertain=isinstance(error, MxLiveUncertainWriteError),
                     ) from error
                 raise
             responses.append(dict(response))

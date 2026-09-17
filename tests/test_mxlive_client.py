@@ -204,3 +204,85 @@ def test_writer_reports_partial_batch_without_suggesting_blind_retry(
 
     assert captured.value.completed_count == 1
     assert "do not retry" in str(captured.value)
+
+
+class _Response:
+    def __init__(self, status_code: int, body: object = None) -> None:
+        self.status_code = status_code
+        self.body = body
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            import requests
+
+            raise requests.HTTPError(response=self)
+
+    def json(self) -> object:
+        if isinstance(self.body, Exception):
+            raise self.body
+        return self.body
+
+
+@pytest.mark.parametrize(
+    ("outcome", "uncertain"),
+    [
+        ("read-timeout", True),
+        ("connection-reset", True),
+        ("http-502", True),
+        ("invalid-json", True),
+        ("connect-timeout", False),
+        ("http-400", False),
+    ],
+)
+def test_upload_errors_that_may_have_stored_records_are_uncertain(
+    monkeypatch, outcome: str, uncertain: bool
+) -> None:
+    import requests
+
+    from xtalflow.domain.mxlive import MxLiveUncertainWriteError
+
+    def post(*args, **kwargs):
+        if outcome == "read-timeout":
+            raise requests.ReadTimeout()
+        if outcome == "connection-reset":
+            raise requests.ConnectionError("connection reset by peer")
+        if outcome == "connect-timeout":
+            raise requests.ConnectTimeout()
+        if outcome == "invalid-json":
+            return _Response(200, ValueError("not JSON"))
+        return _Response(int(outcome.split("-")[1]))
+
+    monkeypatch.setattr("xtalflow.infrastructure.mxlive_client.requests.post", post)
+
+    with pytest.raises(MxLiveWriteError) as captured:
+        RequestsJsonTransport().post_msgpack(
+            "https://mxlive.example", {"expri_id": "RawCrystal-1"},
+            timeout_seconds=10, ca_bundle=None,
+        )
+
+    assert isinstance(captured.value, MxLiveUncertainWriteError) is uncertain
+    assert "mxlive.example" not in str(captured.value)
+
+
+def test_uncertain_failure_after_accepted_records_reports_minimum_count(
+    tmp_path: Path,
+) -> None:
+    from xtalflow.domain.mxlive import MxLiveUncertainWriteError
+
+    class TimeoutTransport(FakeTransport):
+        def post_msgpack(self, *args, **kwargs):
+            if not self.replies:
+                raise MxLiveUncertainWriteError("ReadTimeout")
+            return super().post_msgpack(*args, **kwargs)
+
+    client = LegacyMxLiveWriteClient(
+        "https://mxlive.example", "BL-5C", "fbdd",
+        _key_file(tmp_path / "keys.dsa"),
+        transport=TimeoutTransport([{"id": 1}]),
+    )
+
+    with pytest.raises(MxLivePartialWriteError) as captured:
+        client.upload_labworks(({"crystal_no": 1}, {"crystal_no": 2}))
+
+    assert captured.value.outcome_uncertain
+    assert "at least 1 of 2" in str(captured.value)

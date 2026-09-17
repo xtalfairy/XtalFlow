@@ -278,6 +278,41 @@ def test_planning_draft_revision_and_export_lifecycle(tmp_path: Path) -> None:
     assert store.list_webdb_uploads(second.id) == (upload,)
 
 
+def test_upload_outcome_is_updated_and_listed_for_every_revision_of_experiment(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    now = datetime.now(timezone.utc)
+    project = Project(str(uuid4()), "Uploads", now, now)
+    store.save_project(project)
+    draft = PlanningDraft(
+        "plan", project.id, "raw_crystal", "Plan", None, "", "", "0",
+        "selection", now, now,
+    )
+    store.save_planning_draft(draft)
+    first = store.finalize_plan_revision(
+        PlanRevision("revision-1", draft.id, 0, "RawCrystal-01", "{}", "jjh", now)
+    )
+    second = store.finalize_plan_revision(
+        PlanRevision("revision-2", draft.id, 0, "RawCrystal-01", "{\"v\":2}", "jjh", now)
+    )
+    pending = WebDBUploadEvent(
+        "upload-1", first.id, "fbdd", "fbdd",
+        "https://mxlive.example/upload_labworks/BL-5C/", now, "pending", 1, "[]",
+    )
+    store.record_webdb_upload(pending)
+
+    from dataclasses import replace
+
+    unknown = replace(pending, status="unknown", error_message="ReadTimeout")
+    store.update_webdb_upload(unknown)
+
+    assert store.list_webdb_uploads_for_experiment("RawCrystal-01") == (unknown,)
+    assert store.list_webdb_uploads(second.id) == ()
+    assert store.list_webdb_uploads_for_experiment("RawCrystal-02") == ()
+    store.close()
+
+
 def test_only_planning_plan_with_upload_history_is_protected_from_deletion(
     tmp_path: Path,
 ) -> None:

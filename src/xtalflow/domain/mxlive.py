@@ -12,15 +12,24 @@ class MxLiveWriteError(RuntimeError):
     """MxLive rejected or could not safely accept an upload."""
 
 
+class MxLiveUncertainWriteError(MxLiveWriteError):
+    """The request may have been stored even though no valid response arrived."""
+
+
 class MxLivePartialWriteError(MxLiveWriteError):
     """Some records were accepted before a later record failed."""
 
-    def __init__(self, completed_count: int, total_count: int, cause: str) -> None:
+    def __init__(
+        self, completed_count: int, total_count: int, cause: str,
+        outcome_uncertain: bool = False,
+    ) -> None:
         self.completed_count = completed_count
         self.total_count = total_count
+        self.outcome_uncertain = outcome_uncertain
+        accepted = "at least " if outcome_uncertain else ""
         super().__init__(
-            f"MxLive accepted {completed_count} of {total_count} records before "
-            f"the upload failed ({cause}); do not retry until WebDB is reviewed"
+            f"MxLive accepted {accepted}{completed_count} of {total_count} records "
+            f"before the upload failed ({cause}); do not retry until WebDB is reviewed"
         )
 
 

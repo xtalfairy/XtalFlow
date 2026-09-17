@@ -582,6 +582,152 @@ def test_only_finalized_raw_revision_can_be_uploaded_and_is_audited(
     app.processEvents()
 
 
+def _finalized_raw_upload_window(tmp_path: Path, monkeypatch):
+    key = tmp_path / "keys.dsa"
+    key.write_bytes(b"test-key-presence")
+    settings = replace(
+        DEFAULT_SETTINGS,
+        mxlive_base_url="https://mxlive.example",
+        mxlive_key_path=key,
+        mxlive_ca_bundle=None,
+        mxlive_config_path=None,
+    )
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store, settings=settings)
+    crystal = SelectedCrystal(
+        "image-key", "1070", "A01a",
+        (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
+        SWISSCI_MIDI_3_LENS.id, "/rmserver/image.jpg",
+    )
+    window._add_raw_crystal_plan((crystal,))
+    editor = window.plan_stack.currentWidget()
+    editor.set_crystals((crystal,))
+    editor.protein_input.setText("BRD4")
+    dialogs = []
+    for name in ("warning", "critical", "information"):
+        monkeypatch.setattr(
+            QMessageBox, name,
+            lambda *args, _name=name, **kwargs: dialogs.append((_name, args[2])),
+        )
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    revision = window._finalize_raw_crystal_plan(editor)
+    assert revision is not None, dialogs
+    return window, store, editor, revision, dialogs
+
+
+class _RecordingWriter:
+    posted = []
+    error: Exception | None = None
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def upload_labworks(self, records):
+        type(self).posted.append(records)
+        if type(self).error is not None:
+            raise type(self).error
+        return {"created": len(records)}
+
+
+def test_unknown_upload_result_locks_until_verified_on_mxlive(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from xtalflow.domain.mxlive import MxLiveLabwork, MxLiveUncertainWriteError
+
+    app = QApplication.instance() or QApplication([])
+    window, store, editor, revision, dialogs = _finalized_raw_upload_window(
+        tmp_path, monkeypatch
+    )
+
+    class TimeoutWriter(_RecordingWriter):
+        posted = []
+        error = MxLiveUncertainWriteError("MxLive upload result is unknown (ReadTimeout)")
+
+    stored_records: list[MxLiveLabwork] = []
+
+    class FakeReader:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def labworks(self, experiment_id):
+            return tuple(stored_records)
+
+    monkeypatch.setattr("xtalflow.viewer.LegacyMxLiveWriteClient", TimeoutWriter)
+    monkeypatch.setattr("xtalflow.viewer.LegacyMxLiveReadClient", FakeReader)
+
+    window._upload_raw_labworks(editor)
+
+    assert [event.status for event in store.list_webdb_uploads(revision.id)] == [
+        "unknown"
+    ]
+    assert editor.webdb_upload_button.text() == "Verify on MxLive…"
+    assert editor.webdb_upload_button.isEnabled()
+
+    window._upload_raw_labworks(editor)
+    assert len(TimeoutWriter.posted) == 1
+    assert [event.status for event in store.list_webdb_uploads(revision.id)] == [
+        "failed"
+    ]
+    assert editor.webdb_upload_button.text() == "Upload Finalized Revision…"
+    assert editor.webdb_upload_button.isEnabled()
+    assert dialogs[-1][0] == "information"
+    window.close()
+    app.processEvents()
+
+
+def test_upload_is_not_sent_when_attempt_cannot_be_audited(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    window, store, editor, revision, dialogs = _finalized_raw_upload_window(
+        tmp_path, monkeypatch
+    )
+
+    class Writer(_RecordingWriter):
+        posted = []
+
+    def audit_unavailable(event):
+        raise ReviewPersistenceError("database is locked")
+
+    monkeypatch.setattr("xtalflow.viewer.LegacyMxLiveWriteClient", Writer)
+    monkeypatch.setattr(store, "record_webdb_upload", audit_unavailable)
+
+    window._upload_raw_labworks(editor)
+
+    assert Writer.posted == []
+    assert dialogs[-1] == (
+        "critical", "The upload audit record could not be saved:\ndatabase is locked"
+    )
+    window.close()
+    app.processEvents()
+
+
+def test_later_revision_with_uploaded_experiment_id_is_not_uploaded_again(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    window, store, editor, revision, dialogs = _finalized_raw_upload_window(
+        tmp_path, monkeypatch
+    )
+
+    class Writer(_RecordingWriter):
+        posted = []
+
+    monkeypatch.setattr("xtalflow.viewer.LegacyMxLiveWriteClient", Writer)
+    window._upload_raw_labworks(editor)
+    editor.protein_input.setText("BRD4 variant")
+    second = window._finalize_raw_crystal_plan(editor)
+
+    assert second is not None and second.revision == 2
+    assert not editor.webdb_upload_button.isEnabled()
+    assert "Uploaded (earlier revision)" in editor.webdb_status_label.text()
+    window._upload_raw_labworks(editor)
+    assert len(Writer.posted) == 1
+    assert dialogs[-1][0] == "information"
+    window.close()
+    app.processEvents()
+
+
 def test_raw_plan_keeps_experiment_id_across_revisions(
     tmp_path: Path, monkeypatch
 ) -> None:

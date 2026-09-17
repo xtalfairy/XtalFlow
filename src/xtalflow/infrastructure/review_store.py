@@ -308,6 +308,7 @@ class SQLiteReviewStore:
                                JOIN plan_revision AS revision
                                  ON revision.revision_id = upload.revision_id
                                WHERE revision.plan_id = project.project_id
+                                 AND upload.status <> 'failed'
                              ) THEN 'Uploaded'
                              WHEN EXISTS (
                                SELECT 1 FROM plan_revision AS revision
@@ -957,6 +958,47 @@ class SQLiteReviewStore:
                 )
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not record WebDB upload") from error
+
+    def update_webdb_upload(self, event: WebDBUploadEvent) -> None:
+        """Record the outcome of an upload attempt written before it was sent."""
+        try:
+            with self._connection:
+                cursor = self._connection.execute(
+                    """UPDATE webdb_upload_event
+                       SET status = ?, response_json = ?, error_message = ?
+                       WHERE upload_id = ?""",
+                    (event.status, event.response_json, event.error_message, event.id),
+                )
+                if cursor.rowcount != 1:
+                    raise sqlite3.DatabaseError(f"unknown upload event {event.id}")
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError("could not update WebDB upload") from error
+
+    def list_webdb_uploads_for_experiment(
+        self, experiment_id: str
+    ) -> tuple[WebDBUploadEvent, ...]:
+        try:
+            rows = self._connection.execute(
+                """SELECT upload.upload_id, upload.revision_id, upload.username,
+                          upload.account_id, upload.endpoint, upload.attempted_at,
+                          upload.status, upload.record_count, upload.payload_json,
+                          upload.response_json, upload.error_message
+                   FROM webdb_upload_event AS upload
+                   JOIN plan_revision AS revision
+                     ON revision.revision_id = upload.revision_id
+                   WHERE revision.experiment_id = ?
+                   ORDER BY upload.attempted_at""",
+                (experiment_id,),
+            ).fetchall()
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError("could not list WebDB uploads") from error
+        return tuple(
+            WebDBUploadEvent(
+                row[0], row[1], row[2], row[3], row[4],
+                datetime.fromisoformat(row[5]), *row[6:]
+            )
+            for row in rows
+        )
 
     def list_webdb_uploads(self, revision_id: str) -> tuple[WebDBUploadEvent, ...]:
         rows = self._connection.execute(

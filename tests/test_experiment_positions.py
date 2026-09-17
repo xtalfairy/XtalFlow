@@ -172,3 +172,55 @@ def test_opening_another_experiment_shows_only_its_positions(tmp_path: Path) -> 
     workspace.open_experiment("experiment-a")
     assert workspace.review_controller.session.target_count == 1
     store.close()
+
+
+def test_deleting_an_experiment_removes_only_its_positions(tmp_path: Path) -> None:
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    project, image_set = _workspace(store)
+    kept = store.workspace.scoped_to(image_set.id, "experiment-a")
+    deleted = store.workspace.scoped_to(image_set.id, "experiment-b")
+    _checkpoint(kept, "image-a", "target-a")
+    _checkpoint(deleted, "image-a", "target-b")
+
+    store.workspace.delete_experiment_positions("experiment-b")
+
+    assert [target.id for target in kept.load_images(("image-a",))] == ["target-a"]
+    assert deleted.load_images(("image-a",)) == ()
+    with pytest.raises(ValueError):
+        store.workspace.delete_experiment_positions("")
+    store.close()
+
+
+def test_draft_selection_snapshot_can_be_replaced_and_recent_drafts_listed(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    project, _ = _workspace(store)
+    service = PlanningService(store.planning)
+    crystals = {
+        key: SelectedCrystal(
+            key, "1070", well, (CrystalTarget(f"{key}-target", Decimal(0), Decimal(0), NOW),),
+            SWISSCI_MIDI_3_LENS.id,
+        )
+        for key, well in (("image-a", "A01a"), ("image-b", "B01a"))
+    }
+    for key in ("image-a", "image-b"):
+        service.save_selection_snapshot(
+            "plan-1", "Harvest", PlanType.RAW_CRYSTAL,
+            crystal_selection_from_selected_crystals("plan-1", (crystals[key],)), NOW,
+        )
+    for plan_id, minutes in (("plan-1", 1), ("plan-2", 5)):
+        edited = NOW.replace(minute=minutes)
+        store.planning.save_planning_draft(
+            PlanningDraft(
+                plan_id, project.id, "raw_crystal", plan_id, None, "", "", "0",
+                "selection", NOW, edited, None, "select_wells",
+            )
+        )
+
+    saved = store.planning.load_experiment_project("plan-1")
+    assert [well.image_key for well in saved.crystal_selection.wells] == ["image-b"]
+    assert [draft.id for draft in store.planning.load_recent_drafts()] == [
+        "plan-2", "plan-1"
+    ]
+    store.close()

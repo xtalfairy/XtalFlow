@@ -87,3 +87,12 @@ def test_unsaved_changes_block_finalizing() -> None:
 
     assert not status.ready_to_finalize
     assert "not saved" in status.status_of(WorkflowStep.REVIEW).message
+
+
+def test_conditions_are_not_complete_before_wells_are_selected() -> None:
+    status = evaluate_experiment(replace(READY_FRAGMENT, well_count=0, position_count=0))
+
+    conditions = status.status_of(WorkflowStep.CONDITIONS)
+    assert conditions.state is StepState.INCOMPLETE
+    assert conditions.message == "Select wells to check the fragment assignment."
+    assert status.status_of(WorkflowStep.SETUP).message == "Protein: BRD4"

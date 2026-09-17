@@ -108,19 +108,26 @@ class SQLitePlanningStore:
                        SET name = ?, updated_at = ? WHERE project_id = ?""",
                     (project.name, project.updated_at.isoformat(), project.id),
                 )
+                # A draft's selection is replaced as its positions change; keep
+                # the project's one selection row instead of adding another.
+                existing = self._connection.execute(
+                    "SELECT selection_id FROM crystal_selection WHERE project_id = ?",
+                    (project.id,),
+                ).fetchone()
+                selection_id = existing[0] if existing is not None else selection.id
                 self._connection.execute(
                     "INSERT OR IGNORE INTO crystal_selection VALUES (?, ?, ?, ?)",
-                    (selection.id, project.id, selection.created_at.isoformat(),
+                    (selection_id, project.id, selection.created_at.isoformat(),
                      selection.updated_at.isoformat()),
                 )
                 self._connection.execute(
                     """UPDATE crystal_selection SET updated_at = ?
                        WHERE selection_id = ?""",
-                    (selection.updated_at.isoformat(), selection.id),
+                    (selection.updated_at.isoformat(), selection_id),
                 )
                 self._connection.execute(
                     "DELETE FROM selected_well WHERE selection_id = ?",
-                    (selection.id,),
+                    (selection_id,),
                 )
                 for well in selection.wells:
                     self._connection.execute(
@@ -128,7 +135,7 @@ class SQLitePlanningStore:
                                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                            )""",
                         (
-                            well.id, selection.id, well.image_set_id,
+                            well.id, selection_id, well.image_set_id,
                             well.image_key, well.image_path, well.plate_code,
                             well.well_address, well.batch_id, well.profile,
                             well.plate_format_id, well.plate_format_version,
@@ -333,6 +340,26 @@ class SQLitePlanningStore:
             ).fetchall()
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not load planning drafts") from error
+        return tuple(
+            PlanningDraft(
+                *row[:9], datetime.fromisoformat(row[9]),
+                datetime.fromisoformat(row[10]), row[11], row[12]
+            )
+            for row in rows
+        )
+
+    def load_recent_drafts(self, limit: int = 50) -> tuple[PlanningDraft, ...]:
+        """Experiments in every workspace, most recently edited first."""
+        try:
+            rows = self._connection.execute(
+                """SELECT plan_id, project_id, plan_type, name, library_id,
+                          library_rows, protein, volume_nl, assignment_order,
+                          created_at, updated_at, experiment_id, workflow_step
+                   FROM planning_draft ORDER BY updated_at DESC, plan_id LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError("could not load recent experiments") from error
         return tuple(
             PlanningDraft(
                 *row[:9], datetime.fromisoformat(row[9]),

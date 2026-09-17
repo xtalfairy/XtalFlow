@@ -30,7 +30,8 @@ from xtalflow.domain.fragment_screening import (
 )
 from xtalflow.application import ReviewPersistenceError
 from xtalflow.infrastructure import RockMakerImageRepository, SQLiteReviewStore
-from xtalflow.ui.plan_editors import FragmentScreeningDialog, RawCrystalEditor
+from xtalflow.application.experiment_workflow import StepState, WorkflowStep
+from xtalflow.ui.plan_editors import FragmentScreeningEditor
 from xtalflow.ui.load_plates_dialog import LoadPlatesDialog
 from xtalflow.viewer import ViewerWindow
 from xtalflow.viewer import main
@@ -40,6 +41,19 @@ from xtalflow.domain.plan_lifecycle import PlanningDraft
 
 
 FIXTURE_ROOT = DEFAULT_SETTINGS.rmserver_root
+
+
+def _start(window, plan_type, crystals, name=None):
+    """Start an experiment whose selected wells are the given crystals."""
+    editor = window.start_experiment(plan_type, name)
+    window._sync_editor_selection(editor, crystals)
+    return editor
+
+
+def _open_select_wells(window, plan_type=PlanType.RAW_CRYSTAL):
+    editor = window.start_experiment(plan_type)
+    window.go_to_step(WorkflowStep.SELECT_WELLS)
+    return editor
 
 
 class _FakeMxLiveReader:
@@ -74,7 +88,7 @@ def _fragment(number: int) -> Fragment:
     )
 
 
-def test_fragment_plan_dialog_previews_and_reassigns_by_plate_well() -> None:
+def test_fragment_editor_previews_and_reassigns_by_plate_well() -> None:
     app = QApplication.instance() or QApplication([])
     now = datetime.now(timezone.utc)
     crystals = (
@@ -93,30 +107,32 @@ def test_fragment_plan_dialog_previews_and_reassigns_by_plate_well() -> None:
             SWISSCI_MIDI_3_LENS.id,
         ),
     )
-    dialog = FragmentScreeningDialog(
+    editor = FragmentScreeningEditor(
         FragmentLibrary("Library", (_fragment(8), _fragment(15))), crystals
     )
+    editor.conditions_page = editor.conditions_widget()
 
-    assert dialog.table.item(0, 0).text() == "1"
-    assert dialog.table.item(0, 1).text() == "20"
-    assert dialog.table.item(0, 5).text() == "CMP-8"
+    assert editor.table.item(0, 0).text() == "1"
+    assert editor.table.item(0, 1).text() == "20"
+    assert editor.table.item(0, 5).text() == "CMP-8"
     assert [
-        dialog.editor.preview_tabs.tabText(index)
-        for index in range(dialog.editor.preview_tabs.count())
-    ] == ["Summary", "ECHO Worksheet", "SHIFTER Worksheet", "WebDB"]
-    assert dialog.editor.echo_table.rowCount() == 2
-    assert dialog.editor.shifter_table.rowCount() == 2
-    dialog.order_input.setCurrentIndex(
-        dialog.order_input.findData(AssignmentOrder.PLATE_WELL)
+        editor.preview_tabs.tabText(index) for index in range(editor.preview_tabs.count())
+    ] == ["Assignments", "ECHO worksheet", "SHIFTER worksheet"]
+    assert editor.count_label.text() == "✓ 2 fragments → 2 wells · counts match"
+    assert editor.echo_table.rowCount() == 2
+    assert editor.shifter_table.rowCount() == 2
+    editor.order_input.setCurrentIndex(
+        editor.order_input.findData(AssignmentOrder.PLATE_WELL)
     )
-    assert dialog.table.item(0, 1).text() == "3"
-    assert dialog.table.item(0, 5).text() == "CMP-8"
-    dialog.rows_input.setText("2")
-    assert dialog.current_plan is None
-    assert "enough fragments" in dialog.error_label.text()
-    assert dialog.editor.echo_table.rowCount() == 0
-    assert dialog.editor.shifter_table.rowCount() == 0
-    dialog.close()
+    assert editor.table.item(0, 1).text() == "3"
+    assert editor.table.item(0, 5).text() == "CMP-8"
+    editor.rows_input.setText("2")
+    assert editor.current_plan is None
+    assert "enough fragments" in editor.error_label.text()
+    assert editor.count_label.text().startswith("△ 2 wells, 1 fragments — choose 1 more")
+    assert editor.echo_table.rowCount() == 0
+    assert editor.shifter_table.rowCount() == 0
+    editor.close()
     app.processEvents()
 
 
@@ -133,7 +149,7 @@ def test_viewer_loads_and_navigates_images() -> None:
     first_position = window.position_label.text()
     first_well = window.well_input.text()
     assert window.auto_advance_input.prefix() == "Targets/img: "
-    assert window.target_summary_button.text() == "Target Summary"
+    assert window.target_summary_button.text() == "Review selected wells"
     assert window.previous_button.text() == "◀"
     assert window.next_button.text() == "▶"
     assert window.save_status_label.parent() is window.statusBar()
@@ -284,20 +300,49 @@ def test_auto_confirm_confidence_is_saved_per_user(tmp_path: Path) -> None:
     app.processEvents()
 
 
-def test_main_window_separates_image_review_and_planning_tabs(
+def test_main_window_starts_on_home_and_guides_an_experiment(
     tmp_path: Path,
 ) -> None:
     app = QApplication.instance() or QApplication([])
     window = ViewerWindow(RockMakerImageRepository(tmp_path))
+    page = window.experiment_page
 
-    assert window.main_tabs.count() == 2
-    assert window.main_tabs.tabText(window.image_review_tab_index) == "Image Review"
-    assert window.main_tabs.tabText(window.planning_tab_index) == "Planning"
-    assert window.main_tabs.currentIndex() == window.image_review_tab_index
-    assert window.plan_list.count() == 0
-    assert window.new_plan_button.toolTip() == "New Project…"
+    assert window.pages.currentWidget() is window.home_page
+    assert set(window.home_page.start_buttons) == {
+        PlanType.FRAGMENT_SCREENING, PlanType.RAW_CRYSTAL
+    }
+    assert not window.home_page.recent_empty_label.isHidden()
     assert window.new_workspace_action.text() == "New Workspace…"
 
+    window.home_page.start_buttons[PlanType.RAW_CRYSTAL].click()
+    editor = window.current_editor
+
+    assert window.pages.currentWidget() is page
+    assert window._current_step is WorkflowStep.SETUP
+    assert list(page.stepper.buttons) == [
+        WorkflowStep.SETUP, WorkflowStep.SELECT_WELLS,
+        WorkflowStep.REVIEW, WorkflowStep.WORKSHEETS,
+    ]
+    assert page.footer_status_label.text() == "Enter a protein name to continue."
+    assert not page.primary_button.isEnabled()
+    assert not page.back_button.isEnabled()
+    editor.protein_input.setText("BRD4")
+    assert page.primary_button.text() == "Continue to Select wells"
+    page.primary_button.click()
+
+    assert window._current_step is WorkflowStep.SELECT_WELLS
+    assert page.footer_status_label.text() == "Select at least one well to continue."
+    assert not page.primary_button.isEnabled()
+    assert window.image_stack.currentWidget() is window.empty_state
+    page.stepper.buttons[WorkflowStep.REVIEW].click()
+    assert page.footer_status_label.text() == (
+        "Complete the earlier steps first. · Select wells: Select at least one well "
+        "to continue."
+    )
+    page.home_button.click()
+
+    assert window.pages.currentWidget() is window.home_page
+    assert window.home_page.recent_table.item(0, 2).text() == "Draft · Review"
     window.close()
     app.processEvents()
 
@@ -328,12 +373,9 @@ def test_planning_tab_lists_libraries_from_designated_directory(
         SWISSCI_MIDI_3_LENS.id,
     )
 
-    window._add_fragment_plan(None, (crystal,))
-    editor = window.plan_stack.currentWidget()
+    editor = _start(window, PlanType.FRAGMENT_SCREENING, (crystal,))
     editor.library_input.setCurrentIndex(1)
 
-    assert window.plan_list.count() == 1
-    assert not window.plan_list_empty_label.isVisible()
     assert editor.library_input.currentText() == "library.csv · 1 rows"
     assert editor.table.item(0, 5).text() == "CMP-8"
     webdb_columns = {
@@ -371,8 +413,7 @@ def test_refreshing_libraries_keeps_selected_library_rows(tmp_path: Path) -> Non
         (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
         SWISSCI_MIDI_3_LENS.id,
     )
-    window._add_fragment_plan(None, (crystal,))
-    editor = window.plan_stack.currentWidget()
+    editor = _start(window, PlanType.FRAGMENT_SCREENING, (crystal,))
     editor.library_input.setCurrentIndex(1)
     assert editor.rows_input.text() == "1-3"
     editor.rows_input.setText("2-3")
@@ -394,26 +435,28 @@ def test_damaged_saved_plan_does_not_block_other_plans(tmp_path: Path) -> None:
         (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
         SWISSCI_MIDI_3_LENS.id,
     )
+    plan_ids = {}
     for protein in ("DAMAGED", "HEALTHY"):
-        window._add_raw_crystal_plan((crystal,))
-        editor = window.plan_stack.currentWidget()
+        editor = _start(window, PlanType.RAW_CRYSTAL, (crystal,))
         editor.protein_input.setText(protein)
         window._persist_draft(editor)
-    damaged_id = window.plan_stack.widget(1).plan_id
+        plan_ids[protein] = editor.plan_id
     window.close()
     app.processEvents()
     connection = sqlite3.connect(database_path)
     connection.execute(
-        "UPDATE experiment_plan SET plan_type = 'retired' WHERE project_id = ?",
-        (damaged_id,),
+        "UPDATE planning_draft SET plan_type = 'retired' WHERE plan_id = ?",
+        (plan_ids["DAMAGED"],),
     )
     connection.commit()
     connection.close()
 
     restored = ViewerWindow(RockMakerImageRepository(tmp_path), SQLiteReviewStore(database_path))
+    recent = restored._recent_experiments()
 
-    assert restored.plan_list.count() == 1
-    assert restored.plan_stack.widget(1).protein_input.text() == "HEALTHY"
+    assert [item.plan_id for item in recent] == [plan_ids["HEALTHY"]]
+    editor = restored.resume_experiment(recent[0].workspace_id, recent[0].plan_id)
+    assert editor.protein_input.text() == "HEALTHY"
     restored.close()
     app.processEvents()
 
@@ -435,9 +478,7 @@ def test_raw_crystal_plan_has_shifter_preview_without_echo(tmp_path: Path) -> No
         SWISSCI_MIDI_3_LENS.id,
     )
 
-    window.main_tabs.setCurrentIndex(window.planning_tab_index)
-    window._add_raw_crystal_plan((crystal,))
-    editor = window.plan_stack.currentWidget()
+    editor = _start(window, PlanType.RAW_CRYSTAL, (crystal,), name="Harvest A")
     editor.set_crystals((crystal,))
     editor.protein_input.setText("BRD4")
     window._persist_draft(editor)
@@ -445,13 +486,13 @@ def test_raw_crystal_plan_has_shifter_preview_without_echo(tmp_path: Path) -> No
     assert editor.current_plan is not None
     assert editor.shifter_table.rowCount() == 1
     assert editor.summary_table.horizontalHeaderItem(3).text() == (
-        "Soaking Position"
+        "Position"
     )
     assert editor.summary_table.item(0, 3).text() == "1"
     assert editor.summary_table.item(1, 3).text() == "2"
     assert editor.summary_table.item(0, 3).data(Qt.UserRole) == "target"
     assert editor.summary_table.item(0, 4).text() == "Original"
-    assert editor.preview_tabs.tabText(2) == "WebDB"
+    assert editor.preview_tabs.count() == 2
     assert editor.webdb_table.rowCount() == 1
     columns = {
         editor.webdb_table.horizontalHeaderItem(index).text(): index
@@ -470,10 +511,9 @@ def test_raw_crystal_plan_has_shifter_preview_without_echo(tmp_path: Path) -> No
     drafts = store.planning.load_planning_drafts(window.project_controller.active_project.id)
     assert drafts[-1].plan_type == "raw_crystal"
 
-    window._add_raw_crystal_plan((crystal,))
-    reused_editor = window.plan_stack.currentWidget()
+    reused_editor = _start(window, PlanType.RAW_CRYSTAL, (crystal,))
     assert reused_editor.summary_table.item(0, 4).text() == "Reused"
-    assert "Raw Crystal Project #1" in (
+    assert "Harvest A" in (
         reused_editor.summary_table.item(0, 4).toolTip()
     )
     assert editor.summary_table.item(0, 4).text() == "Original"
@@ -481,7 +521,7 @@ def test_raw_crystal_plan_has_shifter_preview_without_echo(tmp_path: Path) -> No
     app.processEvents()
 
 
-def test_draft_plan_can_be_deleted_from_planning_sidebar(
+def test_draft_experiment_can_be_deleted_from_recent_work(
     tmp_path: Path, monkeypatch
 ) -> None:
     app = QApplication.instance() or QApplication([])
@@ -492,22 +532,22 @@ def test_draft_plan_can_be_deleted_from_planning_sidebar(
         (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
         SWISSCI_MIDI_3_LENS.id,
     )
-    window._add_raw_crystal_plan((crystal,))
-    plan_id = window.plan_stack.currentWidget().plan_id
+    editor = _start(window, PlanType.RAW_CRYSTAL, (crystal,))
+    plan_id = editor.plan_id
+    workspace_id = editor.project_id
     monkeypatch.setattr(
         QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes
     )
 
-    window._delete_selected_draft_plan()
+    window.delete_experiment(workspace_id, plan_id)
     app.processEvents()
 
-    assert window.plan_list.count() == 0
-    assert window.plan_stack.currentIndex() == 0
+    assert window.pages.currentWidget() is window.home_page
+    assert window.current_editor is None
+    assert window.home_page.recent_table.rowCount() == 0
     assert all(
         draft.id != plan_id
-        for draft in store.planning.load_planning_drafts(
-            window.project_controller.active_project.id
-        )
+        for draft in store.planning.load_planning_drafts(workspace_id)
     )
     assert store.planning.load_experiment_project(plan_id) is None
     window.close()
@@ -533,8 +573,7 @@ def test_raw_webdb_preview_is_populated_without_mxlive_configuration(
         "/rmserver/image.jpg",
     )
 
-    window._add_raw_crystal_plan((crystal,))
-    editor = window.plan_stack.currentWidget()
+    editor = _start(window, PlanType.RAW_CRYSTAL, (crystal,))
     columns = {
         editor.webdb_table.horizontalHeaderItem(index).text(): index
         for index in range(editor.webdb_table.columnCount())
@@ -550,7 +589,7 @@ def test_raw_webdb_preview_is_populated_without_mxlive_configuration(
     app.processEvents()
 
 
-def test_new_plan_owns_selection_snapshot_when_review_targets_change(
+def test_experiment_selection_follows_its_positions_after_finalizing(
     tmp_path: Path, monkeypatch
 ) -> None:
     app = QApplication.instance() or QApplication([])
@@ -567,68 +606,57 @@ def test_new_plan_owns_selection_snapshot_when_review_targets_change(
         (CrystalTarget("replacement-target", Decimal(0), Decimal(0), selected_at),),
         SWISSCI_MIDI_3_LENS.id,
     )
-    window._add_raw_crystal_plan((original,))
-    editor = window.plan_stack.currentWidget()
-    monkeypatch.setattr(
-        window.project_controller,
-        "selected_crystals_for_plan",
-        lambda: (replacement,),
-    )
+    editor = _start(window, PlanType.RAW_CRYSTAL, (original,))
+    editor.protein_input.setText("BRD4")
+    assert window._finalize_plan(editor) is not None
+    assert editor.experiment_status.status_of(WorkflowStep.REVIEW).message == "Finalized r1"
 
-    window._main_tab_changed(window.planning_tab_index)
+    window._sync_editor_selection(editor, (replacement,))
 
-    assert editor.selection.wells[0].image_key == original.image_key
+    assert editor.selection.wells[0].image_key == "replacement-image"
     owned = store.planning.load_experiment_project(editor.plan_id)
-    assert owned is not None
-    assert owned.crystal_selection.wells[0].image_key == "original-image"
+    assert owned.crystal_selection.wells[0].image_key == "replacement-image"
+    assert editor.experiment_status.status_of(WorkflowStep.REVIEW).message.startswith(
+        "Changes after r1"
+    )
+    assert editor.experiment_status.ready_to_finalize
     window.close()
     app.processEvents()
 
 
-def test_legacy_draft_requires_explicit_selection_adoption(
-    tmp_path: Path, monkeypatch
+def test_resuming_an_experiment_returns_to_its_saved_step(
+    tmp_path: Path,
 ) -> None:
     app = QApplication.instance() or QApplication([])
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
     window = ViewerWindow(RockMakerImageRepository(tmp_path), store)
     now = datetime.now(timezone.utc)
     workspace_id = window.project_controller.active_project.id
-    draft = PlanningDraft(
-        "legacy-draft", workspace_id, "raw_crystal", "Legacy Draft", None,
-        "", "BRD4", "0", "selection", now, now,
-    )
-    original = SelectedCrystal(
-        "original", "2069", "A01a",
-        (CrystalTarget("old", Decimal(0), Decimal(0), now),),
-        SWISSCI_MIDI_3_LENS.id,
-    )
-    adopted = SelectedCrystal(
-        "adopted", "2070", "B02c",
-        (CrystalTarget("new", Decimal("0.1"), Decimal("0.2"), now),),
-        SWISSCI_MIDI_3_LENS.id,
-    )
-    store.planning.save_planning_draft(draft)
-    window._add_raw_crystal_plan((original,), restored=draft)
-    editor = window.plan_stack.currentWidget()
-    monkeypatch.setattr(
-        window.project_controller,
-        "selected_crystals_for_plan",
-        lambda: (adopted,),
-    )
-    monkeypatch.setattr(
-        QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes
+    store.planning.save_planning_draft(
+        PlanningDraft(
+            "saved-draft", workspace_id, "raw_crystal", "Saved Draft", None,
+            "", "BRD4", "0", "selection", now, now, None, "review",
+        )
     )
 
-    assert not editor.adopt_selection_button.isHidden()
-    assert not editor.selection_snapshot_owned
-    window._adopt_legacy_selection(editor)
+    window.show_home()
+    assert window.home_page.recent_table.item(0, 2).text() == "Draft · Review"
+    window.home_page.recent_table.selectRow(0)
+    window.home_page.resume_button.click()
+    editor = window.current_editor
 
-    assert editor.selection_snapshot_owned
-    assert editor.selection.wells[0].image_key == "adopted"
-    assert store.planning.load_experiment_project(editor.plan_id) is not None
-    assert editor.adopt_selection_button.isHidden()
+    assert editor.plan_id == "saved-draft"
+    assert window._current_step is WorkflowStep.REVIEW
+    assert window.experiment_page.title_label.text() == "Saved Draft"
+    assert editor.protein_input.text() == "BRD4"
+    assert not window.experiment_page.primary_button.isEnabled()
+    assert project_id_of(window) == workspace_id
     window.close()
     app.processEvents()
+
+
+def project_id_of(window) -> str:
+    return window.project_controller.active_project.id
 
 
 def test_only_finalized_raw_revision_can_be_uploaded_and_is_audited(
@@ -652,8 +680,7 @@ def test_only_finalized_raw_revision_can_be_uploaded_and_is_audited(
         (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
         SWISSCI_MIDI_3_LENS.id, "/rmserver/image.jpg",
     )
-    window._add_raw_crystal_plan((crystal,))
-    editor = window.plan_stack.currentWidget()
+    editor = _start(window, PlanType.RAW_CRYSTAL, (crystal,))
     editor.set_crystals((crystal,))
     editor.protein_input.setText("BRD4")
     assert not editor.webdb_upload_button.isEnabled()
@@ -713,8 +740,7 @@ def _finalized_raw_upload_window(tmp_path: Path, monkeypatch):
         (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
         SWISSCI_MIDI_3_LENS.id, "/rmserver/image.jpg",
     )
-    window._add_raw_crystal_plan((crystal,))
-    editor = window.plan_stack.currentWidget()
+    editor = _start(window, PlanType.RAW_CRYSTAL, (crystal,))
     editor.set_crystals((crystal,))
     editor.protein_input.setText("BRD4")
     dialogs = []
@@ -885,8 +911,7 @@ def test_unchecked_experiment_id_requires_confirmation(
         (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
         SWISSCI_MIDI_3_LENS.id,
     )
-    window._add_raw_crystal_plan((crystal,))
-    editor = window.plan_stack.currentWidget()
+    editor = _start(window, PlanType.RAW_CRYSTAL, (crystal,))
     editor.set_crystals((crystal,))
     editor.protein_input.setText("BRD4")
     questions = []
@@ -924,11 +949,9 @@ def _fragment_plan_window(tmp_path: Path, settings):
         (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
         SWISSCI_MIDI_3_LENS.id,
     )
-    window._add_fragment_plan(None, (crystal,))
-    editor = window.plan_stack.currentWidget()
+    editor = _start(window, PlanType.FRAGMENT_SCREENING, (crystal,))
     editor.library_input.setCurrentIndex(1)
     editor.protein_input.setText("BRD4")
-    window._choose_worksheet_assignment_order = lambda: AssignmentOrder.SELECTION
     return window, store, editor
 
 
@@ -945,30 +968,42 @@ def test_fragment_worksheets_are_saved_and_audited(tmp_path: Path, monkeypatch) 
         create_missing_instrument_roots=True,
     )
     window, store, editor, = _fragment_plan_window(tmp_path, settings)
-    messages = []
-    monkeypatch.setattr(
-        QMessageBox, "information", lambda *args, **kwargs: messages.append(args[1])
-    )
+    page = window.experiment_page
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
 
-    window._save_plan_worksheets(editor)
+    window.go_to_step(WorkflowStep.REVIEW)
+    assert page.primary_button.text() == "Finalize and continue"
+    page.primary_button.click()
+
+    assert window._current_step is WorkflowStep.WORKSHEETS
+    table = editor.worksheets_step.instrument_table
+    assert [table.item(row, 0).text() for row in range(table.rowCount())] == [
+        "ECHO 650", "SHIFTER 1", "SHIFTER 2"
+    ]
+    assert table.item(0, 2).text() == "1"
+    assert page.primary_button.text() == "Save all worksheets"
+    page.primary_button.click()
 
     revision = editor.last_revision
     exports = store.audit.list_worksheet_exports(revision.id)
-    assert messages == ["Worksheets saved"]
-    assert editor.readiness_label.text() == "✓ Finalized r1"
-    assert editor.worksheet_status_label.text() == "✓ Worksheets saved r1 · 3 instruments"
-    assert "SHIFTER 2: " in editor.worksheet_status_label.toolTip()
-    assert editor.settings_panel.isHidden()
-    assert editor.webdb_delivery_label.text() == "WebDB: MxLive not configured"
-    assert not editor.finalize_button.isEnabled()
+    result = editor.worksheets_step.result_label.text()
+    assert result.startswith("✓ Worksheets saved for r1")
+    assert "SHIFTER 2: " in result
+    assert editor.lifecycle_label.text() == "Finalized r1"
+    assert page.primary_button.text() == "Back to experiments"
+    assert all(
+        status.state is StepState.COMPLETE for status in editor.experiment_status.steps
+    )
     editor.protein_input.setText("BRD4-B")
     window._persist_draft(editor)
-    assert editor.readiness_label.text() == "△ Draft changes after r1"
-    assert editor.finalize_button.isEnabled()
-    assert "Draft changes after r1" in window.plan_list.item(0).text()
+    assert editor.lifecycle_label.text() == "Draft changes after r1"
+    assert page.primary_button.text() == "Save all worksheets"
+    assert not page.primary_button.isEnabled()
     assert [event.status for event in exports] == ["succeeded"]
     assert Path(exports[0].path_for("echo650")).is_file()
     assert Path(exports[0].path_for("shifter2")).is_file()
+    window.show_home()
+    assert window.home_page.recent_table.item(0, 2).text() == "Worksheets saved r1"
     window.close()
     app.processEvents()
 
@@ -1000,70 +1035,13 @@ def test_unavailable_instrument_share_can_use_alternate_root(
         lambda *args, **kwargs: str(tmp_path / "chosen"),
     )
     monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: None)
+    assert window._finalize_plan(editor) is not None
 
     window._save_plan_worksheets(editor)
 
     exports = store.audit.list_worksheet_exports(editor.last_revision.id)
     assert [event.status for event in exports] == ["succeeded"]
     assert exports[0].path_for("echo650").startswith(str(tmp_path / "chosen" / "echo650"))
-    window.close()
-    app.processEvents()
-
-
-def test_new_project_dialog_names_follow_plan_type_until_edited() -> None:
-    from xtalflow.ui.new_project_dialog import NewProjectDialog
-
-    app = QApplication.instance() or QApplication([])
-    dialog = NewProjectDialog(
-        3, 5,
-        {PlanType.FRAGMENT_SCREENING: "Fragment Screening Project #1",
-         PlanType.RAW_CRYSTAL: "Raw Crystal Project #1"},
-    )
-
-    assert dialog.plan_type is PlanType.FRAGMENT_SCREENING
-    dialog.select_plan_type(PlanType.RAW_CRYSTAL)
-    assert dialog.project_name == "Raw Crystal Project #1"
-    dialog.name_input.setText("BRD4 harvest")
-    dialog.name_input.textEdited.emit("BRD4 harvest")
-    dialog.select_plan_type(PlanType.FRAGMENT_SCREENING)
-    assert dialog.project_name == "BRD4 harvest"
-    dialog.close()
-    app.processEvents()
-
-
-def test_new_project_from_selection_creates_named_plan_of_chosen_type(
-    tmp_path: Path, monkeypatch
-) -> None:
-    from xtalflow.ui.new_project_dialog import NewProjectDialog
-
-    app = QApplication.instance() or QApplication([])
-    window = ViewerWindow(
-        RockMakerImageRepository(tmp_path), SQLiteReviewStore(tmp_path / "reviews.sqlite3")
-    )
-    crystal = SelectedCrystal(
-        "image", "1070", "A01a",
-        (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
-        SWISSCI_MIDI_3_LENS.id,
-    )
-    monkeypatch.setattr(
-        window.project_controller, "selected_crystals_for_plan", lambda: (crystal,)
-    )
-
-    def choose_raw(dialog):
-        dialog.select_plan_type(PlanType.RAW_CRYSTAL)
-        dialog.name_input.setText("BRD4 harvest")
-        return dialog.Accepted
-
-    monkeypatch.setattr(NewProjectDialog, "exec_", choose_raw)
-    window.new_project_from_selection_button.setEnabled(True)
-    window.new_project_from_selection_button.click()
-
-    editor = window.plan_stack.currentWidget()
-    assert isinstance(editor, RawCrystalEditor)
-    assert editor.title_label.text() == "BRD4 harvest"
-    assert window.plan_list.item(0).text().startswith("BRD4 harvest\nRaw Crystal · 1 well")
-    assert window.main_tabs.currentIndex() == window.planning_tab_index
-    assert window.main_tabs.tabText(window.planning_tab_index) == "Planning · 1"
     window.close()
     app.processEvents()
 
@@ -1079,8 +1057,7 @@ def test_raw_plan_keeps_experiment_id_across_revisions(
         (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
         SWISSCI_MIDI_3_LENS.id,
     )
-    window._add_raw_crystal_plan((crystal,))
-    editor = window.plan_stack.currentWidget()
+    editor = _start(window, PlanType.RAW_CRYSTAL, (crystal,))
     editor.set_crystals((crystal,))
     editor.protein_input.setText("BRD4")
     monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: QMessageBox.Ok)
@@ -1092,9 +1069,77 @@ def test_raw_plan_keeps_experiment_id_across_revisions(
     assert first is not None and second is not None
     assert second.revision == 2
     assert second.experiment_id == first.experiment_id
-    assert "fixed for this plan" in editor.experiment_id_label.text()
+    assert "fixed for this experiment" in editor.experiment_id_label.text()
     restored = store.planning.load_planning_drafts(editor.project_id)
     assert restored[-1].experiment_id == first.experiment_id
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_raw_crystal_experiment_runs_from_setup_to_saved_worksheets(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        instruments=standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
+        ),
+        create_missing_instrument_roots=True,
+    )
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT), store, settings=settings,
+        preferences_store=JsonUserPreferencesStore(tmp_path / "preferences.json"),
+    )
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    page = window.experiment_page
+
+    window.home_page.start_buttons[PlanType.RAW_CRYSTAL].click()
+    first = window.current_editor
+    first.protein_input.setText("BRD4")
+    page.primary_button.click()
+    assert window.image_stack.currentWidget() is window.empty_state
+    window.load_plates_form.plate_format_input.setCurrentIndex(
+        window.load_plates_form.plate_format_input.findData(SWISSCI_MRC_2_WELL)
+    )
+    window.load_plate("2070", SWISSCI_MRC_2_WELL)
+    window.auto_confirm_plate_checkbox.setChecked(False)
+    window._auto_detect_calibration()
+    window._accept_current_calibration()
+    window._handle_image_click(600, 500, Qt.LeftButton)
+    window._sync_current_selection()
+
+    assert page.footer_status_label.text() == "✓ 1 well · 1 position"
+    assert window.selection_label.text() == "This experiment: 1 well · 1 position"
+    page.primary_button.click()
+    assert window._current_step is WorkflowStep.REVIEW
+    assert first.summary_table.rowCount() == 1
+    page.primary_button.click()
+    assert window._current_step is WorkflowStep.WORKSHEETS
+    assert first.worksheets_step.instrument_table.rowCount() == 2
+    page.primary_button.click()
+
+    exports = store.audit.list_worksheet_exports(first.last_revision.id)
+    assert [event.status for event in exports] == ["succeeded"]
+    assert Path(exports[0].path_for("shifter1")).is_file()
+    assert page.primary_button.text() == "Back to experiments"
+    page.primary_button.click()
+    assert window.home_page.recent_table.item(0, 2).text() == "Worksheets saved r1"
+
+    second = window.start_experiment(PlanType.RAW_CRYSTAL)
+    window.go_to_step(WorkflowStep.SELECT_WELLS)
+    assert window.controller.plate.plate_code == "2070"
+    assert window.controller.current_targets == ()
+    assert f"also used in {first.plan_name}" in window.review_summary_label.text()
+    assert second.selected_well_count == 0
+
+    window.resume_experiment(first.project_id, first.plan_id)
+    assert window._current_step is WorkflowStep.WORKSHEETS
+    assert first.lifecycle_label.text() == "Finalized r1"
     window.close()
     app.processEvents()
 
@@ -1388,6 +1433,7 @@ def test_live_selection_summary_highlights_counts_and_stays_in_image_review(
         auto_advance_target_count=5,
         preferences_store=JsonUserPreferencesStore(tmp_path / "preferences.json"),
     )
+    _open_select_wells(window)
     window.load_plate("2070", SWISSCI_MRC_2_WELL)
     window.auto_confirm_plate_checkbox.setChecked(False)
     window._auto_detect_calibration()
@@ -1397,7 +1443,7 @@ def test_live_selection_summary_highlights_counts_and_stays_in_image_review(
     window.target_summary_button.click()
     app.processEvents()
 
-    assert window.target_summary_dock.windowTitle() == "Selection · Live"
+    assert window.target_summary_dock.windowTitle() == "Selected wells"
     assert window.target_summary_filter.itemText(0) == "All positions (2)"
     assert window.target_summary_filter.itemText(1) == "Warnings (2)"
     assert "2 need attention" in window.target_summary_status_label.text()
@@ -1409,10 +1455,10 @@ def test_live_selection_summary_highlights_counts_and_stays_in_image_review(
     window.target_summary_table.selectAll()
     assert window.remove_targets_button.text() == "Delete Selected (2)"
 
-    window.main_tabs.setCurrentIndex(window.planning_tab_index)
+    window.go_to_step(WorkflowStep.REVIEW)
     app.processEvents()
     assert not window.target_summary_dock.isVisible()
-    window.main_tabs.setCurrentIndex(window.image_review_tab_index)
+    window.go_to_step(WorkflowStep.SELECT_WELLS)
     app.processEvents()
     assert window.target_summary_dock.isVisible()
     window.close()
@@ -1428,6 +1474,7 @@ def test_review_hint_is_shown_once_per_user_and_escape_cancels_calibration(
     preferences = JsonUserPreferencesStore(tmp_path / "preferences.json")
     window = ViewerWindow(RockMakerImageRepository(FIXTURE_ROOT), preferences_store=preferences)
     window.show()
+    _open_select_wells(window)
     window.load_plate("1070", SWISSCI_MIDI_3_LENS)
     assert window.review_hint.isVisible()
 
@@ -1444,6 +1491,7 @@ def test_review_hint_is_shown_once_per_user_and_escape_cancels_calibration(
 
     reopened = ViewerWindow(RockMakerImageRepository(FIXTURE_ROOT), preferences_store=preferences)
     reopened.show()
+    _open_select_wells(reopened)
     reopened.load_plate("1070", SWISSCI_MIDI_3_LENS)
     assert not reopened.review_hint.isVisible()
     reopened.close()
@@ -1623,6 +1671,7 @@ def test_auto_advance_setting_is_advisory_and_manual_next_is_always_allowed() ->
 def test_arrow_keys_navigate_only_when_image_has_focus() -> None:
     app = QApplication.instance() or QApplication([])
     window = ViewerWindow(RockMakerImageRepository(FIXTURE_ROOT))
+    _open_select_wells(window)
     window.load_plate("1070", SWISSCI_MIDI_3_LENS)
     window.show()
     window.plate_filter_input.setFocus()
@@ -1654,6 +1703,7 @@ def test_up_down_switch_plates_only_from_image_or_plate_list_focus(tmp_path: Pat
         SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
         preferences_store=JsonUserPreferencesStore(tmp_path / "preferences.json"),
     )
+    _open_select_wells(window)
     window.load_plate("1070", SWISSCI_MIDI_3_LENS)
     window.load_plate("1100", SWISSCI_MIDI_3_LENS)
     window.auto_advance_input.setValue(6)
@@ -1828,7 +1878,7 @@ def test_project_filter_jumps_to_matching_image_on_another_plate(tmp_path: Path)
 
     assert window.controller.plate.plate_code == "1100"
     assert window.controller.current_image.image_key == target_key
-    assert window.selection_label.text() == "Selection: 1 well · 1 position"
+    assert window.selection_label.text() == "This experiment: 1 well · 1 position"
     window.close()
     app.processEvents()
 
@@ -1879,7 +1929,7 @@ def test_load_plates_dialog_lets_each_plate_choose_batch_and_profile() -> None:
     app.processEvents()
 
 
-def test_restoring_saved_plans_keeps_image_review_tab_and_plan_status(
+def test_reopening_starts_at_home_with_finalized_experiment_status(
     tmp_path: Path,
 ) -> None:
     app = QApplication.instance() or QApplication([])
@@ -1890,27 +1940,16 @@ def test_restoring_saved_plans_keeps_image_review_tab_and_plan_status(
         (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
         SWISSCI_MIDI_3_LENS.id,
     )
-    window._add_raw_crystal_plan((crystal,))
-    editor = window.plan_stack.currentWidget()
+    editor = _start(window, PlanType.RAW_CRYSTAL, (crystal,), name="BRD4 harvest")
     editor.protein_input.setText("BRD4")
-    monkeypatch_warning = QMessageBox.warning
-    QMessageBox.warning = lambda *args, **kwargs: QMessageBox.Ok
-    try:
-        assert window._finalize_plan(editor) is not None
-    finally:
-        QMessageBox.warning = monkeypatch_warning
-    window.main_tabs.setCurrentIndex(window.image_review_tab_index)
+    assert window._finalize_plan(editor) is not None
     window.close()
     app.processEvents()
 
     restored = ViewerWindow(RockMakerImageRepository(tmp_path), SQLiteReviewStore(database_path))
-    assert restored.main_tabs.currentIndex() == restored.image_review_tab_index
-    assert restored.plan_list.item(0).text().endswith("· Finalized r1")
-
-    workspace = restored.project_controller.active_project.id
-    restored._switch_planning_project(None)
-    restored._switch_planning_project(workspace)
-    assert restored.plan_list.item(0).text().endswith("· Finalized r1")
+    assert restored.pages.currentWidget() is restored.home_page
+    assert restored.home_page.recent_table.item(0, 0).text() == "BRD4 harvest"
+    assert restored.home_page.recent_table.item(0, 2).text() == "Finalized r1"
     restored.close()
     app.processEvents()
 
@@ -1935,8 +1974,7 @@ def test_offline_library_folder_keeps_draft_library(tmp_path: Path) -> None:
         (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
         SWISSCI_MIDI_3_LENS.id,
     )
-    window._add_fragment_plan(None, (crystal,))
-    editor = window.plan_stack.currentWidget()
+    editor = _start(window, PlanType.FRAGMENT_SCREENING, (crystal,))
     editor.library_input.setCurrentIndex(1)
     window._persist_draft(editor)
     project_id = editor.project_id
@@ -1948,7 +1986,8 @@ def test_offline_library_folder_keeps_draft_library(tmp_path: Path) -> None:
     reopened = ViewerWindow(
         RockMakerImageRepository(tmp_path), SQLiteReviewStore(database_path), settings=offline
     )
-    editor = reopened.plan_stack.widget(1)
+    recent = reopened._recent_experiments()
+    editor = reopened.resume_experiment(recent[0].workspace_id, recent[0].plan_id)
     assert editor.library_input.currentData(Qt.UserRole) == library_id
     assert "Library unavailable" in editor.library_label.text()
     reopened._persist_draft(editor)
@@ -1969,8 +2008,7 @@ def test_experiment_id_preview_reports_database_errors(tmp_path: Path) -> None:
         (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
         SWISSCI_MIDI_3_LENS.id,
     )
-    window._add_raw_crystal_plan((crystal,))
-    editor = window.plan_stack.currentWidget()
+    editor = _start(window, PlanType.RAW_CRYSTAL, (crystal,))
 
     def database_locked():
         raise ReviewPersistenceError("could not list experiment ids")

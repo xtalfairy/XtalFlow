@@ -224,6 +224,22 @@ class SQLiteWorkspaceStore:
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not adopt workspace positions") from error
 
+    def delete_experiment_positions(self, experiment_id: str) -> None:
+        """Remove the positions and review marks that belonged to a deleted experiment."""
+        if experiment_id == WORKSPACE_REVIEW:
+            raise ValueError("the shared workspace review cannot be deleted")
+        try:
+            with self._connection:
+                for table in (
+                    "image_set_target_point", "image_set_image_review",
+                    "image_set_review_state",
+                ):
+                    self._connection.execute(
+                        f"DELETE FROM {table} WHERE experiment_id = ?", (experiment_id,)
+                    )
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError("could not delete experiment positions") from error
+
     def experiments_using_images(
         self, image_set_id: str, exclude_experiment_id: str
     ) -> dict[str, tuple[str, ...]]:

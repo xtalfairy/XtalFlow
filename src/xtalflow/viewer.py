@@ -16,7 +16,6 @@ from uuid import uuid4
 
 from PyQt5.QtCore import (
     QEventLoop,
-    QPoint,
     QStandardPaths,
     QStringListModel,
     QTimer,
@@ -38,7 +37,6 @@ from PyQt5.QtWidgets import (
     QLabel,
     QProgressDialog,
     QLineEdit,
-    QListWidget,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -47,7 +45,6 @@ from PyQt5.QtWidgets import (
     QSpinBox,
     QStackedWidget,
     QSplitter,
-    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
@@ -72,16 +69,10 @@ from xtalflow.domain import (
     PlateFormat,
     PlateImages,
     plate_format_by_id,
-    ExperimentProject,
     PlanType,
-    Project,
     crystal_selection_from_selected_crystals,
 )
-from xtalflow.domain.fragment_screening import (
-    AssignmentOrder,
-    FragmentLibrary,
-    SelectedCrystal,
-)
+from xtalflow.domain.fragment_screening import FragmentLibrary, FragmentScreenPlan
 from xtalflow.domain.experiment_naming import suggest_experiment_id
 from xtalflow.domain.labwork import build_fragment_labworks, build_raw_crystal_labworks
 from xtalflow.domain.plan_lifecycle import (
@@ -89,8 +80,23 @@ from xtalflow.domain.plan_lifecycle import (
     PlanRevision,
     WebDBUploadEvent,
 )
-from xtalflow.domain.instruments import ECHO_650, SHIFTER_1, SHIFTER_2, InstrumentOutput
+from xtalflow.domain.instruments import (
+    ECHO_650,
+    SHIFTER_1,
+    SHIFTER_2,
+    InstrumentOutput,
+    WorksheetKind,
+)
 from xtalflow.domain.mxlive import MxLiveReadError
+from xtalflow.application.experiment_workflow import (
+    STEP_LABELS,
+    ExperimentFacts,
+    ExperimentStatus,
+    StepState,
+    WorkflowStep,
+    evaluate_experiment,
+    steps_for,
+)
 from xtalflow.application.planning_service import (
     EXPERIMENT_ID_PREFIXES,
     PlanningService,
@@ -98,7 +104,6 @@ from xtalflow.application.planning_service import (
     fragment_plan_snapshot,
     plan_from_snapshot,
     raw_crystal_plan_snapshot,
-    restored_plan_status,
     saved_plan_status,
 )
 from xtalflow.application.worksheet_export import (
@@ -131,7 +136,9 @@ from xtalflow.infrastructure.fragment_library_csv import (
 from xtalflow.infrastructure.worksheet_exporter import (
     WorksheetDestinationUnavailable,
     WorksheetExporter,
+    worksheets_for,
 )
+from xtalflow.infrastructure.workspace_store import WORKSPACE_REVIEW
 from xtalflow.infrastructure.mxlive_config import (
     MxLiveConfigurationError,
     resolve_mxlive_account,
@@ -151,10 +158,12 @@ from xtalflow.ui.review_widgets import (
     ImageSetListView,
 )
 from xtalflow.ui.plan_editors import FragmentScreeningEditor, RawCrystalEditor
+from xtalflow.ui.experiment_page import ExperimentPage
+from xtalflow.ui.experiment_steps import SetupStep, WorksheetsStep
+from xtalflow.ui.home_page import EXPERIMENT_CHOICES, HomePage, RecentExperiment
 from xtalflow.ui import theme
 from xtalflow.ui.calibration_inspector import CalibrationInspector, calibration_status
-from xtalflow.ui.load_plates_dialog import LoadPlatesDialog, PlateSource
-from xtalflow.ui.new_project_dialog import NewProjectDialog
+from xtalflow.ui.load_plates_dialog import LoadPlatesDialog, LoadPlatesForm, PlateSource
 from xtalflow.ui.plate_list import PlateCardDelegate
 from xtalflow.ui.shortcuts_dialog import ShortcutsDialog
 
@@ -164,6 +173,34 @@ from xtalflow.ui.shortcuts_dialog import ShortcutsDialog
 IMAGE_SOURCE_ERRORS = (ValueError, OSError, ReviewPersistenceError)
 
 T = TypeVar("T")
+
+PLAN_TYPE_LABELS = {choice.plan_type: choice.title for choice in EXPERIMENT_CHOICES}
+
+STEP_TITLES = {
+    WorkflowStep.SETUP: (
+        "Setup",
+        "Name the protein and the experiment. The experiment ID is made from the "
+        "protein when you finalize.",
+    ),
+    WorkflowStep.SELECT_WELLS: (
+        "Select wells",
+        "Load plates, then click each crystal to place a position. Positions belong "
+        "to this experiment only.",
+    ),
+    WorkflowStep.CONDITIONS: (
+        "Conditions",
+        "Choose the fragments and the volume each well receives.",
+    ),
+    WorkflowStep.REVIEW: (
+        "Review",
+        "Check what goes where. Finalizing fixes this revision and its experiment ID; "
+        "it does not start the experiment.",
+    ),
+    WorkflowStep.WORKSHEETS: (
+        "Worksheets",
+        "Save the worksheets to every instrument folder at once.",
+    ),
+}
 
 
 def _count(value: int, noun: str) -> str:
@@ -219,32 +256,37 @@ class ViewerWindow(QMainWindow):
         self.calibration_service: WellCalibrationService | None = None
         self.current_calibration: ImageCalibration | None = None
         self._manual_calibration_points: list[tuple[float, float]] | None = None
-        self._planning_project_id: str | None = None
         self.error_log_path: Path | None = None
         self._mxlive_experiment_ids: set[str] = set()
         self._handling_unexpected_error = False
-        self._planning_drafts: dict[
-            str, list[tuple[str, FragmentScreeningEditor]]
-        ] = {}
+        self._editors: dict[str, FragmentScreeningEditor | RawCrystalEditor] = {}
+        self.current_editor: FragmentScreeningEditor | RawCrystalEditor | None = None
+        self._current_step: WorkflowStep | None = None
+        self._target_summary_available = True
         self.setStyleSheet(theme.APPLICATION_STYLE_SHEET)
         self.setWindowTitle("XtalFlow")
         self.resize(1440, 900)
         self.setMinimumSize(1100, 700)
 
+        # Home lists what XtalFlow prepares; each experiment then walks its steps.
+        self.home_page = HomePage()
+        self.experiment_page = ExperimentPage()
         self._build_workspace_bar()
-        review_tab = self._build_image_review_tab()
-        planning_tab = self._build_planning_tab()
+        self.select_wells_page = self._build_image_review_tab()
+        # Experiments not on screen keep their editors here.
+        self.editor_holder = QWidget(self)
+        self.editor_holder.hide()
+        self._selection_sync_timer = QTimer(self)
+        self._selection_sync_timer.setSingleShot(True)
+        self._selection_sync_timer.setInterval(400)
+        self._selection_sync_timer.timeout.connect(self._sync_current_selection)
 
-        self.main_tabs = QTabWidget()
-        self.main_tabs.setDocumentMode(True)
-        self.image_review_tab_index = self.main_tabs.addTab(review_tab, "Image Review")
-        self.planning_tab_index = self.main_tabs.addTab(planning_tab, "Planning")
-
+        self.pages = QStackedWidget()
+        self.pages.addWidget(self.home_page)
+        self.pages.addWidget(self.experiment_page)
         layout = QVBoxLayout()
         layout.setContentsMargins(theme.SPACING_L, theme.SPACING_M, theme.SPACING_L, 0)
-        layout.setSpacing(theme.SPACING_M)
-        layout.addLayout(self.workspace_bar)
-        layout.addWidget(self.main_tabs, 1)
+        layout.addWidget(self.pages, 1)
         container = QWidget()
         container.setLayout(layout)
         self.setCentralWidget(container)
@@ -254,6 +296,7 @@ class ViewerWindow(QMainWindow):
         self._connect_signals()
         self._update_navigation()
         self._initialize_projects()
+        self.show_home()
         self._show_planning_migration_status()
 
     # -- Layout -----------------------------------------------------------------
@@ -272,10 +315,13 @@ class ViewerWindow(QMainWindow):
         self.new_workspace_action = workspace_menu.addAction("New Workspace…")
         self.rename_workspace_action = workspace_menu.addAction("Rename Workspace…")
         self.workspace_menu_button.setMenu(workspace_menu)
-        self.workspace_bar = QHBoxLayout()
-        self.workspace_bar.setSpacing(theme.SPACING_M)
-        workspace_label = QLabel("Workspace")
+        workspace_label = QLabel("New experiments use workspace")
         workspace_label.setObjectName("Muted")
+        workspace_label.setToolTip(
+            "A workspace groups plates. Experiments in it share plate images and "
+            "well boundaries, but each keeps its own positions."
+        )
+        self.workspace_bar = self.home_page.workspace_row
         self.workspace_bar.addWidget(workspace_label)
         self.workspace_bar.addWidget(self.project_selector)
         self.workspace_bar.addWidget(self.workspace_menu_button)
@@ -382,16 +428,19 @@ class ViewerWindow(QMainWindow):
         self._review_hint_timer.setInterval(12000)
         self._review_hint_timer.timeout.connect(self.review_hint.hide)
         self.empty_state = QWidget()
-        empty_title = QLabel("No plates loaded")
+        empty_title = QLabel("Load plates")
         empty_title.setObjectName("PrimaryHeading")
-        empty_hint = QLabel("Load crystallization images to begin.")
+        empty_hint = QLabel(
+            "Enter the RockMaker plate codes. Add more plates later with + above the plate list."
+        )
         empty_hint.setObjectName("Muted")
-        self.empty_load_plates_button = QPushButton("Load Plates…")
-        self.empty_load_plates_button.setObjectName("Primary")
+        self.load_plates_form = LoadPlatesForm(self.repository, PLATE_FORMATS)
         empty_layout = QVBoxLayout()
         empty_layout.addStretch()
-        for widget in (empty_title, empty_hint, self.empty_load_plates_button):
-            empty_layout.addWidget(widget, 0, Qt.AlignHCenter)
+        empty_layout.addWidget(empty_title, 0, Qt.AlignHCenter)
+        empty_layout.addWidget(empty_hint, 0, Qt.AlignHCenter)
+        empty_layout.addWidget(self.load_plates_form, 0, Qt.AlignHCenter)
+        empty_layout.addWidget(self.load_plates_form.load_button, 0, Qt.AlignHCenter)
         empty_layout.addStretch()
         self.empty_state.setLayout(empty_layout)
         self.image_stack = QStackedWidget()
@@ -477,89 +526,34 @@ class ViewerWindow(QMainWindow):
         self.review_splitter.setStretchFactor(1, 1)
         self.review_splitter.setSizes([240, 1100])
 
-        # Selection bar: connects the review result to Planning.
-        self.selection_label = QLabel("Selection: no wells")
+        # Selection bar: this experiment's wells and the table to check them.
+        self.selection_label = QLabel("This experiment: no wells")
         self.selection_label.setObjectName("PrimaryHeading")
         self.project_progress_label = QLabel("Workspace: no images")
         self.project_progress_label.setObjectName("Muted")
-        self.target_summary_button = QPushButton("Target Summary")
+        self.target_summary_button = QPushButton("Review selected wells")
         self.target_summary_button.setCheckable(True)
-        self.target_summary_button.setToolTip("Show or hide the selection table (Ctrl+Shift+T)")
-        self.new_project_from_selection_button = QPushButton("New Project…")
-        self.new_project_from_selection_button.setObjectName("Primary")
+        self.target_summary_button.setToolTip(
+            "Show or hide the selected wells and their warnings (Ctrl+Shift+T)"
+        )
         selection_layout = QHBoxLayout()
         selection_layout.setContentsMargins(theme.SPACING_L, theme.SPACING_S, theme.SPACING_S, theme.SPACING_S)
         selection_layout.addWidget(self.selection_label)
         selection_layout.addWidget(self.project_progress_label)
         selection_layout.addStretch()
         selection_layout.addWidget(self.target_summary_button)
-        selection_layout.addWidget(self.new_project_from_selection_button)
         self.selection_bar = QFrame()
         self.selection_bar.setObjectName("SelectionBar")
         self.selection_bar.setLayout(selection_layout)
 
         review_layout = QVBoxLayout()
-        review_layout.setContentsMargins(0, theme.SPACING_M, 0, theme.SPACING_M)
+        review_layout.setContentsMargins(0, 0, 0, 0)
         review_layout.setSpacing(theme.SPACING_M)
-        review_layout.addWidget(self.review_splitter, 1)
         review_layout.addWidget(self.selection_bar)
+        review_layout.addWidget(self.review_splitter, 1)
         review_tab = QWidget()
         review_tab.setLayout(review_layout)
         return review_tab
-
-    def _build_planning_tab(self) -> QWidget:
-        self.plan_list = QListWidget()
-        self.plan_list.setMinimumWidth(210)
-        self.plan_list.setToolTip(
-            "Experiment projects: each owns a selected-well snapshot and one plan"
-        )
-        self.plan_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.plan_list.setWordWrap(True)
-        self.plan_list.setSpacing(2)
-        projects_title = QLabel("PROJECTS")
-        projects_title.setObjectName("SectionTitle")
-        self.new_plan_button = QToolButton()
-        self.new_plan_button.setText("+")
-        self.new_plan_button.setToolTip("New Project…")
-        self.new_plan_button.setAccessibleName("New project")
-        self.project_filter_input = QLineEdit()
-        self.project_filter_input.setPlaceholderText("Find project…")
-        self.project_filter_input.setClearButtonEnabled(True)
-        self.plan_list_empty_label = QLabel(
-            "No experiment projects yet.\nCreate one from the current selection."
-        )
-        self.plan_list_empty_label.setAlignment(Qt.AlignCenter)
-        self.plan_list_empty_label.setObjectName("Muted")
-        projects_header = QHBoxLayout()
-        projects_header.addWidget(projects_title)
-        projects_header.addStretch()
-        projects_header.addWidget(self.new_plan_button)
-        plan_sidebar_layout = QVBoxLayout()
-        plan_sidebar_layout.setContentsMargins(0, 0, 0, 0)
-        plan_sidebar_layout.addLayout(projects_header)
-        plan_sidebar_layout.addWidget(self.project_filter_input)
-        plan_sidebar_layout.addWidget(self.plan_list_empty_label)
-        plan_sidebar_layout.addWidget(self.plan_list, 1)
-        plan_sidebar = QWidget()
-        plan_sidebar.setLayout(plan_sidebar_layout)
-
-        self.plan_stack = QStackedWidget()
-        planning_placeholder = QLabel(
-            "Create a Project to snapshot selected wells and apply one plan."
-        )
-        planning_placeholder.setAlignment(Qt.AlignCenter)
-        self.plan_stack.addWidget(planning_placeholder)
-        planning_splitter = QSplitter(Qt.Horizontal)
-        planning_splitter.addWidget(plan_sidebar)
-        planning_splitter.addWidget(self.plan_stack)
-        planning_splitter.setStretchFactor(1, 1)
-        planning_splitter.setSizes([230, 870])
-        planning_tab = QWidget()
-        planning_tab_layout = QVBoxLayout()
-        planning_tab_layout.setContentsMargins(0, theme.SPACING_M, 0, theme.SPACING_M)
-        planning_tab_layout.addWidget(planning_splitter)
-        planning_tab.setLayout(planning_tab_layout)
-        return planning_tab
 
     def _build_target_summary_dock(self) -> None:
         self.target_summary_table = QTableWidget(0, 6)
@@ -599,9 +593,8 @@ class ViewerWindow(QMainWindow):
         target_summary_layout.addLayout(target_summary_actions)
         target_summary_panel = QWidget()
         target_summary_panel.setLayout(target_summary_layout)
-        # Image Review shows the live workspace selection; each project in
-        # Planning shows its own fixed snapshot in its Summary tab.
-        self.target_summary_dock = QDockWidget("Selection · Live", self)
+        # Shown only while selecting wells; Review shows the plan's own table.
+        self.target_summary_dock = QDockWidget("Selected wells", self)
         self._target_summary_visible_in_review = False
         self.target_summary_dock.setObjectName("target_summary_dock")
         self.target_summary_dock.setAllowedAreas(Qt.RightDockWidgetArea | Qt.LeftDockWidgetArea)
@@ -610,7 +603,7 @@ class ViewerWindow(QMainWindow):
         self.target_summary_dock.hide()
         self.view_menu = self.menuBar().addMenu("View")
         self.target_summary_action = self.target_summary_dock.toggleViewAction()
-        self.target_summary_action.setText("Target Summary")
+        self.target_summary_action.setText("Selected Wells")
         self.target_summary_action.setShortcut(QKeySequence("Ctrl+Shift+T"))
         self.view_menu.addAction(self.target_summary_action)
         # Small screens can give the plate list's width to the image.
@@ -635,17 +628,16 @@ class ViewerWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self.add_plates_button.clicked.connect(self.open_load_plates_dialog)
-        self.empty_load_plates_button.clicked.connect(self.open_load_plates_dialog)
+        self.load_plates_form.submitted.connect(self._load_plates_from_form)
+        self.home_page.start_requested.connect(self.start_experiment)
+        self.home_page.resume_requested.connect(self.resume_experiment)
+        self.home_page.delete_requested.connect(self.delete_experiment)
+        self.experiment_page.home_requested.connect(self.show_home)
+        self.experiment_page.back_requested.connect(self._go_back)
+        self.experiment_page.primary_requested.connect(self._primary_action)
+        self.experiment_page.stepper.step_selected.connect(self.go_to_step)
         self.plate_filter_input.textChanged.connect(self._filter_plate_list)
         self.target_summary_button.toggled.connect(self.target_summary_dock.setVisible)
-        self.new_project_from_selection_button.clicked.connect(
-            self.create_project_from_selection
-        )
-        self.new_plan_button.clicked.connect(self.create_project_from_selection)
-        self.project_filter_input.textChanged.connect(self._filter_project_list)
-        self.plan_list.currentRowChanged.connect(self._planning_row_changed)
-        self.plan_list.customContextMenuRequested.connect(self._show_plan_context_menu)
-        self.main_tabs.currentChanged.connect(self._main_tab_changed)
         self.target_summary_dock.visibilityChanged.connect(
             self._target_summary_visibility_changed
         )
@@ -732,7 +724,10 @@ class ViewerWindow(QMainWindow):
         self.user_preferences = preferences
 
     def _focus_well_input(self) -> None:
-        self.main_tabs.setCurrentIndex(self.image_review_tab_index)
+        if self.current_editor is None or self.pages.currentWidget() is not self.experiment_page:
+            return
+        if self._current_step is not WorkflowStep.SELECT_WELLS:
+            self.go_to_step(WorkflowStep.SELECT_WELLS)
         self.well_input.setFocus(Qt.ShortcutFocusReason)
         self.well_input.selectAll()
 
@@ -769,277 +764,272 @@ class ViewerWindow(QMainWindow):
         if details:
             self.status_message_label.show_message(" · ".join(details))
 
-    def _open_fragment_screening(self) -> None:
-        crystals = self._crystals_for_new_plan("fragment plan")
-        if crystals is not None:
-            self._add_fragment_plan(None, crystals)
+    # -- Experiments ------------------------------------------------------------
 
-    def _crystals_for_new_plan(
-        self, plan_label: str
-    ) -> tuple[SelectedCrystal, ...] | None:
-        try:
-            crystals = self.project_controller.selected_crystals_for_plan()
-            if not crystals:
-                raise ValueError("select at least one crystal target first")
-        except IMAGE_SOURCE_ERRORS as error:
-            try:
-                candidate_count = (
-                    self.project_controller
-                    .valid_unconfirmed_automatic_calibration_count()
-                )
-                warning_count = sum(
-                    not summary.is_ready
-                    for summary in self.project_controller.project_target_summaries()
-                )
-            except IMAGE_SOURCE_ERRORS:
-                candidate_count = 0
-                warning_count = 0
-            if not warning_count:
-                QMessageBox.warning(self, f"Cannot create {plan_label}", str(error))
-                return None
-            action = self._planning_calibration_action(
-                candidate_count, warning_count
-            )
-            if action == "review":
-                self._review_target_warnings()
-                return None
-            if action == "accept":
-                try:
-                    self.project_controller.confirm_valid_automatic_calibrations()
-                    self._adopt_active_review()
-                    self._sync_project_widgets()
-                    crystals = self.project_controller.selected_crystals_for_plan()
-                except IMAGE_SOURCE_ERRORS as retry_error:
-                    remaining = sum(
-                        not summary.is_ready
-                        for summary in self.project_controller.project_target_summaries()
-                    )
-                    if remaining:
-                        retry_action = self._planning_calibration_action(0, remaining)
-                        if retry_action == "review":
-                            self._review_target_warnings()
-                    else:
-                        QMessageBox.warning(
-                            self, f"Cannot create {plan_label}", str(retry_error)
-                        )
-                    return None
-            else:
-                return None
-        return crystals
-
-    def create_project_from_selection(self) -> None:
-        crystals = self._crystals_for_new_plan("project")
-        if crystals is None:
-            return
-        project = self._require_planning_workspace()
-        existing = self._planning_drafts.get(project.id, [])
-        default_names = {
-            PlanType.FRAGMENT_SCREENING: "Fragment Screening Project #"
-            f"{sum(isinstance(item[1], FragmentScreeningEditor) for item in existing) + 1}",
-            PlanType.RAW_CRYSTAL: "Raw Crystal Project #"
-            f"{sum(isinstance(item[1], RawCrystalEditor) for item in existing) + 1}",
-        }
-        dialog = NewProjectDialog(
-            len(crystals),
-            sum(len(crystal.targets) for crystal in crystals),
-            default_names,
-            self,
-        )
-        if dialog.exec_() != QDialog.Accepted:
-            return
-        if dialog.plan_type is PlanType.RAW_CRYSTAL:
-            self._add_raw_crystal_plan(crystals, name=dialog.project_name)
-        else:
-            self._add_fragment_plan(None, crystals, name=dialog.project_name)
-
-    def _planning_row_changed(self, row: int) -> None:
-        self.plan_stack.setCurrentIndex(max(0, row + 1))
-
-    def _show_plan_context_menu(self, position: QPoint) -> None:
-        row = self.plan_list.indexAt(position).row()
-        if row < 0:
-            return
-        self.plan_list.setCurrentRow(row)
-        menu = QMenu(self.plan_list)
-        delete_action = menu.addAction("Delete Project…")
-        project = self.project_controller.active_project
-        drafts = self._planning_drafts.get(project.id, []) if project else []
-        if row >= len(drafts):
-            delete_action.setEnabled(False)
-        else:
-            _, editor = drafts[row]
-            try:
-                has_uploads = (
-                    self.review_store is not None
-                    and self.review_store.planning.planning_plan_has_upload_history(
-                        editor.plan_id
-                    )
-                )
-            except ReviewPersistenceError as error:
-                has_uploads = True
-                delete_action.setToolTip(str(error))
-            delete_action.setEnabled(not has_uploads)
-            if has_uploads and not delete_action.toolTip():
-                delete_action.setToolTip(
-                    "Projects with MxLive upload history cannot be deleted"
-                )
-        delete_action.triggered.connect(self._delete_selected_draft_plan)
-        menu.exec_(self.plan_list.viewport().mapToGlobal(position))
-
-    def _delete_selected_draft_plan(self) -> None:
-        project = self.project_controller.active_project
-        row = self.plan_list.currentRow()
-        drafts = self._planning_drafts.get(project.id, []) if project else []
-        if row < 0 or row >= len(drafts):
-            return
-        name, editor = drafts[row]
-        answer = QMessageBox.question(
-            self,
-            "Delete experiment project",
-            f"Permanently delete Project '{name}'?\n\nThis cannot be undone.",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if answer != QMessageBox.Yes:
-            return
-        if hasattr(editor, "autosave_timer"):
+    def show_home(self) -> None:
+        editor = self.current_editor
+        if editor is not None and self.pages.currentWidget() is self.experiment_page:
+            if self._current_step is WorkflowStep.SELECT_WELLS:
+                self._selection_sync_timer.stop()
+                self._sync_editor_selection(editor)
             editor.autosave_timer.stop()
+            self._persist_draft(editor)
+        self._set_target_summary_available(False)
+        self.home_page.show_recent_work(self._recent_experiments())
+        self.pages.setCurrentWidget(self.home_page)
+        self.setWindowTitle("XtalFlow")
+
+    def _recent_experiments(self) -> tuple[RecentExperiment, ...]:
+        workspaces = {project.id: project.name for project in self.project_controller.projects}
+        if self.review_store is None:
+            drafts = tuple(self._draft_from_editor(editor) for editor in self._editors.values())
+        else:
+            try:
+                drafts = self.review_store.planning.load_recent_drafts()
+            except ReviewPersistenceError as error:
+                self.status_message_label.show_message(f"Recent work unavailable: {error}")
+                return ()
+        recent = []
+        for draft in drafts:
+            if draft.project_id not in workspaces:
+                continue
+            try:
+                plan_type = PlanType(draft.plan_type)
+            except ValueError:
+                continue
+            recent.append(
+                RecentExperiment(
+                    draft.project_id, workspaces[draft.project_id], draft.id,
+                    draft.name, plan_type, self._recent_status(draft), draft.updated_at,
+                )
+            )
+        return tuple(recent)
+
+    def _recent_status(self, draft: PlanningDraft) -> str:
+        revision = None
+        if self.planning_service is not None:
+            try:
+                revision = self.planning_service.latest_revision(draft.id)
+            except ReviewPersistenceError:
+                revision = None
+        if revision is not None:
+            if self._worksheets_saved(revision):
+                return f"Worksheets saved r{revision.revision}"
+            return f"Finalized r{revision.revision}"
+        try:
+            step = WorkflowStep(draft.workflow_step)
+        except ValueError:
+            step = WorkflowStep.SETUP
+        return f"Draft · {STEP_LABELS[step]}"
+
+    def _experiment_names(self) -> dict[str, str]:
+        names: dict[str, str] = {}
         if self.review_store is not None:
             try:
-                self.review_store.planning.delete_planning_draft(editor.plan_id)
+                names = {
+                    draft.id: draft.name
+                    for draft in self.review_store.planning.load_recent_drafts(limit=10000)
+                }
+            except ReviewPersistenceError:
+                names = {}
+        names.update({plan_id: editor.plan_name for plan_id, editor in self._editors.items()})
+        return names
+
+    def start_experiment(self, plan_type: PlanType, name: str | None = None):
+        """Create an empty experiment in the active workspace and open its first step."""
+        if self.project_controller.active_project is None:
+            try:
+                self.project_controller.create_project("Untitled Workspace")
             except (ValueError, ReviewPersistenceError) as error:
-                QMessageBox.warning(self, "Cannot delete plan", str(error))
-                return
-        drafts.pop(row)
-        self.plan_list.takeItem(row)
-        self.plan_stack.removeWidget(editor)
-        self._update_planning_tab_title()
-        editor.deleteLater()
-        if self.plan_list.count() == 0:
-            self.plan_list_empty_label.show()
-            self.plan_stack.setCurrentIndex(0)
-        else:
-            self.plan_list.setCurrentRow(min(row, self.plan_list.count() - 1))
-        self._refresh_project_well_usage()
+                QMessageBox.warning(self, "Cannot start experiment", str(error))
+                return None
+            self._adopt_active_review()
+            self._sync_project_widgets()
+        project = self.project_controller.active_project
+        editor = self._create_editor(
+            plan_type, str(uuid4()), name or self._default_experiment_name(plan_type),
+            project.id,
+        )
+        self._offer_workspace_positions(editor)
+        self._open_editor(editor, WorkflowStep.SETUP)
+        editor.protein_input.setFocus(Qt.OtherFocusReason)
+        return editor
 
-    def _set_editor_well_usage(self, editor) -> None:
-        if (
-            self.review_store is None
-            or not getattr(editor, "selection_snapshot_owned", False)
-        ):
-            editor.set_well_usage({})
+    def _default_experiment_name(self, plan_type: PlanType) -> str:
+        stem = f"{PLAN_TYPE_LABELS[plan_type]} {datetime.now():%Y-%m-%d}"
+        existing = set(self._experiment_names().values())
+        name, number = stem, 2
+        while name in existing:
+            name = f"{stem} #{number}"
+            number += 1
+        return name
+
+    def _offer_workspace_positions(self, editor) -> None:
+        """Positions placed before experiments kept their own can seed a new one."""
+        if self.review_store is None:
             return
-        image_keys = tuple(well.image_key for well in editor.selection.wells)
+        workspace = self.review_store.workspace
         try:
-            usage = self.review_store.planning.prior_selected_well_usage(
-                editor.plan_id, image_keys
-            )
-        except ReviewPersistenceError as error:
-            editor.error_label.setText(f"Reuse history unavailable: {error}")
+            count = workspace.unassigned_workspace_position_count(editor.project_id)
+        except ReviewPersistenceError:
             return
-        editor.set_well_usage(usage)
-
-    def _refresh_project_well_usage(self) -> None:
-        project = self.project_controller.active_project
-        if project is None:
+        if not count:
             return
-        for _, editor in self._planning_drafts.get(project.id, []):
-            self._set_editor_well_usage(editor)
+        if QMessageBox.question(
+            self,
+            "Use earlier positions?",
+            f"This workspace has {_count(count, 'position')} placed before each "
+            "experiment kept its own positions.\n\nUse them in this experiment? "
+            "Otherwise it starts with no positions.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        ) != QMessageBox.Yes:
+            return
+        try:
+            workspace.adopt_workspace_positions(editor.project_id, editor.plan_id)
+        except (ValueError, ReviewPersistenceError) as error:
+            QMessageBox.warning(self, "Positions were not copied", str(error))
 
-    def _add_fragment_plan(
+    def resume_experiment(self, workspace_id: str, plan_id: str):
+        active = self.project_controller.active_project
+        if active is None or active.id != workspace_id:
+            try:
+                self.project_controller.open_project(workspace_id)
+            except IMAGE_SOURCE_ERRORS as error:
+                self._adopt_active_review()
+                self._sync_project_widgets()
+                self._show_images_unavailable(error)
+            else:
+                self._adopt_active_review()
+                self._sync_project_widgets()
+        editor = self._editors.get(plan_id)
+        if editor is None:
+            try:
+                if self.review_store is None:
+                    raise ValueError("this experiment is no longer open")
+                draft = next(
+                    (
+                        item
+                        for item in self.review_store.planning.load_planning_drafts(workspace_id)
+                        if item.id == plan_id
+                    ),
+                    None,
+                )
+                if draft is None:
+                    raise ValueError("this experiment no longer exists")
+                editor = self._create_editor(
+                    PlanType(draft.plan_type), draft.id, draft.name, workspace_id, draft
+                )
+            except (ValueError, ReviewPersistenceError) as error:
+                QMessageBox.warning(self, "Cannot open experiment", str(error))
+                self.show_home()
+                return None
+        try:
+            step = WorkflowStep(editor.workflow_step)
+        except ValueError:
+            step = WorkflowStep.SETUP
+        self._open_editor(editor, step)
+        return editor
+
+    def delete_experiment(self, workspace_id: str, plan_id: str) -> None:
+        name = self._experiment_names().get(plan_id, "this experiment")
+        if self.review_store is not None:
+            try:
+                has_uploads = self.review_store.planning.planning_plan_has_upload_history(
+                    plan_id
+                )
+            except ReviewPersistenceError as error:
+                QMessageBox.warning(self, "Cannot delete experiment", str(error))
+                return
+            if has_uploads:
+                QMessageBox.information(
+                    self, "Cannot delete experiment",
+                    f"{name} has MxLive upload history, which must stay auditable.",
+                )
+                return
+        if QMessageBox.question(
+            self,
+            "Delete experiment",
+            f"Permanently delete '{name}' and its positions?\n\nWorksheet files "
+            "already saved to instrument folders are not removed. This cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        ) != QMessageBox.Yes:
+            return
+        editor = self._editors.get(plan_id)
+        if editor is not None:
+            editor.autosave_timer.stop()
+        if self.project_controller.experiment_id == plan_id:
+            # Save the open review into its own scope before that scope is removed.
+            try:
+                self.project_controller.open_experiment(WORKSPACE_REVIEW)
+            except IMAGE_SOURCE_ERRORS as error:
+                QMessageBox.warning(self, "Cannot delete experiment", str(error))
+                return
+            self._adopt_active_review()
+            self._sync_project_widgets()
+        if self.review_store is not None:
+            try:
+                self.review_store.planning.delete_planning_draft(plan_id)
+                self.review_store.workspace.delete_experiment_positions(plan_id)
+            except (ValueError, ReviewPersistenceError) as error:
+                QMessageBox.warning(self, "Cannot delete experiment", str(error))
+                return
+        if editor is not None:
+            del self._editors[plan_id]
+            if editor is self.current_editor:
+                self.current_editor = None
+                self._current_step = None
+                self.experiment_page.set_pages({})
+            editor.deleteLater()
+        self._refresh_project_well_usage()
+        self.show_home()
+
+    def _create_editor(
         self,
-        library: FragmentLibrary | None,
-        crystals: tuple[SelectedCrystal, ...],
-        restored: PlanningDraft | None = None,
-        name: str | None = None,
-    ) -> None:
-        project = self._require_planning_workspace()
-        existing = self._planning_drafts.setdefault(project.id, [])
-        name = restored.name if restored else name or (
-            f"Fragment Screening Project #{len(existing) + 1}"
-        )
-        plan_id = restored.id if restored else str(uuid4())
-        owned_project, selection = self._plan_selection(plan_id, crystals)
-        editor = FragmentScreeningEditor(library, selection, self.plan_stack)
-        editor.set_library_choices(self._fragment_library_choices())
-        if restored is not None:
-            editor.restore_draft(restored)
-        editor.refresh_libraries_button.setToolTip(
-            str(self.settings.fragment_library_directory)
-        )
-        editor.library_refresh_requested.connect(
-            self._refresh_fragment_library_choices
-        )
-        editor.save_worksheets_requested.connect(
-            lambda selected_editor=editor: self._save_plan_worksheets(selected_editor)
-        )
-        self._register_plan_editor(
-            editor, PlanType.FRAGMENT_SCREENING, name, plan_id, restored, owned_project
-        )
-
-    def _add_raw_crystal_plan(
-        self, crystals: tuple[SelectedCrystal, ...],
-        restored: PlanningDraft | None = None,
-        name: str | None = None,
-    ) -> None:
-        project = self._require_planning_workspace()
-        existing = self._planning_drafts.setdefault(project.id, [])
-        name = restored.name if restored else name or (
-            "Raw Crystal Project #"
-            f"{sum(isinstance(item[1], RawCrystalEditor) for item in existing) + 1}"
-        )
-        plan_id = restored.id if restored else str(uuid4())
-        owned_project, selection = self._plan_selection(plan_id, crystals)
-        editor = RawCrystalEditor(selection, self.plan_stack)
-        if restored is not None:
-            editor.restore_draft(restored)
-        editor.save_worksheets_requested.connect(
-            lambda selected_editor=editor: self._save_plan_worksheets(selected_editor)
-        )
-        self._register_plan_editor(
-            editor, PlanType.RAW_CRYSTAL, name, plan_id, restored, owned_project
-        )
-
-    def _require_planning_workspace(self) -> Project:
-        project = self.project_controller.active_project
-        if project is None:
-            raise ValueError("no project is open")
-        return project
-
-    def _plan_selection(
-        self, plan_id: str, crystals: tuple[SelectedCrystal, ...]
-    ) -> tuple[ExperimentProject | None, CrystalSelection]:
-        owned_project = (
-            self.review_store.planning.load_experiment_project(plan_id)
-            if self.review_store is not None else None
-        )
-        selection = (
-            owned_project.crystal_selection
-            if owned_project is not None
-            else crystal_selection_from_selected_crystals(plan_id, crystals)
-        )
-        return owned_project, selection
-
-    def _register_plan_editor(
-        self,
-        editor,
         plan_type: PlanType,
-        name: str,
         plan_id: str,
-        restored: PlanningDraft | None,
-        owned_project: ExperimentProject | None,
-    ) -> None:
-        """Attach plan identity, autosave, and lifecycle actions shared by plan types."""
-        project = self._require_planning_workspace()
+        name: str,
+        workspace_id: str,
+        restored: PlanningDraft | None = None,
+    ):
+        """One experiment's plan state, lifecycle, and step pages."""
+        if plan_type is PlanType.FRAGMENT_SCREENING:
+            editor = FragmentScreeningEditor(None, None, self.editor_holder)
+            editor.set_library_choices(self._fragment_library_choices())
+            editor.refresh_libraries_button.setToolTip(
+                str(self.settings.fragment_library_directory)
+            )
+            editor.library_refresh_requested.connect(
+                self._refresh_fragment_library_choices
+            )
+        elif plan_type is PlanType.RAW_CRYSTAL:
+            editor = RawCrystalEditor(None, self.editor_holder)
+        else:
+            raise ValueError(f"{plan_type.value} experiments are not available yet")
+        editor.hide()
         editor.plan_type = plan_type
         editor.plan_id = plan_id
-        editor.project_id = project.id
+        editor.project_id = workspace_id
         editor.plan_name = name
-        editor.set_title(name)
-        editor.plan_created_at = restored.created_at if restored else datetime.now(timezone.utc)
+        editor.plan_created_at = (
+            restored.created_at if restored else datetime.now(timezone.utc)
+        )
+        editor.workflow_step = (
+            restored.workflow_step if restored and restored.workflow_step
+            else WorkflowStep.SETUP.value
+        )
         editor.last_revision = None
         editor.last_revision_snapshot = None
-        editor.selection_snapshot_owned = owned_project is not None or restored is None
+        editor.selection_signature = ()
+        editor.selected_well_count = 0
+        editor.selected_position_count = 0
+        editor.wells_needing_attention = 0
+        editor.save_failed = False
+        editor.experiment_status = None
+        if restored is not None:
+            editor.restore_draft(restored)
+        editor.set_title(name)
         editor.autosave_timer = QTimer(editor)
         editor.autosave_timer.setSingleShot(True)
         editor.autosave_timer.setInterval(750)
@@ -1054,97 +1044,437 @@ class ViewerWindow(QMainWindow):
         if self.mxlive_account is not None:
             editor.set_mxlive_account(self.mxlive_account)
         elif self.mxlive_configuration_error:
-            editor.webdb_status_label.setText(
-                f"{self.mxlive_configuration_error} · "
-                f"{editor.webdb_table.rowCount()} preview records"
-            )
-        editor.finalize_requested.connect(
-            lambda selected_editor=editor: self._finalize_plan(selected_editor)
-        )
+            editor.webdb_status_label.setText(self.mxlive_configuration_error)
         editor.webdb_upload_requested.connect(
             lambda selected_editor=editor: self._upload_plan_labworks(selected_editor)
-        )
-        editor.adopt_selection_requested.connect(
-            lambda selected_editor=editor: self._adopt_legacy_selection(selected_editor)
         )
         editor.draft_changed.connect(
             lambda selected_editor=editor: self._plan_draft_changed(selected_editor)
         )
-        self._planning_drafts.setdefault(project.id, []).append((name, editor))
-        self.plan_stack.addWidget(editor)
-        self.plan_list.addItem(self._plan_list_text(editor, "Draft"))
-        self.plan_list_empty_label.hide()
-        self.plan_list.setCurrentRow(self.plan_list.count() - 1)
-        self._update_planning_tab_title()
-        if restored is None:
-            self.main_tabs.setCurrentIndex(self.planning_tab_index)
-            self._save_selection_snapshot(editor, editor.selection)
-            self._persist_draft(editor)
-        elif self.planning_service is not None:
-            self._restore_plan_lifecycle(editor)
-        self._refresh_project_well_usage()
-
-    def _restore_plan_lifecycle(self, editor) -> None:
-        editor.last_revision = self.planning_service.latest_revision(editor.plan_id)
-        if editor.last_revision is not None:
-            editor.last_revision_snapshot = editor.last_revision.snapshot_json
-        snapshot = self._plan_snapshot(editor)
-        status = restored_plan_status(
-            editor.last_revision, snapshot, editor.selection_snapshot_owned
+        editor.name_input.textEdited.connect(
+            lambda text, selected_editor=editor: self._rename_experiment(
+                selected_editor, text
+            )
         )
+        if restored is not None and self.planning_service is not None:
+            editor.last_revision = self.planning_service.latest_revision(plan_id)
+            if editor.last_revision is not None:
+                editor.last_revision_snapshot = editor.last_revision.snapshot_json
+        editor.setup_step = SetupStep(editor, PLAN_TYPE_LABELS[plan_type])
+        editor.worksheets_step = WorksheetsStep(editor.mxlive_widget())
+        editor.step_pages = {
+            WorkflowStep.SETUP: editor.setup_step,
+            WorkflowStep.SELECT_WELLS: self.select_wells_page,
+            WorkflowStep.REVIEW: editor.review_widget(),
+            WorkflowStep.WORKSHEETS: editor.worksheets_step,
+        }
+        conditions = editor.conditions_widget()
+        if conditions is not None:
+            editor.step_pages[WorkflowStep.CONDITIONS] = conditions
+        self._editors[plan_id] = editor
+        return editor
+
+    def _open_editor(self, editor, step: WorkflowStep) -> None:
+        previous = self.current_editor
+        if previous is not None and previous is not editor:
+            previous.autosave_timer.stop()
+            self._persist_draft(previous)
+        self.current_editor = editor
+        self._current_step = None
+        try:
+            self.project_controller.open_experiment(editor.plan_id)
+        except IMAGE_SOURCE_ERRORS as error:
+            self._adopt_active_review()
+            self._sync_project_widgets()
+            self._show_images_unavailable(error)
+        else:
+            self._adopt_active_review()
+            self._sync_project_widgets()
+        workspace = next(
+            (item for item in self.project_controller.projects if item.id == editor.project_id),
+            None,
+        )
+        editor.setup_step.workspace_label.setText(
+            workspace.name if workspace is not None else "Unknown workspace"
+        )
+        self.experiment_page.set_pages(editor.step_pages)
+        self.pages.setCurrentWidget(self.experiment_page)
+        self.setWindowTitle(f"{editor.plan_name} · XtalFlow")
+        self._sync_editor_selection(editor)
+        self._show_plan_status(
+            editor,
+            saved_plan_status(
+                editor.last_revision, editor.last_revision_snapshot,
+                self._plan_snapshot(editor),
+            ),
+        )
+        self._sync_webdb_upload_state(editor)
+        self.go_to_step(step)
+
+    def go_to_step(self, step: WorkflowStep) -> None:
+        editor = self.current_editor
+        if editor is None:
+            return
+        steps = steps_for(editor.plan_type)
+        if step not in steps:
+            step = steps[0]
         if (
-            editor.last_revision is not None
-            and snapshot == editor.last_revision_snapshot
+            self._current_step is WorkflowStep.SELECT_WELLS
+            and step is not WorkflowStep.SELECT_WELLS
         ):
-            editor.settings_toggle.setChecked(False)
-            self._sync_webdb_upload_state(editor)
-        if not editor.selection_snapshot_owned:
-            editor.adopt_selection_button.show()
-        if status is not None:
-            self._show_plan_status(editor, status)
+            self._selection_sync_timer.stop()
+            self._sync_editor_selection(editor)
+        self._current_step = step
+        self._set_target_summary_available(step is WorkflowStep.SELECT_WELLS)
+        title, hint = STEP_TITLES[step]
+        self.experiment_page.show_step(step, title, hint)
+        if step is WorkflowStep.WORKSHEETS:
+            self._refresh_worksheets_step(editor)
+        elif step is WorkflowStep.SELECT_WELLS:
+            self.image_canvas.setFocus(Qt.OtherFocusReason)
+        if editor.workflow_step != step.value:
+            editor.workflow_step = step.value
+            self._persist_draft(editor)
+        self._refresh_experiment_status(editor)
+
+    def _go_back(self) -> None:
+        editor = self.current_editor
+        if editor is None or self._current_step is None:
+            return
+        steps = steps_for(editor.plan_type)
+        index = steps.index(self._current_step)
+        if index:
+            self.go_to_step(steps[index - 1])
+
+    def _primary_action(self) -> None:
+        editor = self.current_editor
+        step = self._current_step
+        if editor is None or step is None:
+            return
+        status = editor.experiment_status or evaluate_experiment(
+            self._experiment_facts(editor)
+        )
+        if step is WorkflowStep.REVIEW:
+            if status.ready_to_finalize and self._finalize_and_continue(editor) is None:
+                return
+            self.go_to_step(WorkflowStep.WORKSHEETS)
+        elif step is WorkflowStep.WORKSHEETS:
+            if status.status_of(WorkflowStep.WORKSHEETS).state is StepState.COMPLETE:
+                self.show_home()
+            else:
+                self._save_plan_worksheets(editor)
+        else:
+            steps = steps_for(editor.plan_type)
+            self.go_to_step(steps[steps.index(step) + 1])
+
+    def _primary_for(self, status: ExperimentStatus, step: WorkflowStep, steps) -> tuple[str, bool]:
+        if step is WorkflowStep.REVIEW:
+            if status.ready_to_finalize:
+                return "Finalize and continue", True
+            complete = status.status_of(step).state is StepState.COMPLETE
+            return ("Continue to Worksheets", True) if complete else (
+                "Finalize and continue", False
+            )
+        if step is WorkflowStep.WORKSHEETS:
+            if status.status_of(step).state is StepState.COMPLETE:
+                return "Back to experiments", True
+            finalized = status.status_of(WorkflowStep.REVIEW).state is StepState.COMPLETE
+            return "Save all worksheets", finalized
+        next_step = steps[steps.index(step) + 1]
+        return (
+            f"Continue to {STEP_LABELS[next_step]}",
+            status.status_of(step).state is StepState.COMPLETE,
+        )
+
+    def _finalize_and_continue(self, editor) -> PlanRevision | None:
+        experiment_id = (
+            editor.assigned_experiment_id or editor.current_experiment_id
+            or "assigned when finalized"
+        )
+        instruments = ", ".join(
+            destination.label for destination in self._instruments_for(editor.plan_type)
+        )
+        if QMessageBox.question(
+            self,
+            "Finalize experiment",
+            f"Finalize {editor.plan_name}?\n\n"
+            f"Experiment ID: {experiment_id}\n"
+            f"{_count(editor.selected_well_count, 'well')} · "
+            f"{_count(editor.selected_position_count, 'position')}\n"
+            f"Worksheets for: {instruments or 'no configured instruments'}\n\n"
+            "Finalizing fixes what the worksheets will contain. It does not start "
+            "the experiment; you can still change the plan and finalize again.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        ) != QMessageBox.Yes:
+            return None
+        return self._finalize_plan(editor)
+
+    def _rename_experiment(self, editor, text: str) -> None:
+        name = text.strip()
+        if not name:
+            return
+        editor.plan_name = name
+        if editor is self.current_editor:
+            self.setWindowTitle(f"{name} · XtalFlow")
+
+    def _instruments_for(self, plan_type: PlanType):
+        kinds = {WorksheetKind.SHIFTER}
+        if plan_type is PlanType.FRAGMENT_SCREENING:
+            kinds.add(WorksheetKind.ECHO)
+        return tuple(item for item in self.settings.instruments if item.worksheet in kinds)
+
+    def _experiment_facts(self, editor) -> ExperimentFacts:
+        plan = editor.current_plan
+        if plan is not None:
+            conditions_error = None
+        elif editor.selection is None:
+            conditions_error = (
+                "Choose a fragment library."
+                if editor.plan_type is PlanType.FRAGMENT_SCREENING and editor.library is None
+                else None
+            )
+        else:
+            conditions_error = editor.error_label.text() or "The plan is not valid."
+        revision = editor.last_revision
+        return ExperimentFacts(
+            editor.plan_type,
+            editor.protein_input.text(),
+            editor.selected_well_count,
+            editor.selected_position_count,
+            editor.wells_needing_attention,
+            conditions_error,
+            len(plan.unused_fragments) if isinstance(plan, FragmentScreenPlan) else 0,
+            revision.revision if revision is not None else None,
+            revision is not None
+            and self._plan_snapshot(editor) == editor.last_revision_snapshot,
+            self._worksheets_saved(revision),
+            editor.save_failed,
+        )
+
+    def _refresh_experiment_status(self, editor) -> None:
+        status = evaluate_experiment(self._experiment_facts(editor))
+        editor.experiment_status = status
+        step = self._current_step
+        if editor is not self.current_editor or step is None:
+            return
+        steps = steps_for(editor.plan_type)
+        page = self.experiment_page
+        page.show_identity(
+            editor.plan_name, PLAN_TYPE_LABELS[editor.plan_type],
+            editor.lifecycle_label.text(),
+        )
+        page.show_progress(status.steps, step, compact=self.width() < 1360)
+        current = status.status_of(step)
+        symbol, kind = {
+            StepState.COMPLETE: (theme.SYMBOL_OK, "ok"),
+            StepState.ATTENTION: (theme.SYMBOL_ATTENTION, "attention"),
+            StepState.INCOMPLETE: ("", "muted"),
+        }[current.state]
+        text = f"{symbol} {current.message}".strip()
+        first = status.first_unfinished
+        if (
+            step in (WorkflowStep.REVIEW, WorkflowStep.WORKSHEETS)
+            and current.state is not StepState.COMPLETE
+            and first is not step
+            and steps.index(first) < steps.index(step)
+        ):
+            text += f" · {STEP_LABELS[first]}: {status.status_of(first).message}"
+        primary_text, primary_enabled = self._primary_for(status, step, steps)
+        notes = " · ".join(note for note in status.notes if note not in text)
+        page.show_footer(
+            (text, kind), notes, primary_text, primary_enabled,
+            step is not steps[0],
+        )
+
+    def _sync_editor_selection(self, editor, crystals=None) -> None:
+        """Take the experiment's reviewed positions as its selected wells."""
+        if crystals is None:
+            try:
+                summaries = self.project_controller.project_target_summaries()
+            except IMAGE_SOURCE_ERRORS as error:
+                self.status_message_label.show_message(
+                    f"Selected wells unavailable: {error}"
+                )
+                return
+            attention = {
+                summary.image.image_key for summary in summaries if not summary.is_ready
+            }
+            editor.selected_well_count = len(
+                {summary.image.image_key for summary in summaries}
+            )
+            editor.selected_position_count = len(summaries)
+            editor.wells_needing_attention = len(attention)
+            crystals = ()
+            if summaries and not attention:
+                try:
+                    crystals = self.project_controller.selected_crystals_for_plan()
+                except IMAGE_SOURCE_ERRORS as error:
+                    editor.wells_needing_attention = editor.selected_well_count
+                    self.status_message_label.show_message(str(error))
+        else:
+            editor.selected_well_count = len(crystals)
+            editor.selected_position_count = sum(len(item.targets) for item in crystals)
+            editor.wells_needing_attention = 0
+        signature = tuple(
+            (
+                crystal.image_key,
+                tuple(
+                    (target.target_id, str(target.x_mm), str(target.y_mm))
+                    for target in crystal.targets
+                ),
+            )
+            for crystal in crystals
+        )
+        if signature != editor.selection_signature:
+            editor.selection_signature = signature
+            selection = (
+                crystal_selection_from_selected_crystals(
+                    editor.plan_id, crystals, created_at=editor.plan_created_at
+                )
+                if crystals else None
+            )
+            editor.set_selection(selection)
+            if selection is not None:
+                self._save_selection_snapshot(editor, selection)
+            self._set_editor_well_usage(editor)
+        self._refresh_experiment_status(editor)
+
+    def _sync_current_selection(self) -> None:
+        if (
+            self.current_editor is not None
+            and self._current_step is WorkflowStep.SELECT_WELLS
+        ):
+            self._sync_editor_selection(self.current_editor)
+
+    def _set_target_summary_available(self, available: bool) -> None:
+        """The selected-wells table belongs to the Select wells step."""
+        if available == self._target_summary_available:
+            if not available:
+                self.target_summary_dock.hide()
+            return
+        self._target_summary_available = available
+        self.target_summary_action.setEnabled(available)
+        if available:
+            if self._target_summary_visible_in_review:
+                self.target_summary_dock.show()
+        else:
+            self._target_summary_visible_in_review = self.target_summary_dock.isVisible()
+            self.target_summary_dock.hide()
+
+    def _refresh_worksheets_step(self, editor) -> None:
+        revision = editor.last_revision
+        finalized = (
+            revision is not None
+            and self._plan_snapshot(editor) == editor.last_revision_snapshot
+        )
+        plan = editor.current_plan
+        if finalized:
+            try:
+                plan = plan_from_snapshot(editor.plan_id, revision.snapshot_json)
+            except ValueError:
+                plan = None
+        worksheets = worksheets_for(plan) if plan is not None else {}
+        username = getpass.getuser()
+        editor.worksheets_step.show_instruments(
+            tuple(
+                (
+                    destination.label,
+                    destination.worksheet.value.upper(),
+                    str(len(worksheets[destination.worksheet][1]))
+                    if destination.worksheet in worksheets else "—",
+                    str(destination.output_directory / username),
+                )
+                for destination in self._instruments_for(editor.plan_type)
+            )
+        )
+        latest = self._latest_worksheet_export(revision) if finalized else None
+        if not finalized:
+            editor.worksheets_step.show_result(
+                "Finalize the experiment in Review before saving worksheets.", "muted"
+            )
+        elif latest is None:
+            editor.worksheets_step.show_result("", "muted")
+        elif latest.status == WORKSHEETS_SUCCEEDED:
+            lines = [
+                f"{theme.SYMBOL_OK} Worksheets saved for r{revision.revision} · "
+                f"{latest.exported_at:%Y-%m-%d %H:%M} · {latest.username}"
+            ]
+            lines.extend(
+                f"{self._instrument_label(output)}: {output.path}"
+                for output in latest.outputs
+            )
+            editor.worksheets_step.show_result("\n".join(lines), "ok")
+        elif latest.status == WORKSHEETS_CANCELLED:
+            editor.worksheets_step.show_result(
+                "No worksheets were saved. The save was cancelled.", "muted"
+            )
+        else:
+            editor.worksheets_step.show_result(
+                f"{theme.SYMBOL_ERROR} No worksheets were saved. "
+                f"{latest.error_message or ''}\nMake the folders available or choose "
+                "another location, then save again.",
+                "error",
+            )
+
+    def _worksheets_saved(self, revision) -> bool:
+        latest = self._latest_worksheet_export(revision)
+        return latest is not None and latest.status == WORKSHEETS_SUCCEEDED
+
+    def _latest_worksheet_export(self, revision):
+        if revision is None or self.review_store is None:
+            return None
+        try:
+            exports = self.review_store.audit.list_worksheet_exports(revision.id)
+        except ReviewPersistenceError:
+            return None
+        return exports[-1] if exports else None
+
+    def _other_experiments_using_current_image(self) -> tuple[str, ...]:
+        image_set = self.project_controller.active_image_set
+        experiment_id = self.project_controller.experiment_id
+        if (
+            self.review_store is None or self.controller is None
+            or image_set is None or not experiment_id
+        ):
+            return ()
+        try:
+            usage = self.review_store.workspace.experiments_using_images(
+                image_set.id, experiment_id
+            )
+        except ReviewPersistenceError:
+            return ()
+        others = usage.get(self.controller.current_image.image_key, ())
+        if not others:
+            return ()
+        names = self._experiment_names()
+        return tuple(names.get(plan_id, "a deleted experiment") for plan_id in others)
+
+    def _set_editor_well_usage(self, editor) -> None:
+        if self.review_store is None or editor.selection is None:
+            editor.set_well_usage({})
+            return
+        image_keys = tuple(well.image_key for well in editor.selection.wells)
+        try:
+            usage = self.review_store.planning.prior_selected_well_usage(
+                editor.plan_id, image_keys
+            )
+        except ReviewPersistenceError as error:
+            editor.error_label.setText(f"Reuse history unavailable: {error}")
+            return
+        editor.set_well_usage(usage)
+
+    def _refresh_project_well_usage(self) -> None:
+        for editor in self._editors.values():
+            self._set_editor_well_usage(editor)
 
     def _plan_draft_changed(self, editor) -> None:
         if not hasattr(editor, "autosave_timer"):
             return
         editor.lifecycle_label.setText("Draft · saving…")
         editor.webdb_upload_button.setEnabled(False)
-        self._set_plan_list_status(editor, "Draft")
         editor.autosave_timer.start()
-
-    def _adopt_legacy_selection(self, editor) -> None:
-        try:
-            crystals = self.project_controller.selected_crystals_for_plan()
-            if not crystals:
-                raise ValueError("select at least one well first")
-        except IMAGE_SOURCE_ERRORS as error:
-            QMessageBox.warning(self, "Cannot adopt selection", str(error))
-            return
-        well_count = len(crystals)
-        position_count = sum(len(crystal.targets) for crystal in crystals)
-        if QMessageBox.question(
-            self,
-            "Adopt current selection",
-            f"Replace this legacy draft's unfixed selection with the current "
-            f"{well_count} selected well(s) and {position_count} soaking "
-            "position(s)?\n\nFuture Image Review changes will not alter it.",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        ) != QMessageBox.Yes:
-            return
-        selection = crystal_selection_from_selected_crystals(
-            editor.plan_id,
-            crystals,
-            created_at=editor.plan_created_at,
-        )
-        editor.set_selection(selection)
-        if not self._save_selection_snapshot(editor, selection):
-            return
-        editor.selection_snapshot_owned = True
-        editor.adopt_selection_button.hide()
-        editor.lifecycle_label.setText("Draft · selection fixed")
-        self._set_plan_list_status(editor, "Draft · Selection fixed")
-        self._refresh_project_well_usage()
-        self._persist_draft(editor)
+        self._refresh_experiment_status(editor)
 
     def _save_selection_snapshot(self, editor, selection: CrystalSelection) -> bool:
         if self.planning_service is None:
@@ -1155,7 +1485,6 @@ class ViewerWindow(QMainWindow):
                 editor.plan_created_at,
             )
         except ReviewPersistenceError as error:
-            editor.selection_snapshot_owned = False
             self._show_persistence_error(error)
             return False
         return True
@@ -1176,31 +1505,36 @@ class ViewerWindow(QMainWindow):
     @staticmethod
     def _draft_from_editor(editor) -> PlanningDraft:
         now = datetime.now(timezone.utc)
+        step = getattr(editor, "workflow_step", None)
         if editor.plan_type is PlanType.RAW_CRYSTAL:
             return PlanningDraft(
                 editor.plan_id, editor.project_id, PlanType.RAW_CRYSTAL.value,
                 editor.plan_name, None, "", editor.protein_input.text(), "0",
                 editor.order_input.currentData().value, editor.plan_created_at, now,
-                editor.assigned_experiment_id,
+                editor.assigned_experiment_id, step,
             )
         return PlanningDraft(
             editor.plan_id, editor.project_id, PlanType.FRAGMENT_SCREENING.value,
             editor.plan_name, editor.library_input.currentData(Qt.UserRole),
             editor.rows_input.text(), editor.protein_input.text(),
             str(editor.volume_input.value()), editor.order_input.currentData().value,
-            editor.plan_created_at, now, editor.assigned_experiment_id,
+            editor.plan_created_at, now, editor.assigned_experiment_id, step,
         )
 
     def _persist_draft(self, editor) -> None:
         if self.planning_service is None:
             editor.lifecycle_label.setText("Draft · memory only")
+            self._refresh_experiment_status(editor)
             return
         try:
             self.planning_service.save_draft(self._draft_from_editor(editor))
         except ReviewPersistenceError as error:
+            editor.save_failed = True
             editor.lifecycle_label.setText("Draft · save failed")
+            self._refresh_experiment_status(editor)
             self._show_persistence_error(error)
             return
+        editor.save_failed = False
         status = saved_plan_status(
             editor.last_revision, editor.last_revision_snapshot,
             self._plan_snapshot(editor),
@@ -1211,88 +1545,7 @@ class ViewerWindow(QMainWindow):
 
     def _show_plan_status(self, editor, status: PlanStatus) -> None:
         editor.lifecycle_label.setText(status.label)
-        self._set_plan_list_status(editor, status.list_status)
-        self._refresh_delivery_bar(editor)
-
-    def _refresh_delivery_bar(self, editor) -> None:
-        """Show plan confirmation, worksheet delivery, and WebDB upload separately."""
-        revision = getattr(editor, "last_revision", None)
-        finalized = (
-            revision is not None
-            and self._plan_snapshot(editor) == editor.last_revision_snapshot
-        )
-        if editor.current_plan is None:
-            readiness = (
-                f"{theme.SYMBOL_ERROR} {editor.error_label.text() or 'Plan is not valid'}",
-                "error",
-            )
-        elif revision is None:
-            readiness = (f"{theme.SYMBOL_OK} Ready to finalize", "ok")
-        elif finalized:
-            readiness = (f"{theme.SYMBOL_OK} Finalized r{revision.revision}", "ok")
-        else:
-            readiness = (
-                f"{theme.SYMBOL_ATTENTION} Draft changes after r{revision.revision}",
-                "attention",
-            )
-        editor.finalize_button.setEnabled(editor.current_plan is not None and not finalized)
-        editor.show_delivery(
-            readiness,
-            self._worksheet_delivery_state(revision),
-            self._webdb_delivery_state(editor, revision),
-        )
-        editor.worksheet_status_label.setToolTip(self._worksheet_delivery_details(revision))
-
-    def _worksheet_delivery_details(self, revision) -> str:
-        if revision is None or self.review_store is None:
-            return ""
-        try:
-            exports = self.review_store.audit.list_worksheet_exports(revision.id)
-        except ReviewPersistenceError:
-            return ""
-        if not exports:
-            return ""
-        latest = exports[-1]
-        lines = [f"{latest.status} · {latest.exported_at:%Y-%m-%d %H:%M} · {latest.username}"]
-        lines.extend(
-            f"{self._instrument_label(output)}: {output.path}" for output in latest.outputs
-        )
-        if latest.error_message:
-            lines.append(latest.error_message)
-        return "\n".join(lines)
-
-    def _worksheet_delivery_state(self, revision) -> tuple[str, str]:
-        if revision is None or self.review_store is None:
-            return ("Worksheets: not saved", "muted")
-        try:
-            exports = self.review_store.audit.list_worksheet_exports(revision.id)
-        except ReviewPersistenceError:
-            return ("Worksheets: history unavailable", "attention")
-        if not exports:
-            return (f"Worksheets: not saved for r{revision.revision}", "muted")
-        latest = exports[-1]
-        if latest.status == WORKSHEETS_SUCCEEDED:
-            count = len(latest.outputs)
-            return (
-                f"{theme.SYMBOL_OK} Worksheets saved r{revision.revision} · "
-                f"{_count(count, 'instrument')}",
-                "ok",
-            )
-        if latest.status == WORKSHEETS_CANCELLED:
-            return (f"Worksheets: not saved for r{revision.revision}", "muted")
-        return (f"{theme.SYMBOL_ERROR} Last worksheet save failed", "error")
-
-    def _webdb_delivery_state(self, editor, revision) -> tuple[str, str]:
-        if self.mxlive_account is None or not self.mxlive_account.upload_ready:
-            return ("WebDB: MxLive not configured", "muted")
-        state = editor.webdb_upload_state
-        if not state:
-            return ("WebDB: not uploaded" if revision else "WebDB: finalize first", "muted")
-        if state.startswith("Uploaded"):
-            return (f"{theme.SYMBOL_OK} WebDB: {state}", "ok")
-        if "failed" in state:
-            return (f"{theme.SYMBOL_ERROR} WebDB: {state}", "error")
-        return (f"{theme.SYMBOL_ATTENTION} WebDB: {state}", "attention")
+        self._refresh_experiment_status(editor)
 
     def _suggest_experiment_id(self, plan_type: PlanType, protein: str) -> str:
         if self.planning_service is None:
@@ -1309,11 +1562,9 @@ class ViewerWindow(QMainWindow):
             return None
         snapshot = self._plan_snapshot(editor)
         if snapshot is None:
-            plan_kind = (
-                "raw crystal" if editor.plan_type is PlanType.RAW_CRYSTAL else "fragment"
-            )
             QMessageBox.warning(
-                self, "Cannot finalize plan", f"The {plan_kind} plan is not valid."
+                self, "Cannot finalize plan",
+                editor.error_label.text() or "The plan is not valid.",
             )
             return None
         self._persist_draft(editor)
@@ -1323,6 +1574,8 @@ class ViewerWindow(QMainWindow):
             editor.assigned_experiment_id is None
             and not self._check_new_experiment_id_against_mxlive()
         ):
+            return None
+        if not self._save_selection_snapshot(editor, editor.selection):
             return None
         try:
             revision = self.planning_service.finalize(
@@ -1336,43 +1589,17 @@ class ViewerWindow(QMainWindow):
         editor.last_revision = revision
         editor.assigned_experiment_id = revision.experiment_id
         editor.last_revision_snapshot = snapshot
-        # A finalized plan is mostly reviewed and delivered, not edited.
-        editor.settings_toggle.setChecked(False)
         editor._refresh_experiment_id()
         self._persist_draft(editor)
         self._sync_webdb_upload_state(editor)
         self._refresh_project_well_usage()
         return revision
 
-    def _set_plan_list_status(self, editor, status: str) -> None:
-        editor.plan_list_status = status
-        project = self.project_controller.active_project
-        if project is None or project.id != self._planning_project_id:
-            return
-        for index, (_, candidate) in enumerate(self._planning_drafts.get(project.id, [])):
-            if candidate is editor and index < self.plan_list.count():
-                self.plan_list.item(index).setText(self._plan_list_text(editor, status))
-                return
-
-    @staticmethod
-    def _plan_list_text(editor, status: str) -> str:
-        wells = len(editor.selection.wells)
-        return (
-            f"{editor.plan_name}\n{editor.PLAN_TYPE_LABEL} · {wells} "
-            f"well{'s' if wells != 1 else ''} · {status}"
-        )
-
-    def _filter_project_list(self, text: str) -> None:
-        query = text.strip().casefold()
-        for row in range(self.plan_list.count()):
-            item = self.plan_list.item(row)
-            item.setHidden(bool(query) and query not in item.text().casefold())
-
     def _sync_webdb_upload_state(self, editor, failure: str = "") -> None:
         try:
             self._update_webdb_upload_controls(editor, failure)
         finally:
-            self._refresh_delivery_bar(editor)
+            self._refresh_experiment_status(editor)
 
     def _update_webdb_upload_controls(self, editor, failure: str = "") -> None:
         editor.webdb_upload_button.setEnabled(False)
@@ -1640,10 +1867,9 @@ class ViewerWindow(QMainWindow):
 
     def _refresh_fragment_library_choices(self) -> None:
         choices = self._fragment_library_choices()
-        for drafts in self._planning_drafts.values():
-            for _, draft_editor in drafts:
-                if isinstance(draft_editor, FragmentScreeningEditor):
-                    draft_editor.set_library_choices(choices)
+        for draft_editor in self._editors.values():
+            if isinstance(draft_editor, FragmentScreeningEditor):
+                draft_editor.set_library_choices(choices)
         self.status_message_label.show_message(
             f"Found {len(choices)} libraries in "
             f"{self.settings.fragment_library_directory}",
@@ -1685,29 +1911,20 @@ class ViewerWindow(QMainWindow):
 
     def _save_plan_worksheets(self, editor) -> None:
         raw_crystal = editor.plan_type is PlanType.RAW_CRYSTAL
-        if editor.current_plan is None:
+        revision = editor.last_revision
+        if revision is None or self._plan_snapshot(editor) != editor.last_revision_snapshot:
             QMessageBox.warning(
                 self, "Cannot save worksheets",
-                f"The {'raw crystal' if raw_crystal else 'fragment'} plan is not valid.",
+                "Finalize the experiment in Review first. Worksheets are made from "
+                "the finalized revision.",
             )
-            return
-        assignment_order = self._choose_worksheet_assignment_order()
-        if assignment_order is None:
-            return
-        order_index = editor.order_input.findData(assignment_order)
-        if order_index != editor.order_input.currentIndex():
-            editor.order_input.setCurrentIndex(order_index)
-        plan = editor.current_plan
-        if plan is None:
-            QMessageBox.warning(
-                self, "Cannot save worksheets", "The reordered plan is not valid."
-            )
-            return
-        revision = self._finalize_plan(editor)
-        if revision is None:
             return
         # Deliver what the revision fixed, not whatever the editor shows now.
-        plan = plan_from_snapshot(editor.plan_id, revision.snapshot_json)
+        try:
+            plan = plan_from_snapshot(editor.plan_id, revision.snapshot_json)
+        except ValueError as error:
+            QMessageBox.warning(self, "Cannot save worksheets", str(error))
+            return
         service = self._worksheet_export_service()
         try:
             result = self._run_in_background(
@@ -1720,20 +1937,18 @@ class ViewerWindow(QMainWindow):
                 service, revision, plan, error, raw_crystal
             )
             if result is None:
+                self._refresh_worksheets_step(editor)
+                self._refresh_experiment_status(editor)
                 return
         self._record_worksheet_export(service, revision, WORKSHEETS_SUCCEEDED, result=result)
-        self._refresh_delivery_bar(editor)
         editor.experiment_id_label.setText(
             f"Experiment ID: {result.experiment_id} · Saved as {result.file_stem}"
         )
-        QMessageBox.information(
-            self,
-            "SHIFTER worksheets saved" if raw_crystal else "Worksheets saved",
-            "\n\n".join(
-                f"{self._instrument_label(output)}:\n{output.path}"
-                for output in result.outputs
-            ),
+        self.status_message_label.show_message(
+            f"Worksheets saved for {result.experiment_id}", 5000
         )
+        self._refresh_worksheets_step(editor)
+        self._refresh_experiment_status(editor)
 
     def _instrument_label(self, output: InstrumentOutput) -> str:
         destination = self.settings.instrument(output.instrument)
@@ -1803,147 +2018,12 @@ class ViewerWindow(QMainWindow):
         except ReviewPersistenceError as persistence_error:
             self._show_persistence_error(persistence_error)
 
-    def _choose_worksheet_assignment_order(self) -> AssignmentOrder | None:
-        dialog = QMessageBox(self)
-        dialog.setIcon(QMessageBox.Question)
-        dialog.setWindowTitle("Worksheet assignment order")
-        dialog.setText("How should fragments be assigned in the worksheets?")
-        dialog.setInformativeText(
-            "Changing the order reassigns fragments and updates all three previews."
-        )
-        selection_button = dialog.addButton(
-            "Selection Order", QMessageBox.AcceptRole
-        )
-        plate_button = dialog.addButton(
-            "Plate / Well Order", QMessageBox.ActionRole
-        )
-        dialog.addButton(QMessageBox.Cancel)
-        dialog.exec_()
-        clicked = dialog.clickedButton()
-        if clicked is selection_button:
-            return AssignmentOrder.SELECTION
-        if clicked is plate_button:
-            return AssignmentOrder.PLATE_WELL
-        return None
-
-    def _main_tab_changed(self, index: int) -> None:
-        # The live selection dock belongs to Image Review.
-        if index == self.planning_tab_index:
-            self._target_summary_visible_in_review = self.target_summary_dock.isVisible()
-            self.target_summary_dock.hide()
-        elif self._target_summary_visible_in_review:
-            self.target_summary_dock.show()
-        if index != self.planning_tab_index:
-            return
-        editor = self.plan_stack.currentWidget()
-        if not isinstance(editor, (FragmentScreeningEditor, RawCrystalEditor)):
-            return
-        if getattr(editor, "selection_snapshot_owned", False):
-            return
-        try:
-            crystals = self.project_controller.selected_crystals_for_plan()
-            if not crystals:
-                raise ValueError("select at least one crystal target first")
-        except IMAGE_SOURCE_ERRORS as error:
-            editor.current_plan = None
-            editor.error_label.setText(
-                f"Targets changed: {error}. Review warnings in Image Review."
-            )
-            if isinstance(editor, FragmentScreeningEditor):
-                editor.table.setRowCount(0)
-                editor.echo_table.setRowCount(0)
-                editor.shifter_table.setRowCount(0)
-            else:
-                editor.summary_table.setRowCount(0)
-                editor.shifter_table.setRowCount(0)
-            return
-        editor.set_crystals(crystals)
-
-    def _switch_planning_project(self, project_id: str | None) -> None:
-        if self._planning_project_id == project_id:
-            return
-        while self.plan_stack.count() > 1:
-            widget = self.plan_stack.widget(1)
-            self.plan_stack.removeWidget(widget)
-            widget.setParent(None)
-        self.plan_list.clear()
-        self.plan_list_empty_label.show()
-        self._planning_project_id = project_id
-        if project_id is None:
-            return
-        if project_id not in self._planning_drafts and self.review_store is not None:
-            self._planning_drafts[project_id] = []
-            try:
-                crystals = self.project_controller.selected_crystals_for_plan()
-            except IMAGE_SOURCE_ERRORS:
-                crystals = ()
-            unrestored: list[str] = []
-            try:
-                drafts = self.review_store.planning.load_planning_drafts(project_id)
-            except ReviewPersistenceError as error:
-                drafts = ()
-                unrestored.append(str(error))
-            for draft in drafts:
-                try:
-                    if draft.plan_type == PlanType.FRAGMENT_SCREENING.value:
-                        self._add_fragment_plan(None, crystals, draft)
-                    elif draft.plan_type == PlanType.RAW_CRYSTAL.value:
-                        self._add_raw_crystal_plan(crystals, draft)
-                except (ValueError, ReviewPersistenceError) as error:
-                    # One damaged plan must not keep the others, or the window,
-                    # from opening.
-                    unrestored.append(f"{draft.name}: {error}")
-            if unrestored:
-                self.status_message_label.show_message(
-                    f"{len(unrestored)} saved plan(s) could not be restored · "
-                    + " · ".join(unrestored)
-                )
-            return
-        for name, editor in self._planning_drafts.get(project_id, []):
-            editor.setParent(self.plan_stack)
-            self.plan_stack.addWidget(editor)
-            self.plan_list.addItem(
-                self._plan_list_text(editor, getattr(editor, "plan_list_status", "Draft"))
-            )
-        if self.plan_list.count():
-            self.plan_list_empty_label.hide()
-            self.plan_list.setCurrentRow(0)
-
-    def _planning_calibration_action(
-        self, acceptable_wells: int, warning_targets: int
-    ) -> str:
-        dialog = QMessageBox(self)
-        dialog.setIcon(QMessageBox.Warning)
-        dialog.setWindowTitle("Target calibration needs review")
-        dialog.setText(f"{warning_targets} target(s) are not ready for planning.")
-        if acceptable_wells:
-            dialog.setInformativeText(
-                f"{acceptable_wells} valid automatically detected well(s) can be "
-                "confirmed now. Missing calibrations and targets outside a well "
-                "will remain blocked and will not be omitted from the plan."
-            )
-            accept_button = dialog.addButton(
-                f"Accept Valid ({acceptable_wells}) & Continue",
-                QMessageBox.AcceptRole,
-            )
-        else:
-            dialog.setInformativeText(
-                "Missing calibrations and targets outside a well are not omitted. "
-                "Review and resolve every warning before creating a plan."
-            )
-            accept_button = None
-        review_button = dialog.addButton("Review Warnings", QMessageBox.ActionRole)
-        dialog.addButton(QMessageBox.Cancel)
-        dialog.exec_()
-        clicked = dialog.clickedButton()
-        if clicked is accept_button:
-            return "accept"
-        if clicked is review_button:
-            return "review"
-        return "cancel"
-
     def _review_target_warnings(self) -> None:
-        self.main_tabs.setCurrentIndex(self.image_review_tab_index)
+        if (
+            self.current_editor is not None
+            and self._current_step is not WorkflowStep.SELECT_WELLS
+        ):
+            self.go_to_step(WorkflowStep.SELECT_WELLS)
         warning_index = self.target_summary_filter.findData("warnings")
         self.target_summary_filter.setCurrentIndex(warning_index)
         self.target_summary_dock.show()
@@ -2152,7 +2232,7 @@ class ViewerWindow(QMainWindow):
             self.position_label.setText("")
             self.review_summary_label.setText("Add a plate to the active workspace")
             self.project_progress_label.setText("Workspace: no images")
-            self.selection_label.setText("Selection: no wells")
+            self.selection_label.setText("This experiment: no wells")
             self.calibration_label.setText("")
             self.calibration_accept_inline_button.hide()
             self.calibration_adjust_button.setEnabled(False)
@@ -2213,7 +2293,6 @@ class ViewerWindow(QMainWindow):
 
     def _sync_project_widgets(self) -> None:
         active = self.project_controller.active_project
-        self._switch_planning_project(active.id if active is not None else None)
         self.project_selector.blockSignals(True)
         self.project_selector.clear()
         for project in self.project_controller.projects:
@@ -2229,15 +2308,8 @@ class ViewerWindow(QMainWindow):
                     self.image_set_list.setCurrentIndex(self.image_set_model.index(row, 0))
                     break
         self._filter_plate_list(self.plate_filter_input.text())
-        self._update_planning_tab_title()
         self._update_review_summary()
         self._refresh_target_summary()
-
-    def _update_planning_tab_title(self) -> None:
-        count = self.plan_list.count()
-        self.main_tabs.setTabText(
-            self.planning_tab_index, f"Planning · {count}" if count else "Planning"
-        )
 
     def _target_count_for_image_set(self, image_set_id: str) -> int:
         if (
@@ -2262,6 +2334,16 @@ class ViewerWindow(QMainWindow):
             QMessageBox.warning(self, "Cannot load plates", str(error))
             return
         self.load_plates(dialog.plate_format, sources)
+
+    def _load_plates_from_form(self) -> None:
+        try:
+            sources = self.load_plates_form.plate_sources()
+        except IMAGE_SOURCE_ERRORS as error:
+            self.load_plates_form.error_label.setText(str(error))
+            self.load_plates_form.error_label.show()
+            return
+        self.load_plates(self.load_plates_form.plate_format, sources)
+        self.load_plates_form.plate_codes_input.clear()
 
     def load_plates(
         self, plate_format: PlateFormat, sources: tuple[PlateSource, ...]
@@ -3069,8 +3151,10 @@ class ViewerWindow(QMainWindow):
             filtered = len(self.controller.filtered_indices)
             total = len(self.controller.plate.images)
             matches = "" if filtered == total else f" · {filtered} images match filter"
+            others = self._other_experiments_using_current_image()
+            used = f" · also used in {', '.join(others)}" if others else ""
             self.review_summary_label.setText(
-                f"This well: {_count(positions, 'position')} · {review_state}{matches}"
+                f"This well: {_count(positions, 'position')} · {review_state}{matches}{used}"
             )
         if self.project_controller.active_project is None:
             return
@@ -3086,14 +3170,18 @@ class ViewerWindow(QMainWindow):
         seen = sum(item.reviewed_images for item in per_image_set.values())
         images = sum(item.total_images for item in per_image_set.values())
         self.selection_label.setText(
-            f"Selection: {_count(wells, 'well')} · {_count(positions, 'position')}"
-            if wells else "Selection: no wells"
+            f"This experiment: {_count(wells, 'well')} · {_count(positions, 'position')}"
+            if wells else "This experiment: no wells"
         )
         self.project_progress_label.setText(
             f"· Workspace {seen}/{images} images seen" if images else "Workspace: no images"
         )
-        self.new_project_from_selection_button.setEnabled(wells > 0)
         self._update_navigation()
+        if (
+            self.current_editor is not None
+            and self._current_step is WorkflowStep.SELECT_WELLS
+        ):
+            self._selection_sync_timer.start()
 
     def _update_navigation(self) -> None:
         self.previous_button.setEnabled(
@@ -3111,13 +3199,15 @@ class ViewerWindow(QMainWindow):
             )
         )
 
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        if self.current_editor is not None:
+            self._refresh_experiment_status(self.current_editor)
+
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
-        for drafts in self._planning_drafts.values():
-            for _, editor in drafts:
-                if hasattr(editor, "autosave_timer"):
-                    editor.autosave_timer.stop()
-                if isinstance(editor, (FragmentScreeningEditor, RawCrystalEditor)):
-                    self._persist_draft(editor)
+        for editor in self._editors.values():
+            editor.autosave_timer.stop()
+            self._persist_draft(editor)
         while self.controller is not None:
             try:
                 self.controller.checkpoint_current()

@@ -13,11 +13,8 @@ from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
-    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -26,7 +23,6 @@ from PyQt5.QtWidgets import (
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -72,177 +68,108 @@ def _preview_table(headers: tuple[str, ...], stretch_last: bool = False) -> QTab
 
 
 class PlanEditorBase(QWidget):
-    """Header, plan settings, previews, and the delivery bar shared by plan types."""
+    """One experiment's plan: its inputs, previews, and MxLive records.
+
+    The editor holds the plan state; the experiment screen places its widgets
+    into the guided steps (Setup, Conditions, Review, Worksheets).
+    """
 
     PLAN_TYPE_LABEL = ""
 
-    save_worksheets_requested = pyqtSignal()
     finalize_requested = pyqtSignal()
     draft_changed = pyqtSignal()
     webdb_upload_requested = pyqtSignal()
-    adopt_selection_requested = pyqtSignal()
 
     def __init__(
         self,
-        selection: CrystalSelection | tuple[SelectedCrystal, ...],
+        selection: CrystalSelection | tuple[SelectedCrystal, ...] | None,
         transient_project_id: str,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.selection = (
-            selection
-            if isinstance(selection, CrystalSelection)
-            else crystal_selection_from_selected_crystals(transient_project_id, selection)
-        )
+        self._transient_project_id = transient_project_id
+        self.selection: CrystalSelection | None = None
+        if isinstance(selection, CrystalSelection):
+            self.selection = selection
+        elif selection:
+            self.selection = crystal_selection_from_selected_crystals(
+                transient_project_id, selection
+            )
         self.current_plan = None
         self.current_experiment_id: str | None = None
         self.assigned_experiment_id: str | None = None
         self.mxlive_account: MxLiveAccount | None = None
         self.well_usage: dict[str, tuple[SelectedWellUsage, ...]] = {}
         self._experiment_id_provider: Callable[[str], str] | None = None
+        self.step_pages: dict = {}
 
-        # Header: which project this is and where it stands.
-        self.title_label = QLabel(self.PLAN_TYPE_LABEL)
-        self.title_label.setObjectName("PrimaryHeading")
-        title_font = self.title_label.font()
-        title_font.setPointSizeF(title_font.pointSizeF() * 1.25)
-        self.title_label.setFont(title_font)
-        self.plan_type_label = QLabel(self.PLAN_TYPE_LABEL)
-        self.plan_type_label.setObjectName("Muted")
+        self.name_input = QLineEdit()
+        self.name_input.setMaximumWidth(480)
+        self.protein_input = QLineEdit()
+        self.protein_input.setPlaceholderText("e.g. BRD4")
+        self.protein_input.setMaximumWidth(480)
         self.lifecycle_label = QLabel("Draft · not saved")
         self.facts_label = QLabel()
         self.facts_label.setObjectName("Muted")
-        self.experiment_id_label = QLabel("Experiment ID: —")
+        self.experiment_id_label = QLabel("Experiment ID: determined when finalized")
         self.experiment_id_label.setObjectName("Muted")
         self.experiment_id_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.adopt_selection_button = QPushButton("Adopt Current Selection…")
-        self.adopt_selection_button.hide()
-
-        # Plan settings, collapsible once the plan is settled.
-        self.protein_input = QLineEdit()
-        self.protein_input.setPlaceholderText("Protein name")
-        self.protein_input.setMinimumWidth(160)
         self.order_input = QComboBox()
-        self.order_input.addItem("Selection order", AssignmentOrder.SELECTION)
-        self.order_input.addItem("Plate / well order", AssignmentOrder.PLATE_WELL)
-        self.order_input.setToolTip(
-            "Changing the order reassigns plan items; previews update immediately."
-        )
-        self.settings_toggle = QToolButton()
-        self.settings_toggle.setText("Plan settings")
-        self.settings_toggle.setCheckable(True)
-        self.settings_toggle.setChecked(True)
-        self.settings_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.settings_toggle.setArrowType(Qt.DownArrow)
-        self.settings_panel = QWidget()
+        self.order_input.addItem("Keep selection order", AssignmentOrder.SELECTION)
+        self.order_input.addItem("Plate and well order", AssignmentOrder.PLATE_WELL)
+        self.order_input.setMaximumWidth(320)
         self.error_label = QLabel()
         self.error_label.setWordWrap(True)
-        self.error_label.setStyleSheet(theme.status_style("error"))
+        self.error_label.setStyleSheet(theme.status_style("attention"))
+        self.error_label.hide()
 
-        # Previews.
         self.preview_tabs = QTabWidget()
         self.shifter_table = _preview_table(SHIFTER_HEADER)
         self.webdb_status_label = QLabel("MxLive account: not configured")
         self.webdb_status_label.setObjectName("Muted")
         self.webdb_upload_state = ""
         self.webdb_table = _preview_table(LABWORK_COLUMNS)
-
-        # Delivery bar: finalization and every delivery outside XtalFlow.
-        self.readiness_label = QLabel()
-        self.worksheet_status_label = QLabel("Worksheets: not saved")
-        self.webdb_delivery_label = QLabel("WebDB: not uploaded")
-        self.finalize_button = QPushButton("Finalize Plan")
-        self.save_worksheets_button = QPushButton("Save Worksheets…")
-        self.save_worksheets_button.setEnabled(False)
         self.webdb_upload_button = QPushButton("Upload to MxLive…")
         self.webdb_upload_button.setEnabled(False)
 
-        self.finalize_button.clicked.connect(self.finalize_requested.emit)
-        self.save_worksheets_button.clicked.connect(self.save_worksheets_requested.emit)
         self.webdb_upload_button.clicked.connect(self.webdb_upload_requested.emit)
-        self.adopt_selection_button.clicked.connect(self.adopt_selection_requested.emit)
         self.protein_input.textChanged.connect(self._refresh_experiment_id)
         self.protein_input.textChanged.connect(self.draft_changed.emit)
-        self.settings_toggle.toggled.connect(self._toggle_settings)
+        self.name_input.textEdited.connect(self.draft_changed.emit)
 
-    def _assemble(self, settings: QFormLayout, previews: tuple[tuple[QWidget, str], ...]) -> None:
-        heading = QHBoxLayout()
-        heading.addWidget(self.title_label)
-        heading.addStretch()
-        heading.addWidget(self.adopt_selection_button)
-        status = QHBoxLayout()
-        status.setSpacing(theme.SPACING_S)
-        status.addWidget(self.plan_type_label)
-        separator = QLabel("·")
-        separator.setObjectName("Muted")
-        status.addWidget(separator)
-        status.addWidget(self.lifecycle_label)
-        status.addStretch()
-        status.addWidget(self.experiment_id_label)
-        self.settings_panel.setLayout(settings)
-
-        for widget, title in previews:
-            self.preview_tabs.addTab(widget, title)
-        webdb_widget = QWidget()
-        webdb_layout = QVBoxLayout()
-        webdb_layout.addWidget(self.webdb_status_label)
-        webdb_layout.addWidget(self.webdb_table, 1)
-        webdb_widget.setLayout(webdb_layout)
-        self.preview_tabs.addTab(webdb_widget, "WebDB")
-
-        delivery_status = QVBoxLayout()
-        delivery_status.setSpacing(2)
-        delivery_status.addWidget(self.readiness_label)
-        delivery_facts = QHBoxLayout()
-        delivery_facts.setSpacing(theme.SPACING_L)
-        delivery_facts.addWidget(self.worksheet_status_label)
-        delivery_facts.addWidget(self.webdb_delivery_label)
-        delivery_facts.addStretch()
-        delivery_status.addLayout(delivery_facts)
-        delivery = QHBoxLayout()
-        delivery.setContentsMargins(theme.SPACING_L, theme.SPACING_M, theme.SPACING_M, theme.SPACING_M)
-        delivery.addLayout(delivery_status, 1)
-        delivery.addWidget(self.finalize_button)
-        delivery.addWidget(self.save_worksheets_button)
-        delivery.addWidget(self.webdb_upload_button)
-        self.delivery_bar = QFrame()
-        self.delivery_bar.setObjectName("DeliveryBar")
-        self.delivery_bar.setLayout(delivery)
-
+    def mxlive_widget(self) -> QWidget:
+        widget = QWidget()
         layout = QVBoxLayout()
-        layout.setContentsMargins(theme.SPACING_M, 0, 0, 0)
-        layout.setSpacing(theme.SPACING_M)
-        layout.addLayout(heading)
-        layout.addLayout(status)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.webdb_status_label)
+        layout.addWidget(self.webdb_table, 1)
+        actions = QHBoxLayout()
+        actions.addStretch()
+        actions.addWidget(self.webdb_upload_button)
+        layout.addLayout(actions)
+        widget.setLayout(layout)
+        return widget
+
+    def conditions_widget(self) -> QWidget | None:
+        return None
+
+    def review_widget(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.facts_label)
-        layout.addWidget(self.settings_toggle)
-        layout.addWidget(self.settings_panel)
         layout.addWidget(self.error_label)
         layout.addWidget(self.preview_tabs, 1)
-        layout.addWidget(self.delivery_bar)
-        self.setLayout(layout)
+        layout.addWidget(self.experiment_id_label)
+        widget.setLayout(layout)
+        return widget
 
     def set_title(self, name: str) -> None:
-        self.title_label.setText(name)
-
-    def show_delivery(
-        self, readiness: tuple[str, str], worksheets: tuple[str, str], webdb: tuple[str, str]
-    ) -> None:
-        """Show plan confirmation and each external delivery as separate states."""
-        for label, (text, kind) in (
-            (self.readiness_label, readiness),
-            (self.worksheet_status_label, worksheets),
-            (self.webdb_delivery_label, webdb),
-        ):
-            label.setText(text)
-            label.setStyleSheet(theme.status_style(kind))
-
-    def _toggle_settings(self, visible: bool) -> None:
-        self.settings_panel.setVisible(visible)
-        self.settings_toggle.setArrowType(Qt.DownArrow if visible else Qt.RightArrow)
+        if self.name_input.text() != name:
+            self.name_input.setText(name)
 
     def _refresh_facts(self) -> None:
-        wells = self.selection.wells
+        wells = self.selection.wells if self.selection is not None else ()
         positions = sum(len(well.soaking_positions) for well in wells)
         reused = sum(1 for well in wells if self.well_usage.get(well.image_key))
         facts = (
@@ -250,16 +177,21 @@ class PlanEditorBase(QWidget):
             f"{positions} position{'s' if positions != 1 else ''}"
         )
         if reused:
-            facts += f" · {reused} reused"
+            facts += f" · {reused} used before"
         self.facts_label.setText(facts)
 
     def set_crystals(self, crystals: tuple[SelectedCrystal, ...]) -> None:
-        self.selection = crystal_selection_from_selected_crystals(
-            self.selection.project_id, crystals
+        project_id = (
+            self.selection.project_id if self.selection is not None
+            else getattr(self, "plan_id", self._transient_project_id)
+        )
+        self.selection = (
+            crystal_selection_from_selected_crystals(project_id, crystals)
+            if crystals else None
         )
         self.refresh_plan()
 
-    def set_selection(self, selection: CrystalSelection) -> None:
+    def set_selection(self, selection: CrystalSelection | None) -> None:
         self.selection = selection
         self.refresh_plan()
 
@@ -281,25 +213,22 @@ class PlanEditorBase(QWidget):
         if self.assigned_experiment_id:
             self.current_experiment_id = self.assigned_experiment_id
             self.experiment_id_label.setText(
-                f"Experiment ID: {self.assigned_experiment_id} · fixed for this plan"
+                f"Experiment ID: {self.assigned_experiment_id} · fixed for this experiment"
             )
         elif self._experiment_id_provider is None:
             self.current_experiment_id = None
-            self.experiment_id_label.setText("Experiment ID: —")
+            self.experiment_id_label.setText("Experiment ID: determined when finalized")
         else:
             try:
                 self.current_experiment_id = self._experiment_id_provider(
                     self.protein_input.text()
                 )
                 self.experiment_id_label.setText(
-                    f"Experiment ID: {self.current_experiment_id}"
+                    f"Experiment ID when finalized: {self.current_experiment_id}"
                 )
             except (ValueError, ReviewPersistenceError) as error:
                 self.current_experiment_id = None
                 self.experiment_id_label.setText(f"Experiment ID: {error}")
-        self.save_worksheets_button.setEnabled(
-            self.current_plan is not None and self.current_experiment_id is not None
-        )
         self._refresh_webdb_preview()
 
     def _record_builder(self) -> Callable:
@@ -320,12 +249,16 @@ class PlanEditorBase(QWidget):
                 f"{self.webdb_status_label.text()} · {self.webdb_upload_state}"
             )
 
+    def _require_selection(self) -> CrystalSelection:
+        if self.selection is None:
+            raise ValueError("Select at least one well to continue.")
+        return self.selection
+
     def _show_plan_error(self, error: ValueError) -> None:
         self.current_plan = None
         self.error_label.setText(str(error))
         self.error_label.show()
         self.webdb_table.setRowCount(0)
-        self.save_worksheets_button.setEnabled(False)
         self._refresh_facts()
         self._refresh_webdb_preview()
         self.draft_changed.emit()
@@ -370,7 +303,7 @@ class FragmentScreeningEditor(PlanEditorBase):
         self.volume_input.setRange(2.5, 10000.0)
         self.volume_input.setSingleStep(2.5)
         self.volume_input.setDecimals(1)
-        self.volume_input.setSuffix(" nL / image")
+        self.volume_input.setSuffix(" nL / well")
         self.volume_input.setValue(25.0)
         self.table = _preview_table(
             ("Order", "Plate", "Well", "Positions", "Usage", "Fragment", "Source", "Total"),
@@ -378,27 +311,10 @@ class FragmentScreeningEditor(PlanEditorBase):
         )
         self.echo_table = _preview_table(ECHO_HEADER)
 
-        library_row = QHBoxLayout()
-        library_row.addWidget(self.library_input, 1)
-        library_row.addWidget(self.refresh_libraries_button)
-        amounts_row = QHBoxLayout()
-        amounts_row.addWidget(self.rows_input, 1)
-        amounts_row.addWidget(QLabel("Volume"))
-        amounts_row.addWidget(self.volume_input)
-        settings = QFormLayout()
-        settings.addRow("Protein", self.protein_input)
-        settings.addRow("Library", library_row)
-        settings.addRow("", self.library_label)
-        settings.addRow("CSV rows", amounts_row)
-        settings.addRow("Assignment", self.order_input)
-        self._assemble(
-            settings,
-            (
-                (self.table, "Summary"),
-                (self.echo_table, "ECHO Worksheet"),
-                (self.shifter_table, "SHIFTER Worksheet"),
-            ),
-        )
+        self.count_label = QLabel()
+        self.preview_tabs.addTab(self.table, "Assignments")
+        self.preview_tabs.addTab(self.echo_table, "ECHO worksheet")
+        self.preview_tabs.addTab(self.shifter_table, "SHIFTER worksheet")
 
         self.rows_input.textChanged.connect(self.refresh_plan)
         self.volume_input.valueChanged.connect(self.refresh_plan)
@@ -414,6 +330,38 @@ class FragmentScreeningEditor(PlanEditorBase):
 
     def _record_builder(self) -> Callable:
         return build_fragment_labworks
+
+    def conditions_widget(self) -> QWidget:
+        library_row = QHBoxLayout()
+        library_row.addWidget(self.library_input, 1)
+        library_row.addWidget(self.refresh_libraries_button)
+        library_row.addStretch()
+        rows_hint = QLabel("Data rows start at 1; the header is not counted.")
+        rows_hint.setObjectName("Muted")
+        volume_hint = QLabel(
+            "Shared equally between the positions in each well, in 2.5 nL steps."
+        )
+        volume_hint.setObjectName("Muted")
+        self.library_input.setMaximumWidth(480)
+        self.rows_input.setMaximumWidth(320)
+        self.volume_input.setMaximumWidth(200)
+        form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.FieldsStayAtSizeHint)
+        form.addRow("Library *", library_row)
+        form.addRow("", self.library_label)
+        form.addRow("Data rows", self.rows_input)
+        form.addRow("", rows_hint)
+        form.addRow("Total volume/well *", self.volume_input)
+        form.addRow("", volume_hint)
+        form.addRow("Assignment order", self.order_input)
+        widget = QWidget()
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addLayout(form)
+        layout.addWidget(self.count_label)
+        layout.addStretch()
+        widget.setLayout(layout)
+        return widget
 
     def set_library_choices(
         self,
@@ -471,16 +419,20 @@ class FragmentScreeningEditor(PlanEditorBase):
 
     def refresh_plan(self) -> None:
         try:
+            selection = self._require_selection()
             if self.library is None:
-                raise ValueError("select or import a fragment library")
+                raise ValueError("Choose a fragment library.")
             selected_library = self.library.select_rows(self.rows_input.text())
+            self._show_counts(len(selected_library.fragments), len(selection.wells))
             plan = build_fragment_screen_plan(
                 selected_library,
-                self.selection,
+                selection,
                 Decimal(str(self.volume_input.value())),
                 self.order_input.currentData(),
             )
         except ValueError as error:
+            if self.selection is None or self.library is None:
+                self.count_label.setText("")
             self.table.setRowCount(0)
             self.echo_table.setRowCount(0)
             self.shifter_table.setRowCount(0)
@@ -522,6 +474,25 @@ class FragmentScreeningEditor(PlanEditorBase):
         self._refresh_experiment_id()
         self.draft_changed.emit()
 
+    def _show_counts(self, fragments: int, wells: int) -> None:
+        if fragments < wells:
+            text = (
+                f"{theme.SYMBOL_ATTENTION} {wells} wells, {fragments} fragments — choose "
+                f"{wells - fragments} more fragments or edit the selected wells."
+            )
+            kind = "attention"
+        elif fragments > wells:
+            text = (
+                f"{theme.SYMBOL_OK} {fragments} fragments → {wells} wells · the last "
+                f"{fragments - wells} are not used"
+            )
+            kind = "ok"
+        else:
+            text = f"{theme.SYMBOL_OK} {fragments} fragments → {wells} wells · counts match"
+            kind = "ok"
+        self.count_label.setText(text)
+        self.count_label.setStyleSheet(theme.status_style(kind))
+
     def restore_draft(self, draft: PlanningDraft) -> None:
         widgets = (self.library_input, self.rows_input, self.protein_input,
                    self.volume_input, self.order_input)
@@ -535,6 +506,7 @@ class FragmentScreeningEditor(PlanEditorBase):
         self._update_library_label()
         self.rows_input.setText(draft.library_rows)
         self.protein_input.setText(draft.protein)
+        self.name_input.setText(draft.name)
         self.assigned_experiment_id = draft.experiment_id
         self.volume_input.setValue(float(draft.volume_nl))
         order_index = self.order_input.findData(AssignmentOrder(draft.assignment_order))
@@ -555,28 +527,32 @@ class RawCrystalEditor(PlanEditorBase):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(selection, "transient-raw-editor", parent)
-        self.save_worksheets_button.setText("Save SHIFTER Worksheets…")
         self.summary_table = _preview_table(
-            ("Order", "Plate", "Well", "Soaking Position", "Usage", "Selected at"),
+            ("Order", "Plate", "Well", "Position", "Usage", "Selected at"),
             stretch_last=True,
         )
-        settings = QFormLayout()
-        settings.addRow("Protein", self.protein_input)
-        settings.addRow("Assignment", self.order_input)
-        self._assemble(
-            settings,
-            ((self.summary_table, "Summary"), (self.shifter_table, "SHIFTER Worksheet")),
-        )
+        self.preview_tabs.addTab(self.summary_table, "Harvest list")
+        self.preview_tabs.addTab(self.shifter_table, "SHIFTER worksheet")
         self.order_input.currentIndexChanged.connect(self.refresh_plan)
         self.refresh_plan()
 
     def _record_builder(self) -> Callable:
         return build_raw_crystal_labworks
 
+    def review_widget(self) -> QWidget:
+        widget = super().review_widget()
+        order = QHBoxLayout()
+        order.addWidget(QLabel("Harvest order"))
+        order.addWidget(self.order_input)
+        order.addStretch()
+        widget.layout().insertLayout(1, order)
+        return widget
+
     def restore_draft(self, draft: PlanningDraft) -> None:
         self.protein_input.blockSignals(True)
         self.order_input.blockSignals(True)
         self.protein_input.setText(draft.protein)
+        self.name_input.setText(draft.name)
         self.assigned_experiment_id = draft.experiment_id
         index = self.order_input.findData(AssignmentOrder(draft.assignment_order))
         self.order_input.setCurrentIndex(max(0, index))
@@ -586,7 +562,9 @@ class RawCrystalEditor(PlanEditorBase):
 
     def refresh_plan(self) -> None:
         try:
-            plan = build_raw_crystal_plan(self.selection, self.order_input.currentData())
+            plan = build_raw_crystal_plan(
+                self._require_selection(), self.order_input.currentData()
+            )
             rows = build_shifter_worksheet(plan)
         except ValueError as error:
             self.summary_table.setRowCount(0)
@@ -695,37 +673,3 @@ def _set_webdb_account_status(
         f"{account.account_id} · {record_count} records · {state}"
     )
     label.setToolTip("\n".join(account.upload_blockers))
-
-
-class FragmentScreeningDialog(QDialog):
-    """Compatibility wrapper around the embedded planning editor."""
-
-    def __init__(
-        self,
-        library: FragmentLibrary,
-        crystals: tuple[SelectedCrystal, ...],
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Fragment Screening Plan")
-        self.resize(850, 520)
-        self.editor = FragmentScreeningEditor(library, crystals, self)
-        buttons = QDialogButtonBox(QDialogButtonBox.Close)
-        buttons.rejected.connect(self.reject)
-        layout = QVBoxLayout()
-        layout.addWidget(self.editor, 1)
-        layout.addWidget(buttons)
-        self.setLayout(layout)
-        for name in (
-            "library_label",
-            "rows_input",
-            "volume_input",
-            "order_input",
-            "error_label",
-            "table",
-        ):
-            setattr(self, name, getattr(self.editor, name))
-
-    @property
-    def current_plan(self):
-        return self.editor.current_plan

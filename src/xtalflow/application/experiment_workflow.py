@@ -98,7 +98,7 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
     try:
         normalize_protein_name(facts.protein)
         statuses[WorkflowStep.SETUP] = StepStatus(
-            WorkflowStep.SETUP, StepState.COMPLETE, facts.protein.strip()
+            WorkflowStep.SETUP, StepState.COMPLETE, f"Protein: {facts.protein.strip()}"
         )
     except ValueError as error:
         message = (
@@ -130,6 +130,12 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
         if facts.conditions_error:
             statuses[WorkflowStep.CONDITIONS] = StepStatus(
                 WorkflowStep.CONDITIONS, StepState.ATTENTION, facts.conditions_error
+            )
+        elif facts.well_count == 0:
+            # Volumes and fragment counts can only be checked against selected wells.
+            statuses[WorkflowStep.CONDITIONS] = StepStatus(
+                WorkflowStep.CONDITIONS, StepState.INCOMPLETE,
+                "Select wells to check the fragment assignment.",
             )
         else:
             message = "Fragments assigned"

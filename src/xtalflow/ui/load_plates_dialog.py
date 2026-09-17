@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -13,6 +14,7 @@ from PyQt5.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QPushButton,
     QTableWidget,
     QVBoxLayout,
     QWidget,
@@ -38,8 +40,13 @@ def parse_plate_codes(text: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(code.strip() for code in text.split(",") if code.strip()))
 
 
-class LoadPlatesDialog(QDialog):
-    """One dialog for plate type, codes, and optional per-plate batch/profile."""
+class LoadPlatesForm(QWidget):
+    """Plate type, codes, and optional per-plate batch/profile.
+
+    Shown inline when an experiment has no plates, and inside LoadPlatesDialog.
+    """
+
+    submitted = pyqtSignal()
 
     def __init__(
         self,
@@ -50,8 +57,7 @@ class LoadPlatesDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.repository = repository
-        self.setWindowTitle("Load Plates")
-        self.setMinimumWidth(460)
+        self.setMaximumWidth(560)
         self.plate_format_input = QComboBox()
         for plate_format in plate_formats:
             self.plate_format_input.addItem(plate_format.display_name, plate_format)
@@ -72,9 +78,7 @@ class LoadPlatesDialog(QDialog):
         self.error_label.setWordWrap(True)
         self.error_label.setStyleSheet(theme.status_style("error"))
         self.error_label.hide()
-        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        self.load_button = self.buttons.button(QDialogButtonBox.Ok)
-        self.load_button.setText("Load")
+        self.load_button = QPushButton("Load plates")
         self.load_button.setObjectName("Primary")
         self.load_button.setEnabled(False)
 
@@ -86,13 +90,12 @@ class LoadPlatesDialog(QDialog):
         layout.addWidget(self.use_latest_checkbox)
         layout.addWidget(self.sources_table)
         layout.addWidget(self.error_label)
-        layout.addWidget(self.buttons)
         self.setLayout(layout)
 
         self.plate_codes_input.textChanged.connect(self._refresh)
+        self.plate_codes_input.returnPressed.connect(self._submit_if_valid)
         self.use_latest_checkbox.toggled.connect(self._refresh)
-        self.buttons.accepted.connect(self._accept_if_valid)
-        self.buttons.rejected.connect(self.reject)
+        self.load_button.clicked.connect(self._submit_if_valid)
 
     @property
     def plate_format(self) -> PlateFormat:
@@ -183,14 +186,52 @@ class LoadPlatesDialog(QDialog):
             )
         self.load_button.setEnabled(ready)
 
-    def _accept_if_valid(self) -> None:
+    def _submit_if_valid(self) -> None:
+        if not self.load_button.isEnabled():
+            return
         try:
             self.plate_sources()
         except (OSError, ValueError) as error:
             self._set_error(str(error))
             return
-        self.accept()
+        self.submitted.emit()
 
     def _set_error(self, message: str) -> None:
         self.error_label.setText(message)
         self.error_label.setVisible(bool(message))
+
+
+class LoadPlatesDialog(QDialog):
+    """LoadPlatesForm in a dialog, for adding plates to an experiment later."""
+
+    def __init__(
+        self,
+        repository,
+        plate_formats: tuple[PlateFormat, ...],
+        default_format: PlateFormat | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Load Plates")
+        self.setMinimumWidth(460)
+        self.form = LoadPlatesForm(repository, plate_formats, default_format, self)
+        cancel = QDialogButtonBox(QDialogButtonBox.Cancel)
+        cancel.addButton(self.form.load_button, QDialogButtonBox.AcceptRole)
+        layout = QVBoxLayout()
+        layout.addWidget(self.form)
+        layout.addWidget(cancel)
+        self.setLayout(layout)
+        self.form.submitted.connect(self.accept)
+        cancel.rejected.connect(self.reject)
+        for name in (
+            "plate_format_input", "plate_codes_input", "use_latest_checkbox",
+            "sources_table", "error_label", "load_button",
+        ):
+            setattr(self, name, getattr(self.form, name))
+
+    @property
+    def plate_format(self) -> PlateFormat:
+        return self.form.plate_format
+
+    def plate_sources(self) -> tuple[PlateSource, ...]:
+        return self.form.plate_sources()

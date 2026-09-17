@@ -872,6 +872,93 @@ def test_unchecked_experiment_id_requires_confirmation(
     app.processEvents()
 
 
+def _fragment_plan_window(tmp_path: Path, settings):
+    (tmp_path / "library.csv").write_text(
+        "Vendor,Library,No,ID,Formula,MW,Smile,Conc_mM,Solvent,Plate_ID,Plate_well\n"
+        "Vendor,Lib,1,CMP-1,C2H6O,46.07,CCO,100,DMSO,SRC-1,A01\n",
+        encoding="utf-8",
+    )
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(
+        RockMakerImageRepository(tmp_path), store,
+        settings=replace(settings, fragment_library_directory=tmp_path),
+    )
+    crystal = SelectedCrystal(
+        "image", "1070", "A01a",
+        (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
+        SWISSCI_MIDI_3_LENS.id,
+    )
+    window._add_fragment_plan(None, (crystal,))
+    editor = window.plan_stack.currentWidget()
+    editor.library_input.setCurrentIndex(1)
+    editor.protein_input.setText("BRD4")
+    window._choose_worksheet_assignment_order = lambda: AssignmentOrder.SELECTION
+    return window, store, editor
+
+
+def test_fragment_worksheets_are_saved_and_audited(tmp_path: Path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        echo_output_directory=tmp_path / "echo650",
+        shifter1_output_directory=tmp_path / "shifter1",
+        shifter2_output_directory=tmp_path / "shifter2",
+        create_missing_instrument_roots=True,
+    )
+    window, store, editor, = _fragment_plan_window(tmp_path, settings)
+    messages = []
+    monkeypatch.setattr(
+        QMessageBox, "information", lambda *args, **kwargs: messages.append(args[1])
+    )
+
+    window._save_plan_worksheets(editor)
+
+    revision = editor.last_revision
+    exports = store.list_worksheet_exports(revision.id)
+    assert messages == ["Worksheets saved"]
+    assert [event.status for event in exports] == ["succeeded"]
+    assert Path(exports[0].echo_path).is_file()
+    assert Path(exports[0].shifter2_path).is_file()
+    window.close()
+    app.processEvents()
+
+
+def test_unavailable_instrument_share_can_use_alternate_root(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        echo_output_directory=tmp_path / "missing-echo",
+        shifter1_output_directory=tmp_path / "missing-shifter1",
+        shifter2_output_directory=tmp_path / "missing-shifter2",
+        create_missing_instrument_roots=False,
+    )
+    window, store, editor = _fragment_plan_window(tmp_path, settings)
+    monkeypatch.setattr(QMessageBox, "exec_", lambda dialog: 0)
+    monkeypatch.setattr(
+        QMessageBox, "clickedButton",
+        lambda dialog: next(
+            button for button in dialog.buttons() if button.text().startswith("Choose")
+        ),
+    )
+    monkeypatch.setattr(
+        "xtalflow.viewer.QFileDialog.getExistingDirectory",
+        lambda *args, **kwargs: str(tmp_path / "chosen"),
+    )
+    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: None)
+
+    window._save_plan_worksheets(editor)
+
+    exports = store.list_worksheet_exports(editor.last_revision.id)
+    assert [event.status for event in exports] == ["succeeded"]
+    assert exports[0].echo_path.startswith(str(tmp_path / "chosen" / "echo650"))
+    window.close()
+    app.processEvents()
+
+
 def test_raw_plan_keeps_experiment_id_across_revisions(
     tmp_path: Path, monkeypatch
 ) -> None:

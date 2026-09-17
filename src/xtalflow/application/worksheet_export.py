@@ -1,0 +1,92 @@
+"""Deliver finalized plans to instrument folders and audit every attempt."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Protocol, Union
+from uuid import uuid4
+
+from xtalflow.domain.fragment_screening import FragmentScreenPlan
+from xtalflow.domain.plan_lifecycle import PlanRevision, WorksheetExportEvent
+from xtalflow.domain.raw_crystal import RawCrystalPlan
+
+
+SUCCEEDED = "succeeded"
+FAILED = "failed"
+CANCELLED = "cancelled"
+
+WorksheetPlan = Union[FragmentScreenPlan, RawCrystalPlan]
+
+
+class InstrumentWorksheetExporter(Protocol):
+    def export(self, plan: FragmentScreenPlan, experiment_id: str): ...
+
+    def export_to_alternate_root(
+        self, plan: FragmentScreenPlan, experiment_id: str, root: Path
+    ): ...
+
+    def export_shifter(self, plan: RawCrystalPlan, experiment_id: str): ...
+
+    def export_shifter_to_alternate_root(
+        self, plan: RawCrystalPlan, experiment_id: str, root: Path
+    ): ...
+
+
+class WorksheetExportAuditPort(Protocol):
+    def record_worksheet_export(self, event: WorksheetExportEvent) -> None: ...
+
+
+class WorksheetExportService:
+    """Write worksheets for a plan type; raw crystal plans need no ECHO worksheet.
+
+    ``deliver`` only touches instrument folders and may run on a worker thread.
+    ``record`` writes the audit database and must run on the thread that owns it.
+    """
+
+    def __init__(
+        self,
+        exporter: InstrumentWorksheetExporter,
+        audit_store: WorksheetExportAuditPort | None,
+        username: str,
+    ) -> None:
+        self.exporter = exporter
+        self.audit_store = audit_store
+        self.username = username
+
+    def deliver(
+        self,
+        plan: WorksheetPlan,
+        experiment_id: str,
+        alternate_root: Path | None = None,
+    ):
+        if isinstance(plan, RawCrystalPlan):
+            if alternate_root is None:
+                return self.exporter.export_shifter(plan, experiment_id)
+            return self.exporter.export_shifter_to_alternate_root(
+                plan, experiment_id, alternate_root
+            )
+        if alternate_root is None:
+            return self.exporter.export(plan, experiment_id)
+        return self.exporter.export_to_alternate_root(plan, experiment_id, alternate_root)
+
+    def record(
+        self,
+        revision: PlanRevision,
+        status: str,
+        *,
+        result=None,
+        error: str | None = None,
+    ) -> None:
+        if self.audit_store is None:
+            return
+        self.audit_store.record_worksheet_export(
+            WorksheetExportEvent(
+                str(uuid4()), revision.id, self.username, datetime.now(timezone.utc),
+                status,
+                str(result.echo_path) if getattr(result, "echo_path", None) else None,
+                str(result.shifter1_path) if result is not None else None,
+                str(result.shifter2_path) if result is not None else None,
+                error,
+            )
+        )

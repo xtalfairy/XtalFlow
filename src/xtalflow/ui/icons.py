@@ -26,6 +26,13 @@ RAW_CRYSTAL = (
 )
 
 
+# A window with its side panel, for showing or hiding the workspace panel.
+SIDEBAR = (
+    '<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/>'
+    '<path d="M9.5 4.5v15"/>'
+)
+
+
 def svg_pixmap(body: str, size: int, color: str, device_pixel_ratio: float = 2.0) -> QPixmap:
     renderer = QSvgRenderer(QByteArray(_SVG.format(color=color, body=body).encode()))
     pixels = round(size * device_pixel_ratio)

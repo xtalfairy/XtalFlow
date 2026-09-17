@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
 
 from xtalflow.application.experiment_workflow import StepStatus, WorkflowStep
 from xtalflow.ui import theme
+from xtalflow.ui.home_page import panel_toggle_button
 from xtalflow.ui.stepper import Stepper
 
 
@@ -31,6 +32,7 @@ QPushButton#HomeLink:hover {{ color: {theme.TEXT}; background: {theme.SUBTLE}; }
 
 class ExperimentPage(QWidget):
     home_requested = pyqtSignal()
+    show_panel_requested = pyqtSignal()
     delete_requested = pyqtSignal()
     back_requested = pyqtSignal()
     primary_requested = pyqtSignal()
@@ -38,6 +40,9 @@ class ExperimentPage(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setStyleSheet(PAGE_STYLE)
+        # Shown only while the workspace panel is hidden.
+        self.panel_button = panel_toggle_button("Show panel (Ctrl+Shift+S)")
+        self.panel_button.hide()
         # Breadcrumb: the workspace this experiment belongs to leads back to its list.
         self.home_button = QPushButton("‹ Experiments")
         self.home_button.setObjectName("HomeLink")
@@ -79,6 +84,7 @@ class ExperimentPage(QWidget):
 
         header = QHBoxLayout()
         header.setSpacing(theme.SPACING_M)
+        header.addWidget(self.panel_button)
         header.addWidget(self.home_button)
         header.addWidget(self.crumb_separator)
         header.addWidget(self.title_label)
@@ -117,6 +123,7 @@ class ExperimentPage(QWidget):
         self.setLayout(layout)
 
         self.home_button.clicked.connect(self.home_requested.emit)
+        self.panel_button.clicked.connect(self.show_panel_requested.emit)
         self.back_button.clicked.connect(self.back_requested.emit)
         self.primary_button.clicked.connect(self.primary_requested.emit)
 

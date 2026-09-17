@@ -353,13 +353,13 @@ def test_main_window_starts_on_home_and_guides_an_experiment(
     page = window.experiment_page
 
     assert window.pages.currentWidget() is window.home_page
-    assert set(window.home_page.start_buttons) == {
+    assert set(window.workspace_sidebar.start_buttons) == {
         PlanType.FRAGMENT_SCREENING, PlanType.RAW_CRYSTAL
     }
     assert not window.home_page.recent_empty_label.isHidden()
-    assert window.home_page.new_workspace_button.toolTip() == "New workspace"
+    assert window.workspace_sidebar.new_workspace_button.toolTip() == "New workspace"
 
-    window.home_page.start_buttons[PlanType.RAW_CRYSTAL].click()
+    window.workspace_sidebar.start_buttons[PlanType.RAW_CRYSTAL].click()
     editor = window.current_editor
 
     assert window.pages.currentWidget() is page
@@ -1155,7 +1155,7 @@ def test_raw_crystal_experiment_runs_from_setup_to_saved_worksheets(
     monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
     page = window.experiment_page
 
-    window.home_page.start_buttons[PlanType.RAW_CRYSTAL].click()
+    window.workspace_sidebar.start_buttons[PlanType.RAW_CRYSTAL].click()
     first = window.current_editor
     first.protein_input.setText("BRD4")
     page.primary_button.click()
@@ -2172,6 +2172,7 @@ def test_workspace_panel_creates_filters_renames_and_hides_workspaces(
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
     window = ViewerWindow(RockMakerImageRepository(tmp_path), store)
     home = window.home_page
+    sidebar = window.workspace_sidebar
     first_id = window.project_controller.active_project.id
     first = window.start_experiment(PlanType.RAW_CRYSTAL, "First harvest")
     first.protein_input.setText("BRD4")
@@ -2181,37 +2182,41 @@ def test_workspace_panel_creates_filters_renames_and_hides_workspaces(
     second_id = window.project_controller.active_project.id
     assert window.project_controller.active_project.name == "New workspace"
     assert window.image_set_model.rowCount() == 0
-    assert [home.workspace_list.item(row).text() for row in range(3)] == [
+    assert [sidebar.workspace_list.item(row).text() for row in range(3)] == [
         "All experiments", "Untitled Workspace", "New workspace"
     ]
     assert home.title_label.text() == "New workspace"
     window.rename_workspace(second_id, "CypA campaign")
     assert home.title_label.text() == "CypA campaign"
     assert home.recent_empty_label.text() == "No experiments in this workspace yet."
-    assert home.new_target_label.text() == "in CypA campaign"
+    assert sidebar.new_target_label.text() == "in CypA campaign"
 
     second = window.start_experiment(PlanType.RAW_CRYSTAL, "CypA harvest")
     second.protein_input.setText("CypA")
     assert window.experiment_page.home_button.text() == "‹ CypA campaign"
-    assert not home.isVisible() or window.pages.currentWidget() is window.experiment_page
-    home.workspace_list.setCurrentRow(0)
+    assert sidebar.workspace_list.currentItem().text() == "CypA campaign"
     window.experiment_page.home_button.click()
     assert home.title_label.text() == "CypA campaign"
+    window.resume_experiment(second_id, second.plan_id)
+    sidebar.workspace_list.setCurrentRow(0)
+    assert window.pages.currentWidget() is home
+    assert home.title_label.text() == "All experiments"
+    sidebar.workspace_list.setCurrentRow(2)
     assert second.project_id == second_id
     assert [home.recent_table.item(row, 0).text() for row in range(home.recent_table.rowCount())] == [
         "CypA harvest"
     ]
     assert home.recent_table.isColumnHidden(3)
 
-    home.workspace_list.setCurrentRow(0)
+    sidebar.workspace_list.setCurrentRow(0)
     assert home.title_label.text() == "All experiments"
     assert home.recent_table.rowCount() == 2
     assert not home.recent_table.isColumnHidden(3)
 
     monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
     window.hide_workspace(first_id)
-    assert home.workspace_list.count() == 2
-    assert home.hidden_toggle.text() == "▸ Hidden (1)"
+    assert sidebar.workspace_list.count() == 2
+    assert sidebar.hidden_toggle.text() == "▸ Hidden (1)"
     assert [row.name for row in window._recent_experiments()] == ["CypA harvest"]
     information = []
     monkeypatch.setattr(
@@ -2226,7 +2231,7 @@ def test_workspace_panel_creates_filters_renames_and_hides_workspaces(
         RockMakerImageRepository(tmp_path), SQLiteReviewStore(tmp_path / "reviews.sqlite3")
     )
     assert reopened.project_controller.active_project.id == second_id
-    assert reopened.home_page.hidden_toggle.text() == "▸ Hidden (1)"
+    assert reopened.workspace_sidebar.hidden_toggle.text() == "▸ Hidden (1)"
     reopened.restore_workspace(first_id)
     assert reopened.home_page.title_label.text() == "Untitled Workspace"
     assert reopened.home_page.recent_table.item(0, 0).text() == "First harvest"
@@ -2291,4 +2296,37 @@ def test_opening_a_new_experiment_saves_no_draft_until_it_has_content(
     assert window.pages.currentWidget() is window.home_page
     assert store.planning.load_planning_drafts(workspace_id) == ()
     window.close()
+    app.processEvents()
+
+
+def test_workspace_panel_can_be_hidden_everywhere_and_is_remembered(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    preferences = JsonUserPreferencesStore(tmp_path / "preferences.json")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), preferences_store=preferences)
+    window.show()
+    app.processEvents()
+    assert window.workspace_sidebar.isVisible()
+    assert window.home_page.panel_button.isHidden()
+
+    window.workspace_sidebar.collapse_button.click()
+    assert not window.workspace_sidebar.isVisible()
+    assert not window.home_page.panel_button.isHidden()
+    assert not window.workspace_panel_action.isChecked()
+
+    window.workspace_sidebar.start_buttons[PlanType.RAW_CRYSTAL].click()
+    assert not window.experiment_page.panel_button.isHidden()
+    window.experiment_page.panel_button.click()
+    assert window.workspace_sidebar.isVisible()
+    assert window.experiment_page.panel_button.isHidden()
+    window.workspace_panel_action.trigger()
+    assert not window.workspace_sidebar.isVisible()
+    window.close()
+    app.processEvents()
+
+    reopened = ViewerWindow(RockMakerImageRepository(tmp_path), preferences_store=preferences)
+    reopened.show()
+    app.processEvents()
+    assert not reopened.workspace_sidebar.isVisible()
+    assert preferences.load().workspace_panel_visible is False
+    reopened.close()
     app.processEvents()

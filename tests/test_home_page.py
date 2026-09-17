@@ -11,20 +11,24 @@ from PyQt5.QtWidgets import QApplication
 
 from xtalflow.domain import PlanType
 from xtalflow.ui.home_page import HomePage, RecentExperiment
+from xtalflow.ui.workspace_sidebar import WorkspaceSidebar
 
 
 def test_home_creation_and_empty_state():
     app = QApplication.instance() or QApplication([])
     page = HomePage()
+    sidebar = WorkspaceSidebar()
     requested = []
-    page.start_requested.connect(requested.append)
+    sidebar.start_requested.connect(requested.append)
     assert page.recent_table.isHidden()
     assert not page.recent_empty_label.isHidden()
     assert not page.resume_button.isEnabled()
-    for kind, button in page.start_buttons.items():
+    for kind, button in sidebar.start_buttons.items():
         button.click()
         assert requested[-1] == kind
     page.close()
+    sidebar.close()
+    app.processEvents()
 
 
 def test_home_keyboard_resume_and_clear():

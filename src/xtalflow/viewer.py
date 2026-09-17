@@ -162,6 +162,7 @@ from xtalflow.ui.examples_panel import ExamplesPanel
 from xtalflow.ui.help_button import HelpButton
 from xtalflow.ui.experiment_page import ExperimentPage
 from xtalflow.ui.experiment_steps import SetupStep, WorksheetsStep
+from xtalflow.ui.workspace_sidebar import WorkspaceSidebar
 from xtalflow.ui.home_page import (
     EXPERIMENT_CHOICES,
     HomePage,
@@ -273,9 +274,12 @@ class ViewerWindow(QMainWindow):
         self.pages = QStackedWidget()
         self.pages.addWidget(self.home_page)
         self.pages.addWidget(self.experiment_page)
-        layout = QVBoxLayout()
-        # The home page's folder panel runs to the window edge; experiment pages add their own margins.
+        # The workspace panel runs the full height beside every page.
+        layout = QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
+        self.workspace_sidebar = WorkspaceSidebar()
+        layout.setSpacing(0)
+        layout.addWidget(self.workspace_sidebar)
         layout.addWidget(self.pages, 1)
         container = QWidget()
         container.setLayout(layout)
@@ -286,6 +290,7 @@ class ViewerWindow(QMainWindow):
         self._connect_signals()
         self._update_navigation()
         self._initialize_projects()
+        self.set_workspace_panel_visible(self.user_preferences.workspace_panel_visible)
         self.show_home()
         self._show_planning_migration_status()
 
@@ -571,6 +576,11 @@ class ViewerWindow(QMainWindow):
         self.plates_panel_action.setChecked(True)
         self.plates_panel_action.setShortcut(QKeySequence("Ctrl+Shift+P"))
         self.plates_panel_action.toggled.connect(self.review_splitter.widget(0).setVisible)
+        # People who want the full width hide the workspace panel; the choice is remembered.
+        self.workspace_panel_action = self.view_menu.addAction("Workspace Panel")
+        self.workspace_panel_action.setCheckable(True)
+        self.workspace_panel_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        self.workspace_panel_action.toggled.connect(self.set_workspace_panel_visible)
         self.help_menu = self.menuBar().addMenu("Help")
         self.shortcuts_action = self.help_menu.addAction("Keyboard Shortcuts")
         self.shortcuts_action.setShortcut(QKeySequence("?"))
@@ -589,7 +599,7 @@ class ViewerWindow(QMainWindow):
         self.add_plates_button.clicked.connect(self.open_load_plates_dialog)
         self.load_plates_form.submitted.connect(self._load_plates_from_form)
         self.examples_button.clicked.connect(self.show_examples)
-        self.home_page.start_requested.connect(self.start_experiment)
+        self.workspace_sidebar.start_requested.connect(self.start_experiment)
         self.home_page.resume_requested.connect(self.resume_experiment)
         self.home_page.delete_requested.connect(self.delete_experiment)
         self.experiment_page.home_requested.connect(self.show_home)
@@ -618,11 +628,21 @@ class ViewerWindow(QMainWindow):
             shortcut = QShortcut(QKeySequence(key), self.target_summary_table)
             shortcut.setContext(Qt.WidgetShortcut)
             shortcut.activated.connect(self._remove_selected_targets)
-        self.home_page.workspace_selected.connect(self._select_home_workspace)
-        self.home_page.create_workspace_requested.connect(self.create_workspace)
-        self.home_page.rename_workspace_requested.connect(self.rename_workspace)
+        sidebar = self.workspace_sidebar
+        sidebar.workspace_selected.connect(self._select_home_workspace)
+        sidebar.create_workspace_requested.connect(self.create_workspace)
+        sidebar.rename_workspace_requested.connect(self.rename_workspace)
+        sidebar.hide_workspace_requested.connect(self.hide_workspace)
+        sidebar.restore_workspace_requested.connect(self.restore_workspace)
+        sidebar.collapse_requested.connect(lambda: self.set_workspace_panel_visible(False))
+        self.home_page.rename_workspace_requested.connect(self._edit_workspace_name)
         self.home_page.hide_workspace_requested.connect(self.hide_workspace)
-        self.home_page.restore_workspace_requested.connect(self.restore_workspace)
+        self.home_page.show_panel_requested.connect(
+            lambda: self.set_workspace_panel_visible(True)
+        )
+        self.experiment_page.show_panel_requested.connect(
+            lambda: self.set_workspace_panel_visible(True)
+        )
         self.image_set_list.clicked.connect(self._image_set_selected)
         self.image_set_list.customContextMenuRequested.connect(
             self._show_image_set_context_menu
@@ -746,8 +766,9 @@ class ViewerWindow(QMainWindow):
                 self._sync_editor_selection(editor)
             self._leave_experiment(editor)
         self._set_target_summary_available(False)
-        self.home_page.show_recent_work(self._recent_experiments())
-        self._refresh_home_workspaces()
+        recent = self._recent_experiments()
+        self.home_page.show_recent_work(recent)
+        self._refresh_home_workspaces(recent)
         self.pages.setCurrentWidget(self.home_page)
         self.setWindowTitle("XtalFlow")
 
@@ -1125,6 +1146,9 @@ class ViewerWindow(QMainWindow):
         editor.setup_step.refresh()
         self.experiment_page.set_pages(editor.step_pages)
         self.pages.setCurrentWidget(self.experiment_page)
+        # The panel highlights the folder this experiment belongs to.
+        self._home_workspace_id = editor.project_id
+        self._refresh_home_workspaces()
         self.setWindowTitle(f"{editor.plan_name} · XtalFlow")
         self._sync_editor_selection(editor)
         self._show_plan_status(
@@ -2099,8 +2123,30 @@ class ViewerWindow(QMainWindow):
 
     def _select_home_workspace(self, workspace_id: str | None) -> None:
         """Show one folder's experiments; new experiments are created in it."""
+        if self.pages.currentWidget() is self.experiment_page:
+            self.show_home()
         self._home_workspace_id = workspace_id
         self._refresh_home_workspaces()
+
+    def set_workspace_panel_visible(self, visible: bool) -> None:
+        self.workspace_sidebar.setVisible(visible)
+        self.home_page.panel_button.setVisible(not visible)
+        self.experiment_page.panel_button.setVisible(not visible)
+        self.workspace_panel_action.blockSignals(True)
+        self.workspace_panel_action.setChecked(visible)
+        self.workspace_panel_action.blockSignals(False)
+        if self.user_preferences.workspace_panel_visible == visible:
+            return
+        preferences = replace(self.user_preferences, workspace_panel_visible=visible)
+        try:
+            self.preferences_store.save(preferences)
+        except OSError:
+            return
+        self.user_preferences = preferences
+
+    def _edit_workspace_name(self, workspace_id: str) -> None:
+        self.set_workspace_panel_visible(True)
+        self.workspace_sidebar.edit_workspace_name(workspace_id)
 
     def _target_workspace(self):
         """Where a new experiment goes: the folder being viewed, else the last one used."""
@@ -2113,16 +2159,24 @@ class ViewerWindow(QMainWindow):
             return active
         return visible[0] if visible else None
 
-    def _refresh_home_workspaces(self) -> None:
-        target = self._target_workspace()
-        self.home_page.show_workspaces(
-            tuple(
-                WorkspaceEntry(project.id, project.name, project.is_hidden)
-                for project in self.project_controller.projects
-            ),
-            self._home_workspace_id,
-            target.name if target is not None else "",
+    def _refresh_home_workspaces(self, recent=None) -> None:
+        if recent is None:
+            recent = self._recent_experiments()
+        counts: dict[str | None, int] = {None: len(recent)}
+        for experiment in recent:
+            counts[experiment.workspace_id] = counts.get(experiment.workspace_id, 0) + 1
+        entries = tuple(
+            WorkspaceEntry(project.id, project.name, project.is_hidden)
+            for project in self.project_controller.projects
         )
+        target = self._target_workspace()
+        self.workspace_sidebar.show_workspaces(
+            entries, self._home_workspace_id,
+            target.name if target is not None else "", counts,
+        )
+        self.home_page.show_workspaces(entries, self._home_workspace_id)
+        if self.current_editor is not None and self.pages.currentWidget() is self.experiment_page:
+            self._refresh_experiment_status(self.current_editor)
 
     def _open_workspace(self, workspace_id: str) -> bool:
         active = self.project_controller.active_project
@@ -2158,7 +2212,7 @@ class ViewerWindow(QMainWindow):
         self._sync_project_widgets()
         self._home_workspace_id = project.id
         self.show_home()
-        self.home_page.edit_workspace_name(project.id)
+        self._edit_workspace_name(project.id)
 
     def rename_workspace(self, workspace_id: str, name: str) -> None:
         try:

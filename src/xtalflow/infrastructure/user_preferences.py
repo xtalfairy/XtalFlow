@@ -11,6 +11,7 @@ class UserPreferences:
     auto_confirm_confidence_percent: int = 90
     auto_advance_target_count: int | None = None
     review_hint_shown: bool = False
+    workspace_panel_visible: bool = True
 
     def __post_init__(self) -> None:
         if not 0 <= self.auto_confirm_confidence_percent <= 100:
@@ -44,6 +45,7 @@ class JsonUserPreferencesStore:
                 int(data["auto_confirm_confidence_percent"]),
                 int(count) if count is not None else None,
                 bool(data.get("review_hint_shown", False)),
+                bool(data.get("workspace_panel_visible", True)),
             )
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
             return UserPreferences()
@@ -59,6 +61,7 @@ class JsonUserPreferencesStore:
                     "auto_advance_target_count":
                         preferences.auto_advance_target_count,
                     "review_hint_shown": preferences.review_hint_shown,
+                    "workspace_panel_visible": preferences.workspace_panel_visible,
                 },
                 indent=2,
             ) + "\n",

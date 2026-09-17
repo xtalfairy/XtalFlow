@@ -32,6 +32,7 @@ SHORTCUTS = (
     (f"{COMMAND}+L", "An experiment", "Go to Select wells and the well field"),
     (f"{COMMAND}+Shift+T", "Select wells", "Show or hide the selected wells table"),
     (f"{COMMAND}+Shift+P", "Select wells", "Show or hide the plate list"),
+    (f"{COMMAND}+Shift+S", "Anywhere", "Show or hide the workspace panel"),
     ("Delete", "Selected wells table", "Delete the selected positions"),
     ("?", "Outside text fields", "Show this reference"),
 )

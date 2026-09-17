@@ -103,7 +103,7 @@ class ExperimentPage(QWidget):
         self.footer.setLayout(footer)
 
         layout = QVBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(theme.SPACING_L, theme.SPACING_M, theme.SPACING_L, 0)
         layout.setSpacing(theme.SPACING_M)
         layout.addLayout(header)
         layout.addWidget(self.navigation)

@@ -38,6 +38,7 @@ class SQLiteWorkspaceStore:
                 project_values = (
                     project.id, project.name, project.active_image_set_id,
                     project.created_at.isoformat(), project.updated_at.isoformat(),
+                    project.hidden_at.isoformat() if project.hidden_at else None,
                 )
                 self._connection.execute(
                     """
@@ -46,13 +47,13 @@ class SQLiteWorkspaceStore:
                     )
                     VALUES (?, ?, ?, ?, ?)
                     """,
-                    project_values,
+                    project_values[:5],
                 )
                 self._connection.execute(
                     """UPDATE project SET name = ?, active_image_set_id = ?,
-                              updated_at = ? WHERE project_id = ?""",
+                              updated_at = ?, hidden_at = ? WHERE project_id = ?""",
                     (project_values[1], project_values[2], project_values[4],
-                     project_values[0]),
+                     project_values[5], project_values[0]),
                 )
                 for image_set in project.image_sets:
                     image_set_values = (
@@ -90,8 +91,8 @@ class SQLiteWorkspaceStore:
     def load_projects(self) -> tuple[Project, ...]:
         try:
             project_rows = self._connection.execute(
-                "SELECT project_id, name, active_image_set_id, created_at, updated_at "
-                "FROM project ORDER BY created_at, project_id"
+                "SELECT project_id, name, active_image_set_id, created_at, updated_at, "
+                "hidden_at FROM project ORDER BY created_at, project_id"
             ).fetchall()
             image_set_rows = self._connection.execute(
                 """
@@ -128,6 +129,7 @@ class SQLiteWorkspaceStore:
                 created_at=datetime.fromisoformat(row[3]),
                 updated_at=datetime.fromisoformat(row[4]),
                 image_sets=grouped.get(row[0], []),
+                hidden_at=datetime.fromisoformat(row[5]) if row[5] else None,
             )
             for row in project_rows
         )

@@ -357,7 +357,7 @@ def test_main_window_starts_on_home_and_guides_an_experiment(
         PlanType.FRAGMENT_SCREENING, PlanType.RAW_CRYSTAL
     }
     assert not window.home_page.recent_empty_label.isHidden()
-    assert window.new_workspace_action.text() == "New Workspace…"
+    assert window.home_page.new_workspace_button.toolTip() == "New workspace"
 
     window.home_page.start_buttons[PlanType.RAW_CRYSTAL].click()
     editor = window.current_editor
@@ -2165,20 +2165,68 @@ def test_review_filter_and_well_navigation_use_persisted_review_status(
     app.processEvents()
 
 
-def test_new_project_ui_creates_independent_empty_workspace(tmp_path: Path, monkeypatch) -> None:
+def test_workspace_panel_creates_filters_renames_and_hides_workspaces(
+    tmp_path: Path, monkeypatch
+) -> None:
     app = QApplication.instance() or QApplication([])
-    window = ViewerWindow(
-        RockMakerImageRepository(tmp_path),
-        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
-    )
-    monkeypatch.setattr(QInputDialog, "getText", lambda *args: ("Second Project", True))
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store)
+    home = window.home_page
+    first_id = window.project_controller.active_project.id
+    first = window.start_experiment(PlanType.RAW_CRYSTAL, "First harvest")
+    first.protein_input.setText("BRD4")
+    window.show_home()
 
-    window.create_project_interactively()
-
-    assert window.project_controller.active_project.name == "Second Project"
+    window.create_workspace()
+    second_id = window.project_controller.active_project.id
+    assert window.project_controller.active_project.name == "New workspace"
     assert window.image_set_model.rowCount() == 0
-    assert window.project_selector.count() == 2
+    assert [home.workspace_list.item(row).text() for row in range(3)] == [
+        "All experiments", "Untitled Workspace", "New workspace"
+    ]
+    assert home.title_label.text() == "New workspace"
+    window.rename_workspace(second_id, "CypA campaign")
+    assert home.title_label.text() == "CypA campaign"
+    assert home.recent_empty_label.text() == "No experiments in this workspace yet."
+    assert home.new_target_label.text() == "in CypA campaign"
+
+    second = window.start_experiment(PlanType.RAW_CRYSTAL, "CypA harvest")
+    second.protein_input.setText("CypA")
+    window.show_home()
+    assert second.project_id == second_id
+    assert [home.recent_table.item(row, 0).text() for row in range(home.recent_table.rowCount())] == [
+        "CypA harvest"
+    ]
+    assert home.recent_table.isColumnHidden(3)
+
+    home.workspace_list.setCurrentRow(0)
+    assert home.title_label.text() == "All experiments"
+    assert home.recent_table.rowCount() == 2
+    assert not home.recent_table.isColumnHidden(3)
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    window.hide_workspace(first_id)
+    assert home.workspace_list.count() == 2
+    assert home.hidden_toggle.text() == "▸ Hidden (1)"
+    assert [row.name for row in window._recent_experiments()] == ["CypA harvest"]
+    information = []
+    monkeypatch.setattr(
+        QMessageBox, "information", lambda *args, **kwargs: information.append(args[1])
+    )
+    window.hide_workspace(second_id)
+    assert information == ["Cannot hide workspace"]
+
     window.close()
+    app.processEvents()
+    reopened = ViewerWindow(
+        RockMakerImageRepository(tmp_path), SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    )
+    assert reopened.project_controller.active_project.id == second_id
+    assert reopened.home_page.hidden_toggle.text() == "▸ Hidden (1)"
+    reopened.restore_workspace(first_id)
+    assert reopened.home_page.title_label.text() == "Untitled Workspace"
+    assert reopened.home_page.recent_table.item(0, 0).text() == "First harvest"
+    reopened.close()
     app.processEvents()
 
 

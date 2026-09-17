@@ -211,8 +211,30 @@ class ProjectController:
         return image_set
 
     def rename_active_project(self, name: str) -> None:
-        project = self._require_active_project()
+        self.rename_project(self._require_active_project().id, name)
+
+    @property
+    def visible_projects(self) -> tuple[Project, ...]:
+        return tuple(project for project in self.projects if not project.is_hidden)
+
+    def rename_project(self, project_id: str, name: str) -> None:
+        project = self._project(project_id)
         project.rename(name)
+        self._save_project(project)
+
+    def hide_project(self, project_id: str) -> None:
+        """Take a workspace off the list; its plates and experiments stay stored."""
+        project = self._project(project_id)
+        if project.is_hidden:
+            return
+        if len(self.visible_projects) <= 1:
+            raise ValueError("keep at least one workspace in the list")
+        project.hidden_at = datetime.now(timezone.utc)
+        self._save_project(project)
+
+    def restore_project(self, project_id: str) -> None:
+        project = self._project(project_id)
+        project.hidden_at = None
         self._save_project(project)
 
     def activate_image_set(self, image_set_id: str) -> ProjectImageSet:

@@ -79,6 +79,8 @@ class Project:
     updated_at: datetime
     active_image_set_id: str | None = None
     image_sets: list[ProjectImageSet] = field(default_factory=list)
+    # Hidden workspaces leave the home list but keep every plate and experiment.
+    hidden_at: datetime | None = None
 
     def __post_init__(self) -> None:
         self.name = self.name.strip()
@@ -103,6 +105,10 @@ class Project:
                 key=lambda image_set: image_set.display_order,
             )
         )
+
+    @property
+    def is_hidden(self) -> bool:
+        return self.hidden_at is not None
 
     def rename(self, name: str) -> None:
         normalized = name.strip()

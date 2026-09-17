@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 
-LATEST_SCHEMA_VERSION = 18
+LATEST_SCHEMA_VERSION = 19
 IMPORTED_PROJECT_ID = "imported-standalone-reviews"
 LEGACY_PLATE_FORMAT_ID = "swissci-midi-3-lens-hr3-194"
 LEGACY_PLATE_FORMAT_VERSION = 1
@@ -378,6 +378,12 @@ def _create_project_schema(connection: sqlite3.Connection) -> None:
         )
         """
     )
+    project_columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(project)")
+    }
+    if "hidden_at" not in project_columns:
+        # Schema 19: workspaces can be hidden from the home list without deletion.
+        connection.execute("ALTER TABLE project ADD COLUMN hidden_at TEXT")
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS project_image_set (
@@ -688,7 +694,8 @@ def _import_standalone_reviews(connection: sqlite3.Connection) -> None:
 
     timestamp = "1970-01-01T00:00:00+00:00"
     connection.execute(
-        "INSERT OR IGNORE INTO project VALUES (?, ?, NULL, ?, ?)",
+        "INSERT OR IGNORE INTO project(project_id, name, active_image_set_id, "
+        "created_at, updated_at) VALUES (?, ?, NULL, ?, ?)",
         (IMPORTED_PROJECT_ID, "Imported standalone reviews", timestamp, timestamp),
     )
     sources: dict[str, tuple[str, int, str, str, int, str, str]] = {}

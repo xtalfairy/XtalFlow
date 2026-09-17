@@ -162,7 +162,12 @@ from xtalflow.ui.examples_panel import ExamplesPanel
 from xtalflow.ui.help_button import HelpButton
 from xtalflow.ui.experiment_page import ExperimentPage
 from xtalflow.ui.experiment_steps import SetupStep, WorksheetsStep
-from xtalflow.ui.home_page import EXPERIMENT_CHOICES, HomePage, RecentExperiment
+from xtalflow.ui.home_page import (
+    EXPERIMENT_CHOICES,
+    HomePage,
+    RecentExperiment,
+    WorkspaceEntry,
+)
 from xtalflow.ui import theme
 from xtalflow.ui.calibration_inspector import CalibrationInspector, calibration_status
 from xtalflow.ui.load_plates_dialog import LoadPlatesDialog, LoadPlatesForm, PlateSource
@@ -255,7 +260,7 @@ class ViewerWindow(QMainWindow):
         # Home lists what XtalFlow prepares; each experiment then walks its steps.
         self.home_page = HomePage()
         self.experiment_page = ExperimentPage()
-        self._build_workspace_bar()
+        self._home_workspace_id: str | None = None
         self.select_wells_page = self._build_image_review_tab()
         # Experiments not on screen keep their editors here.
         self.editor_holder = QWidget(self)
@@ -269,7 +274,8 @@ class ViewerWindow(QMainWindow):
         self.pages.addWidget(self.home_page)
         self.pages.addWidget(self.experiment_page)
         layout = QVBoxLayout()
-        layout.setContentsMargins(theme.SPACING_L, theme.SPACING_M, theme.SPACING_L, 0)
+        # The home page's folder panel runs to the window edge; experiment pages add their own margins.
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.pages, 1)
         container = QWidget()
         container.setLayout(layout)
@@ -284,31 +290,6 @@ class ViewerWindow(QMainWindow):
         self._show_planning_migration_status()
 
     # -- Layout -----------------------------------------------------------------
-
-    def _build_workspace_bar(self) -> None:
-        self.project_selector = QComboBox()
-        self.project_selector.setMinimumContentsLength(24)
-        self.project_selector.setSizeAdjustPolicy(QComboBox.AdjustToContents)
-        self.project_selector.setAccessibleName("Workspace")
-        self.workspace_menu_button = QToolButton()
-        self.workspace_menu_button.setText("⋯")
-        self.workspace_menu_button.setToolTip("Workspace actions")
-        self.workspace_menu_button.setAccessibleName("Workspace actions")
-        self.workspace_menu_button.setPopupMode(QToolButton.InstantPopup)
-        workspace_menu = QMenu(self.workspace_menu_button)
-        self.new_workspace_action = workspace_menu.addAction("New Workspace…")
-        self.rename_workspace_action = workspace_menu.addAction("Rename Workspace…")
-        self.workspace_menu_button.setMenu(workspace_menu)
-        workspace_label = QLabel("Workspace")
-        workspace_label.setObjectName("Muted")
-        workspace_label.setToolTip(
-            "A workspace groups plates. Experiments in it share plate images and "
-            "well boundaries, but each keeps its own positions."
-        )
-        self.workspace_bar = self.home_page.workspace_row
-        self.workspace_bar.addWidget(workspace_label)
-        self.workspace_bar.addWidget(self.project_selector)
-        self.workspace_bar.addWidget(self.workspace_menu_button)
 
     def _build_image_review_tab(self) -> QWidget:
         # Plates: loaded a few times per session, so they sit to the side.
@@ -637,9 +618,11 @@ class ViewerWindow(QMainWindow):
             shortcut = QShortcut(QKeySequence(key), self.target_summary_table)
             shortcut.setContext(Qt.WidgetShortcut)
             shortcut.activated.connect(self._remove_selected_targets)
-        self.new_workspace_action.triggered.connect(self.create_project_interactively)
-        self.rename_workspace_action.triggered.connect(self.rename_project_interactively)
-        self.project_selector.currentIndexChanged.connect(self._project_selected)
+        self.home_page.workspace_selected.connect(self._select_home_workspace)
+        self.home_page.create_workspace_requested.connect(self.create_workspace)
+        self.home_page.rename_workspace_requested.connect(self.rename_workspace)
+        self.home_page.hide_workspace_requested.connect(self.hide_workspace)
+        self.home_page.restore_workspace_requested.connect(self.restore_workspace)
         self.image_set_list.clicked.connect(self._image_set_selected)
         self.image_set_list.customContextMenuRequested.connect(
             self._show_image_set_context_menu
@@ -762,16 +745,19 @@ class ViewerWindow(QMainWindow):
             self._leave_experiment(editor)
         self._set_target_summary_available(False)
         self.home_page.show_recent_work(self._recent_experiments())
+        self._refresh_home_workspaces()
         self.pages.setCurrentWidget(self.home_page)
         self.setWindowTitle("XtalFlow")
 
     def _recent_experiments(self) -> tuple[RecentExperiment, ...]:
-        workspaces = {project.id: project.name for project in self.project_controller.projects}
+        workspaces = {
+            project.id: project.name for project in self.project_controller.visible_projects
+        }
         if self.review_store is None:
             drafts = tuple(self._draft_from_editor(editor) for editor in self._editors.values())
         else:
             try:
-                drafts = self.review_store.planning.load_recent_drafts()
+                drafts = self.review_store.planning.load_recent_drafts(limit=1000)
             except ReviewPersistenceError as error:
                 self.status_message_label.show_message(f"Recent work unavailable: {error}")
                 return ()
@@ -822,7 +808,10 @@ class ViewerWindow(QMainWindow):
         return names
 
     def start_experiment(self, plan_type: PlanType, name: str | None = None):
-        """Create an empty experiment in the active workspace and open its first step."""
+        """Create an empty experiment in the chosen workspace and open its first step."""
+        target = self._target_workspace()
+        if target is not None and not self._open_workspace(target.id):
+            return None
         if self.project_controller.active_project is None:
             try:
                 self.project_controller.create_project("Untitled Workspace")
@@ -2066,11 +2055,12 @@ class ViewerWindow(QMainWindow):
 
     def _initialize_projects(self) -> None:
         unavailable: Exception | None = None
-        if self.project_controller.projects:
-            project_ids = {project.id for project in self.project_controller.projects}
+        visible = self.project_controller.visible_projects
+        if visible:
+            project_ids = {project.id for project in visible}
             project_id = self.project_controller.last_open_project_id
             if project_id not in project_ids:
-                project_id = self.project_controller.projects[0].id
+                project_id = visible[0].id
             try:
                 self.project_controller.open_project(project_id)
             except IMAGE_SOURCE_ERRORS as error:
@@ -2098,55 +2088,123 @@ class ViewerWindow(QMainWindow):
         if visible:
             self._refresh_target_summary()
 
-    def create_project_interactively(self) -> None:
-        name, accepted = QInputDialog.getText(
-            self, "New workspace", "Workspace name:"
-        )
-        if not accepted:
-            return
-        try:
-            if self.controller is not None:
-                self.controller.checkpoint_current()
-            self.project_controller.create_project(name)
-            self._adopt_active_review()
-            self._sync_project_widgets()
-        except (ValueError, ReviewPersistenceError) as error:
-            QMessageBox.warning(self, "Cannot create workspace", str(error))
+    # -- Workspaces ---------------------------------------------------------------
 
-    def rename_project_interactively(self) -> None:
-        project = self.project_controller.active_project
-        if project is None:
-            return
-        name, accepted = QInputDialog.getText(
-            self, "Rename workspace", "Workspace name:", text=project.name
-        )
-        if not accepted:
-            return
-        try:
-            self.project_controller.rename_active_project(name)
-            self._sync_project_widgets()
-        except (ValueError, ReviewPersistenceError) as error:
-            QMessageBox.warning(self, "Cannot rename workspace", str(error))
+    def _select_home_workspace(self, workspace_id: str | None) -> None:
+        """Show one folder's experiments; new experiments are created in it."""
+        self._home_workspace_id = workspace_id
+        self._refresh_home_workspaces()
 
-    def _project_selected(self, index: int) -> None:
-        project_id = self.project_selector.itemData(index)
-        if not project_id:
-            return
+    def _target_workspace(self):
+        """Where a new experiment goes: the folder being viewed, else the last one used."""
+        visible = self.project_controller.visible_projects
+        for project in visible:
+            if project.id == self._home_workspace_id:
+                return project
         active = self.project_controller.active_project
-        if active is not None and active.id == project_id:
-            return
+        if active is not None and not active.is_hidden:
+            return active
+        return visible[0] if visible else None
+
+    def _refresh_home_workspaces(self) -> None:
+        target = self._target_workspace()
+        self.home_page.show_workspaces(
+            tuple(
+                WorkspaceEntry(project.id, project.name, project.is_hidden)
+                for project in self.project_controller.projects
+            ),
+            self._home_workspace_id,
+            target.name if target is not None else "",
+        )
+
+    def _open_workspace(self, workspace_id: str) -> bool:
+        active = self.project_controller.active_project
+        if active is not None and active.id == workspace_id:
+            return True
         try:
-            self.project_controller.open_project(project_id)
+            self.project_controller.open_project(workspace_id)
         except IMAGE_SOURCE_ERRORS as error:
-            # The workspace may already be open without its image set; show the
-            # controller's actual state instead of the previous plate.
+            # The workspace is open without its images; experiments can still start.
             self._adopt_active_review()
             self._sync_project_widgets()
             self._show_images_unavailable(error)
-            QMessageBox.warning(self, "Cannot open workspace images", str(error))
+            return self.project_controller.active_project is not None
+        self._adopt_active_review()
+        self._sync_project_widgets()
+        return True
+
+    def create_workspace(self, name: str | None = None) -> None:
+        names = {project.name for project in self.project_controller.projects}
+        if name is None:
+            name, number = "New workspace", 2
+            while name in names:
+                name = f"New workspace {number}"
+                number += 1
+        try:
+            if self.controller is not None:
+                self.controller.checkpoint_current()
+            project = self.project_controller.create_project(name)
+        except (ValueError, ReviewPersistenceError) as error:
+            QMessageBox.warning(self, "Cannot create workspace", str(error))
             return
         self._adopt_active_review()
         self._sync_project_widgets()
+        self._home_workspace_id = project.id
+        self.show_home()
+        self.home_page.edit_workspace_name(project.id)
+
+    def rename_workspace(self, workspace_id: str, name: str) -> None:
+        try:
+            self.project_controller.rename_project(workspace_id, name)
+        except (ValueError, ReviewPersistenceError) as error:
+            QMessageBox.warning(self, "Cannot rename workspace", str(error))
+        self._refresh_home_workspaces()
+
+    def hide_workspace(self, workspace_id: str) -> None:
+        project = next(
+            (item for item in self.project_controller.projects if item.id == workspace_id), None
+        )
+        if project is None:
+            return
+        if len(self.project_controller.visible_projects) <= 1:
+            QMessageBox.information(
+                self, "Cannot hide workspace",
+                "Keep at least one workspace in the list for new experiments.",
+            )
+            return
+        count = sum(
+            experiment.workspace_id == workspace_id for experiment in self._recent_experiments()
+        )
+        if QMessageBox.question(
+            self,
+            "Hide workspace",
+            f"Hide '{project.name}' from the list?\n\n"
+            f"Its {_count(count, 'experiment')} and plates are hidden with it. Nothing is "
+            "deleted; show it again from Hidden at the bottom of the workspace list.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        ) != QMessageBox.Yes:
+            return
+        try:
+            self.project_controller.hide_project(workspace_id)
+        except (ValueError, ReviewPersistenceError) as error:
+            QMessageBox.warning(self, "Cannot hide workspace", str(error))
+            return
+        if self._home_workspace_id == workspace_id:
+            self._home_workspace_id = None
+        active = self.project_controller.active_project
+        if active is not None and active.id == workspace_id:
+            self._open_workspace(self.project_controller.visible_projects[0].id)
+        self.show_home()
+
+    def restore_workspace(self, workspace_id: str) -> None:
+        try:
+            self.project_controller.restore_project(workspace_id)
+        except (ValueError, ReviewPersistenceError) as error:
+            QMessageBox.warning(self, "Cannot show workspace", str(error))
+            return
+        self._home_workspace_id = workspace_id
+        self.show_home()
 
     def _image_set_selected(self, index) -> None:
         image_set_id = index.data(ProjectImageSetListModel.ImageSetIdRole)
@@ -2322,14 +2380,6 @@ class ViewerWindow(QMainWindow):
 
     def _sync_project_widgets(self) -> None:
         active = self.project_controller.active_project
-        self.project_selector.blockSignals(True)
-        self.project_selector.clear()
-        for project in self.project_controller.projects:
-            self.project_selector.addItem(project.name, project.id)
-        if active is not None:
-            active_index = self.project_selector.findData(active.id)
-            self.project_selector.setCurrentIndex(active_index)
-        self.project_selector.blockSignals(False)
         self.image_set_model.set_project(active)
         if active is not None and active.active_image_set_id is not None:
             for row, image_set in enumerate(self.image_set_model.image_sets):

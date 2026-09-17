@@ -224,3 +224,25 @@ def test_draft_selection_snapshot_can_be_replaced_and_recent_drafts_listed(
         "plan-2", "plan-1"
     ]
     store.close()
+
+
+def test_schema18_database_gains_hidden_workspaces_and_keeps_projects(tmp_path: Path) -> None:
+    database_path = tmp_path / "reviews.sqlite3"
+    store = SQLiteReviewStore(database_path)
+    project, _ = _workspace(store)
+    store.close()
+    connection = sqlite3.connect(database_path)
+    connection.execute("ALTER TABLE project DROP COLUMN hidden_at")
+    connection.execute("PRAGMA user_version = 18")
+    connection.commit()
+    connection.close()
+
+    upgraded = SQLiteReviewStore(database_path)
+    loaded = upgraded.workspace.load_projects()
+
+    assert [(item.id, item.is_hidden) for item in loaded] == [(project.id, False)]
+    assert upgraded.upgrade_backup_path is not None
+    loaded[0].hidden_at = NOW
+    upgraded.workspace.save_project(loaded[0])
+    assert upgraded.workspace.load_projects()[0].hidden_at == NOW
+    upgraded.close()

@@ -6,6 +6,7 @@ import sqlite3
 from datetime import datetime
 
 from xtalflow.application import ReviewPersistenceError
+from xtalflow.domain.instruments import InstrumentOutput
 from xtalflow.domain.plan_lifecycle import WebDBUploadEvent, WorksheetExportEvent
 
 
@@ -19,25 +20,55 @@ class SQLiteDeliveryAuditStore:
         try:
             with self._connection:
                 self._connection.execute(
-                    "INSERT INTO worksheet_export_event VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    """INSERT INTO worksheet_export_event(
+                           export_id, revision_id, username, exported_at, status,
+                           error_message
+                       ) VALUES (?, ?, ?, ?, ?, ?)""",
                     (
                         event.id, event.revision_id, event.username,
-                        event.exported_at.isoformat(), event.status, event.echo_path,
-                        event.shifter1_path, event.shifter2_path, event.error_message,
+                        event.exported_at.isoformat(), event.status, event.error_message,
+                    ),
+                )
+                self._connection.executemany(
+                    """INSERT INTO worksheet_export_output(
+                           export_id, output_order, instrument, path
+                       ) VALUES (?, ?, ?, ?)""",
+                    (
+                        (event.id, order, output.instrument, output.path)
+                        for order, output in enumerate(event.outputs, start=1)
                     ),
                 )
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not record worksheet export") from error
 
     def list_worksheet_exports(self, revision_id: str) -> tuple[WorksheetExportEvent, ...]:
-        rows = self._connection.execute(
-            """SELECT export_id, revision_id, username, exported_at, status,
-                      echo_path, shifter1_path, shifter2_path, error_message
-               FROM worksheet_export_event WHERE revision_id = ? ORDER BY exported_at""",
-            (revision_id,),
-        ).fetchall()
+        try:
+            rows = self._connection.execute(
+                """SELECT export_id, revision_id, username, exported_at, status,
+                          error_message
+                   FROM worksheet_export_event WHERE revision_id = ?
+                   ORDER BY exported_at""",
+                (revision_id,),
+            ).fetchall()
+            output_rows = self._connection.execute(
+                """SELECT output.export_id, output.instrument, output.path
+                   FROM worksheet_export_output AS output
+                   JOIN worksheet_export_event AS event
+                     ON event.export_id = output.export_id
+                   WHERE event.revision_id = ?
+                   ORDER BY output.export_id, output.output_order""",
+                (revision_id,),
+            ).fetchall()
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError("could not list worksheet exports") from error
+        outputs: dict[str, list[InstrumentOutput]] = {}
+        for export_id, instrument, path in output_rows:
+            outputs.setdefault(export_id, []).append(InstrumentOutput(instrument, path))
         return tuple(
-            WorksheetExportEvent(row[0], row[1], row[2], datetime.fromisoformat(row[3]), *row[4:])
+            WorksheetExportEvent(
+                row[0], row[1], row[2], datetime.fromisoformat(row[3]), row[4],
+                tuple(outputs.get(row[0], ())), row[5],
+            )
             for row in rows
         )
 

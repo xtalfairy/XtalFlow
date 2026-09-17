@@ -46,8 +46,8 @@ def test_raw_crystal_plan_is_delivered_only_to_shifter_folders(tmp_path: Path) -
     service.record(REVISION, "succeeded", result=result)
 
     assert not (tmp_path / "echo650").exists()
-    assert audit.events[0].echo_path is None
-    assert audit.events[0].shifter1_path == str(result.shifter1_path)
+    assert audit.events[0].path_for("echo650") is None
+    assert audit.events[0].path_for("shifter1") == str(result.path_for("shifter1"))
 
 
 def test_fragment_plan_can_be_delivered_to_alternate_root(tmp_path: Path) -> None:
@@ -57,6 +57,6 @@ def test_fragment_plan_can_be_delivered_to_alternate_root(tmp_path: Path) -> Non
     result = service.deliver(fragment_plan(), "FragSC-01", tmp_path / "chosen")
     service.record(REVISION, "failed", error="share offline")
 
-    assert result.echo_path.parent == tmp_path / "chosen" / "echo650" / "scientist"
-    assert (audit.events[0].status, audit.events[0].echo_path) == ("failed", None)
+    assert result.path_for("echo650").parent == tmp_path / "chosen" / "echo650" / "scientist"
+    assert (audit.events[0].status, audit.events[0].path_for("echo650")) == ("failed", None)
     assert audit.events[0].error_message == "share offline"

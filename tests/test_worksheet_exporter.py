@@ -64,14 +64,14 @@ def test_development_export_writes_user_scoped_echo_and_shifter_files(
     first = exporter.export(fragment_plan(), "FragSC-202607-BRD4-01")
     second = exporter.export(fragment_plan(), "FragSC-202607-BRD4-01")
 
-    assert first.echo_path == (
+    assert first.path_for("echo650") == (
         tmp_path / "echo650" / "scientist" / "FragSC-202607-BRD4-01.csv"
     )
-    assert first.echo_path.is_file()
-    assert first.shifter1_path.is_file()
-    assert first.shifter2_path.is_file()
+    assert first.path_for("echo650").is_file()
+    assert first.path_for("shifter1").is_file()
+    assert first.path_for("shifter2").is_file()
     assert second.file_stem == "FragSC-202607-BRD4-01_01"
-    with first.shifter1_path.open(newline="", encoding="utf-8") as stream:
+    with first.path_for("shifter1").open(newline="", encoding="utf-8") as stream:
         rows = list(csv.reader(stream))
     assert len(rows[0]) == 15
     assert len(rows[1]) == 15
@@ -97,7 +97,7 @@ def test_missing_operating_mount_requires_explicit_alternate_root(
     result = exporter.export_to_alternate_root(
         fragment_plan(), "FragSC-202607-BRD4-01", tmp_path / "chosen"
     )
-    assert result.echo_path == (
+    assert result.path_for("echo650") == (
         tmp_path
         / "chosen"
         / "echo650"
@@ -175,8 +175,8 @@ def test_raw_crystal_export_writes_only_shifter_files(tmp_path: Path) -> None:
         raw_plan, "RawCrystal-202607-BRD4-01"
     )
 
-    assert result.shifter1_path.is_file()
-    assert result.shifter2_path.is_file()
+    assert result.path_for("shifter1").is_file()
+    assert result.path_for("shifter2").is_file()
     assert not (tmp_path / "echo650").exists()
 
 
@@ -223,7 +223,7 @@ def test_failed_copy_leaves_no_worksheet_and_retry_reuses_experiment_id(
     result = exporter.export(fragment_plan(), "FragSC-202607-BRD4-01")
     assert result.file_stem == "FragSC-202607-BRD4-01"
     assert _worksheet_files(tmp_path) == sorted(
-        (result.echo_path, result.shifter1_path, result.shifter2_path)
+        (result.path_for("echo650"), result.path_for("shifter1"), result.path_for("shifter2"))
     )
 
 

@@ -23,6 +23,7 @@ from xtalflow.domain import (
 from xtalflow.domain.crystal_workflow import CrystalTarget, SelectedCrystal
 from xtalflow.infrastructure.review_migrations import LATEST_SCHEMA_VERSION
 from xtalflow.infrastructure import SQLiteReviewStore
+from xtalflow.domain.instruments import InstrumentOutput
 from xtalflow.domain.plan_lifecycle import (
     PlanningDraft, PlanRevision, WebDBUploadEvent, WorksheetExportEvent,
 )
@@ -264,7 +265,11 @@ def test_planning_draft_revision_and_export_lifecycle(tmp_path: Path) -> None:
 
     export = WorksheetExportEvent(
         "export-1", second.id, "jjh", now, "succeeded",
-        "/echo/file.csv", "/shifter1/file.csv", "/shifter2/file.csv",
+        (
+            InstrumentOutput("echo650", "/echo/file.csv"),
+            InstrumentOutput("shifter1", "/shifter1/file.csv"),
+            InstrumentOutput("shifter2", "/shifter2/file.csv"),
+        ),
     )
     store.audit.record_worksheet_export(export)
     assert store.audit.list_worksheet_exports(second.id) == (export,)
@@ -688,4 +693,91 @@ def test_damaged_experiment_project_does_not_hide_other_projects(tmp_path: Path)
     assert store.planning.load_experiment_project("healthy").id == "healthy"
     with pytest.raises(ReviewPersistenceError, match="experiment project damaged"):
         store.planning.load_experiment_project("damaged")
+    store.close()
+
+
+def _store_with_finalized_revision(database_path: Path):
+    store = SQLiteReviewStore(database_path)
+    now = datetime.now(timezone.utc)
+    project = Project(str(uuid4()), "Exports", now, now)
+    store.workspace.save_project(project)
+    store.planning.save_planning_draft(PlanningDraft(
+        "plan", project.id, "fragment_screening", "Plan", None, "", "", "0",
+        "selection", now, now,
+    ))
+    revision = store.planning.finalize_plan_revision(
+        PlanRevision("revision", "plan", 0, "FragSC-01", "{}", "jjh", now)
+    )
+    return store, revision, now
+
+
+def test_schema16_worksheet_paths_become_instrument_outputs(tmp_path: Path) -> None:
+    database_path = tmp_path / "reviews.sqlite3"
+    store, revision, now = _store_with_finalized_revision(database_path)
+    store.close()
+    connection = sqlite3.connect(database_path)
+    connection.executescript(
+        f"""
+        DROP TABLE worksheet_export_output;
+        DROP TABLE worksheet_export_event;
+        CREATE TABLE worksheet_export_event (
+            export_id TEXT PRIMARY KEY,
+            revision_id TEXT NOT NULL REFERENCES plan_revision(revision_id),
+            username TEXT NOT NULL, exported_at TEXT NOT NULL, status TEXT NOT NULL,
+            echo_path TEXT, shifter1_path TEXT, shifter2_path TEXT, error_message TEXT
+        );
+        INSERT INTO worksheet_export_event VALUES (
+            'delivered', 'revision', 'jjh', '{now.isoformat()}', 'succeeded',
+            '/echo650/FragSC-01.csv', '/shifter1/FragSC-01.csv',
+            '/shifter2/FragSC-01.csv', NULL
+        );
+        INSERT INTO worksheet_export_event VALUES (
+            'offline', 'revision', 'jjh', '{now.isoformat()}', 'failed',
+            NULL, NULL, NULL, 'share offline'
+        );
+        PRAGMA user_version = 16;
+        """
+    )
+    connection.close()
+
+    migrated = SQLiteReviewStore(database_path)
+    exports = {event.id: event for event in migrated.audit.list_worksheet_exports(revision.id)}
+
+    assert [output.instrument for output in exports["delivered"].outputs] == [
+        "echo650", "shifter1", "shifter2"
+    ]
+    assert exports["delivered"].path_for("shifter2") == "/shifter2/FragSC-01.csv"
+    assert (exports["offline"].outputs, exports["offline"].error_message) == (
+        (), "share offline"
+    )
+    columns = {
+        row[1] for row in migrated._connection.execute(
+            "PRAGMA table_info(worksheet_export_event)"
+        )
+    }
+    assert "echo_path" not in columns
+    assert migrated.upgrade_backup_path is not None
+    migrated.close()
+
+
+def test_worksheet_outputs_accept_new_instruments_and_follow_plan_deletion(
+    tmp_path: Path,
+) -> None:
+    store, revision, now = _store_with_finalized_revision(tmp_path / "reviews.sqlite3")
+    event = WorksheetExportEvent(
+        "export", revision.id, "jjh", now, "succeeded",
+        (
+            InstrumentOutput("shifter1", "/shifter1/FragSC-01.csv"),
+            InstrumentOutput("mosquito", "/mosquito/FragSC-01.csv"),
+        ),
+    )
+
+    store.audit.record_worksheet_export(event)
+    assert store.audit.list_worksheet_exports(revision.id) == (event,)
+
+    store.planning.delete_planning_draft("plan")
+    remaining = store._connection.execute(
+        "SELECT COUNT(*) FROM worksheet_export_output"
+    ).fetchone()[0]
+    assert remaining == 0
     store.close()

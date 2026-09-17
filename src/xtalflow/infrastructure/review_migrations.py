@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 
-LATEST_SCHEMA_VERSION = 16
+LATEST_SCHEMA_VERSION = 17
 IMPORTED_PROJECT_ID = "imported-standalone-reviews"
 LEGACY_PLATE_FORMAT_ID = "swissci-midi-3-lens-hr3-194"
 LEGACY_PLATE_FORMAT_VERSION = 1
@@ -287,10 +287,20 @@ def _create_planning_schema(connection: sqlite3.Connection) -> None:
             username TEXT NOT NULL,
             exported_at TEXT NOT NULL,
             status TEXT NOT NULL,
-            echo_path TEXT,
-            shifter1_path TEXT,
-            shifter2_path TEXT,
             error_message TEXT
+        )
+        """
+    )
+    _move_worksheet_paths_to_instrument_outputs(connection)
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS worksheet_export_output (
+            export_id TEXT NOT NULL
+                REFERENCES worksheet_export_event(export_id) ON DELETE CASCADE,
+            output_order INTEGER NOT NULL CHECK(output_order > 0),
+            instrument TEXT NOT NULL,
+            path TEXT NOT NULL,
+            PRIMARY KEY(export_id, instrument)
         )
         """
     )
@@ -477,6 +487,75 @@ def _create_legacy_target_import_schema(
             "INSERT OR IGNORE INTO legacy_target_import(target_id) "
             "SELECT target_id FROM target_point"
         )
+
+
+LEGACY_WORKSHEET_PATH_COLUMNS = (
+    ("echo_path", "echo650"),
+    ("shifter1_path", "shifter1"),
+    ("shifter2_path", "shifter2"),
+)
+
+
+def _move_worksheet_paths_to_instrument_outputs(connection: sqlite3.Connection) -> None:
+    """Replace one path column per instrument with one output row per file.
+
+    Schema 16 and earlier stored ECHO, SHIFTER 1, and SHIFTER 2 paths as fixed
+    columns, so recording another instrument required a schema change.
+    """
+    columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(worksheet_export_event)")
+    }
+    if "echo_path" not in columns:
+        return
+    # Renaming before the output table exists keeps its foreign key pointing
+    # at the rebuilt event table.
+    connection.execute(
+        "ALTER TABLE worksheet_export_event RENAME TO worksheet_export_event_schema16"
+    )
+    connection.execute(
+        """
+        CREATE TABLE worksheet_export_event (
+            export_id TEXT PRIMARY KEY,
+            revision_id TEXT NOT NULL REFERENCES plan_revision(revision_id),
+            username TEXT NOT NULL,
+            exported_at TEXT NOT NULL,
+            status TEXT NOT NULL,
+            error_message TEXT
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO worksheet_export_event(
+            export_id, revision_id, username, exported_at, status, error_message
+        )
+        SELECT export_id, revision_id, username, exported_at, status, error_message
+        FROM worksheet_export_event_schema16
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE worksheet_export_output (
+            export_id TEXT NOT NULL
+                REFERENCES worksheet_export_event(export_id) ON DELETE CASCADE,
+            output_order INTEGER NOT NULL CHECK(output_order > 0),
+            instrument TEXT NOT NULL,
+            path TEXT NOT NULL,
+            PRIMARY KEY(export_id, instrument)
+        )
+        """
+    )
+    for order, (column, instrument) in enumerate(LEGACY_WORKSHEET_PATH_COLUMNS, start=1):
+        connection.execute(
+            f"""
+            INSERT INTO worksheet_export_output(export_id, output_order, instrument, path)
+            SELECT export_id, ?, ?, {column}
+            FROM worksheet_export_event_schema16
+            WHERE {column} IS NOT NULL AND {column} <> ''
+            """,
+            (order, instrument),
+        )
+    connection.execute("DROP TABLE worksheet_export_event_schema16")
 
 
 def _import_standalone_reviews(connection: sqlite3.Connection) -> None:

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from xtalflow.application import ReviewPersistenceError
 from xtalflow.domain.fragment_screening import FragmentScreenPlan
+from xtalflow.domain.instruments import ECHO_650, SHIFTER_1, SHIFTER_2, InstrumentOutput
 from xtalflow.domain.raw_crystal import RawCrystalPlan
 from xtalflow.domain.worksheets import (
     ECHO_HEADER,
@@ -28,17 +29,22 @@ class WorksheetDestinationUnavailable(ReviewPersistenceError):
 class WorksheetExportResult:
     experiment_id: str
     file_stem: str
-    echo_path: Path
-    shifter1_path: Path
-    shifter2_path: Path
+    outputs: tuple[InstrumentOutput, ...]
+
+    def path_for(self, instrument: str) -> Path:
+        return next(
+            Path(output.path) for output in self.outputs
+            if output.instrument == instrument
+        )
 
 
-@dataclass(frozen=True)
-class ShifterExportResult:
-    experiment_id: str
-    file_stem: str
-    shifter1_path: Path
-    shifter2_path: Path
+def _outputs(
+    instruments: tuple[str, ...], destinations: tuple[Path, ...]
+) -> tuple[InstrumentOutput, ...]:
+    return tuple(
+        InstrumentOutput(instrument, str(destination))
+        for instrument, destination in zip(instruments, destinations)
+    )
 
 
 class WorksheetExporter:
@@ -75,7 +81,7 @@ class WorksheetExporter:
     ) -> WorksheetExportResult:
         directories = tuple(
             root / name / self.username
-            for name in ("echo650", "shifter1", "shifter2")
+            for name in (ECHO_650, SHIFTER_1, SHIFTER_2)
         )
         try:
             for directory in directories:
@@ -88,7 +94,7 @@ class WorksheetExporter:
 
     def export_shifter(
         self, plan: RawCrystalPlan, experiment_id: str
-    ) -> ShifterExportResult:
+    ) -> WorksheetExportResult:
         bases = (self.settings.shifter1_output_directory,
                  self.settings.shifter2_output_directory)
         missing = self._unavailable_bases(bases)
@@ -108,9 +114,9 @@ class WorksheetExporter:
 
     def export_shifter_to_alternate_root(
         self, plan: RawCrystalPlan, experiment_id: str, root: Path
-    ) -> ShifterExportResult:
+    ) -> WorksheetExportResult:
         directories = tuple(
-            root / name / self.username for name in ("shifter1", "shifter2")
+            root / name / self.username for name in (SHIFTER_1, SHIFTER_2)
         )
         try:
             for directory in directories:
@@ -139,7 +145,7 @@ class WorksheetExporter:
     def _export_shifter_to_directories(
         self, plan: RawCrystalPlan, experiment_id: str,
         directories: tuple[Path, Path],
-    ) -> ShifterExportResult:
+    ) -> WorksheetExportResult:
         shifter_rows = tuple(row.values() for row in build_shifter_worksheet(plan))
         try:
             file_stem = self._available_file_stem(experiment_id, directories)
@@ -153,8 +159,9 @@ class WorksheetExporter:
             raise WorksheetDestinationUnavailable(
                 f"could not save worksheets: {error}"
             ) from error
-        return ShifterExportResult(
-            experiment_id, file_stem, destinations[0], destinations[1]
+        return WorksheetExportResult(
+            experiment_id, file_stem,
+            _outputs((SHIFTER_1, SHIFTER_2), destinations),
         )
 
     def _export_to_directories(
@@ -186,7 +193,8 @@ class WorksheetExporter:
                 f"could not save worksheets: {error}"
             ) from error
         return WorksheetExportResult(
-            experiment_id, file_stem, destinations[0], destinations[1], destinations[2]
+            experiment_id, file_stem,
+            _outputs((ECHO_650, SHIFTER_1, SHIFTER_2), destinations),
         )
 
     def _staging_directory(self, file_stem: str) -> tempfile.TemporaryDirectory:

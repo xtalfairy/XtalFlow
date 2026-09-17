@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from .instruments import InstrumentOutput
+
 
 @dataclass(frozen=True)
 class PlanningDraft:
@@ -38,10 +40,14 @@ class WorksheetExportEvent:
     username: str
     exported_at: datetime
     status: str
-    echo_path: str | None = None
-    shifter1_path: str | None = None
-    shifter2_path: str | None = None
+    outputs: tuple[InstrumentOutput, ...] = ()
     error_message: str | None = None
+
+    def path_for(self, instrument: str) -> str | None:
+        return next(
+            (output.path for output in self.outputs if output.instrument == instrument),
+            None,
+        )
 
 
 @dataclass(frozen=True)

@@ -953,8 +953,8 @@ def test_fragment_worksheets_are_saved_and_audited(tmp_path: Path, monkeypatch) 
     exports = store.audit.list_worksheet_exports(revision.id)
     assert messages == ["Worksheets saved"]
     assert [event.status for event in exports] == ["succeeded"]
-    assert Path(exports[0].echo_path).is_file()
-    assert Path(exports[0].shifter2_path).is_file()
+    assert Path(exports[0].path_for("echo650")).is_file()
+    assert Path(exports[0].path_for("shifter2")).is_file()
     window.close()
     app.processEvents()
 
@@ -989,7 +989,7 @@ def test_unavailable_instrument_share_can_use_alternate_root(
 
     exports = store.audit.list_worksheet_exports(editor.last_revision.id)
     assert [event.status for event in exports] == ["succeeded"]
-    assert exports[0].echo_path.startswith(str(tmp_path / "chosen" / "echo650"))
+    assert exports[0].path_for("echo650").startswith(str(tmp_path / "chosen" / "echo650"))
     window.close()
     app.processEvents()
 

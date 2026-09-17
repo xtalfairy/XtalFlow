@@ -1465,16 +1465,11 @@ class ViewerWindow(QMainWindow):
         editor.experiment_id_label.setText(
             f"Experiment ID: {result.experiment_id} · Saved as {result.file_stem}"
         )
-        shifter_paths = (
-            f"SHIFTER 1:\n{result.shifter1_path}\n\nSHIFTER 2:\n{result.shifter2_path}"
+        QMessageBox.information(
+            self,
+            "SHIFTER worksheets saved" if raw_crystal else "Worksheets saved",
+            "\n\n".join(f"{output.label}:\n{output.path}" for output in result.outputs),
         )
-        if raw_crystal:
-            QMessageBox.information(self, "SHIFTER worksheets saved", shifter_paths)
-        else:
-            QMessageBox.information(
-                self, "Worksheets saved",
-                f"ECHO:\n{result.echo_path}\n\n{shifter_paths}",
-            )
 
     def _deliver_worksheets_to_alternate_root(
         self, service: WorksheetExportService, revision: PlanRevision, plan,

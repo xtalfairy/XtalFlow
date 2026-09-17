@@ -84,9 +84,7 @@ class WorksheetExportService:
             WorksheetExportEvent(
                 str(uuid4()), revision.id, self.username, datetime.now(timezone.utc),
                 status,
-                str(result.echo_path) if getattr(result, "echo_path", None) else None,
-                str(result.shifter1_path) if result is not None else None,
-                str(result.shifter2_path) if result is not None else None,
+                result.outputs if result is not None else (),
                 error,
             )
         )

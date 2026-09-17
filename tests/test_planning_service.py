@@ -7,7 +7,6 @@ from xtalflow.application.planning_service import (
     PlanningService,
     fragment_plan_snapshot,
     raw_crystal_plan_snapshot,
-    restored_plan_status,
     saved_plan_status,
 )
 from xtalflow.domain import (
@@ -75,21 +74,13 @@ def test_snapshots_are_canonical_and_record_exact_worksheet_inputs() -> None:
     )
 
 
-def test_plan_status_distinguishes_finalized_changed_and_legacy_plans() -> None:
+def test_plan_status_distinguishes_finalized_and_changed_plans() -> None:
     revision = PlanRevision("r", "plan", 2, "RawCrystal-01", "{}", "jjh", NOW)
 
     assert saved_plan_status(revision, "{}", "{}").label == "Finalized r2"
-    assert saved_plan_status(revision, "{}", '{"v":2}').list_status == (
-        "Draft changes after r2"
-    )
-    assert saved_plan_status(None, None, "{}").list_status == "Draft"
-    assert restored_plan_status(None, "{}", selection_owned=True) is None
-    assert restored_plan_status(revision, '{"v":2}', True).label == (
-        "Draft changes after r2"
-    )
-    assert restored_plan_status(revision, "{}", False).list_status == (
-        "Legacy · Review selection"
-    )
+    assert saved_plan_status(revision, "{}", "{}").finalized
+    assert saved_plan_status(revision, "{}", '{"v":2}').label == "Draft changes after r2"
+    assert saved_plan_status(None, None, "{}").label == "Draft · saved"
 
 
 def test_finalize_keeps_experiment_id_and_avoids_remote_ids(tmp_path: Path) -> None:

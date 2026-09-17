@@ -387,7 +387,7 @@ def test_main_window_starts_on_home_and_guides_an_experiment(
     app.processEvents()
 
 
-def test_planning_tab_lists_libraries_from_designated_directory(
+def test_conditions_list_libraries_from_designated_directory(
     tmp_path: Path,
 ) -> None:
     app = QApplication.instance() or QApplication([])
@@ -2166,4 +2166,29 @@ def test_new_project_ui_creates_independent_empty_workspace(tmp_path: Path, monk
     assert window.image_set_model.rowCount() == 0
     assert window.project_selector.count() == 2
     window.close()
+    app.processEvents()
+
+
+def test_examples_panel_lists_captioned_images_or_explains_setup(tmp_path: Path) -> None:
+    from xtalflow.infrastructure.examples import load_examples
+    from xtalflow.ui.examples_panel import ExamplesPanel
+
+    app = QApplication.instance() or QApplication([])
+    pixmap = QPixmap(8, 8)
+    pixmap.fill(Qt.white)
+    pixmap.save(str(tmp_path / "b-edge.png"))
+    pixmap.save(str(tmp_path / "a-center.png"))
+    (tmp_path / "a-center.txt").write_text("Center of a single crystal\nAvoid cracks", encoding="utf-8")
+
+    examples = load_examples(tmp_path)
+    panel = ExamplesPanel(examples, tmp_path)
+
+    assert [example.caption for example in examples] == [
+        "Center of a single crystal\nAvoid cracks", "b edge"
+    ]
+    assert panel.example_list.item(0).text() == "Center of a single crystal"
+    assert panel.caption_label.text() == "Center of a single crystal\nAvoid cracks"
+    assert load_examples(None) == ()
+    assert "--examples-dir" in ExamplesPanel((), None).empty_label.text()
+    panel.close()
     app.processEvents()

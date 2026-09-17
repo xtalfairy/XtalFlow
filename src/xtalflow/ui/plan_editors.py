@@ -76,9 +76,6 @@ class PlanEditorBase(QWidget):
     into the guided steps (Setup, Conditions, Review, Worksheets).
     """
 
-    PLAN_TYPE_LABEL = ""
-
-    finalize_requested = pyqtSignal()
     draft_changed = pyqtSignal()
     webdb_upload_requested = pyqtSignal()
 
@@ -111,8 +108,6 @@ class PlanEditorBase(QWidget):
         self.protein_input.setPlaceholderText("e.g. BRD4")
         self.protein_input.setMaximumWidth(480)
         self.lifecycle_label = QLabel("Draft · not saved")
-        self.facts_label = QLabel()
-        self.facts_label.setObjectName("Muted")
         self.checklist_label = QLabel()
         self.checklist_label.setWordWrap(True)
         self.checklist_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -175,16 +170,6 @@ class PlanEditorBase(QWidget):
             self.name_input.setText(name)
 
     def _refresh_facts(self) -> None:
-        wells = self.selection.wells if self.selection is not None else ()
-        positions = sum(len(well.soaking_positions) for well in wells)
-        reused = sum(1 for well in wells if self.well_usage.get(well.image_key))
-        facts = (
-            f"{len(wells)} selected well{'s' if len(wells) != 1 else ''} · "
-            f"{positions} position{'s' if positions != 1 else ''}"
-        )
-        if reused:
-            facts += f" · {reused} used before"
-        self.facts_label.setText(facts)
         self.checklist_label.setText("\n".join(self._checklist_lines()))
 
     def _checklist_lines(self) -> list[str]:
@@ -303,8 +288,6 @@ class PlanEditorBase(QWidget):
 
 class FragmentScreeningEditor(PlanEditorBase):
     """Assign library fragments to selected wells and preview ECHO/SHIFTER output."""
-
-    PLAN_TYPE_LABEL = "Fragment Screening"
 
     library_refresh_requested = pyqtSignal()
 
@@ -689,8 +672,6 @@ class FragmentScreeningEditor(PlanEditorBase):
 
 class RawCrystalEditor(PlanEditorBase):
     """Harvest selected crystals with SHIFTER, without a soaking step."""
-
-    PLAN_TYPE_LABEL = "Raw Crystal"
 
     def __init__(
         self,

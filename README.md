@@ -1,8 +1,28 @@
 # XtalFlow
 
 XtalFlow는 결정화 이미지를 검토하고 결정 타겟 좌표를 기록하며, 실험 계획과
-SHIFTER/ECHO worksheet를 생성하는 프로그램입니다. 현재 지원하는 planning
-workflow는 Raw Crystal Plan과 Fragment Screening입니다.
+SHIFTER/ECHO worksheet를 생성하는 프로그램입니다. 현재 지원하는 실험은 Raw Crystal과
+Fragment Screening입니다.
+
+## 사용 흐름
+
+프로그램을 열면 시작 화면에서 실험 유형을 고르거나 `Recent work`의 실험을 이어서
+엽니다. 실험은 다음 단계를 차례로 안내하며, 위쪽 단계 표시줄에서 언제든 다른 단계로
+이동할 수 있습니다.
+
+1. **Setup**: 단백질 이름과 실험 이름. 실험 ID는 확정할 때 단백질 이름으로 만듭니다.
+2. **Select wells**: plate를 불러오고 이미지에서 결정을 클릭해 position을 찍습니다.
+   position은 실험마다 따로 저장되고, well 경계 보정은 같은 workspace의 실험이
+   함께 씁니다. `Review selected wells`로 경고가 있는 well을 확인합니다.
+3. **Conditions**(Fragment Screening만): library, 사용할 행, well당 총량, 배정 순서.
+   총량이 well 안의 position 수로 2.5 nL 단위 균등 분배되지 않으면 진행할 수 없습니다.
+4. **Review**: 배정 표와 확인 목록을 보고 `Finalize and continue`로 revision을 확정합니다.
+5. **Worksheets**: 설정된 모든 장비 폴더에 worksheet를 한꺼번에 저장합니다. 하나라도
+   저장할 수 없으면 아무 파일도 저장하지 않고 다시 시도하거나 다른 폴더를 고르게
+   합니다. MxLive 전송은 이 화면 아래에서 선택적으로 합니다.
+
+Select wells의 `Show examples`는 `--examples-dir`로 지정한 폴더의 이미지를 보여줍니다.
+각 이미지 옆에 같은 이름의 `.txt` 파일을 두면 설명으로 표시됩니다.
 
 ## 지원 Python 버전
 
@@ -147,6 +167,11 @@ key_path = "/data/users/local_user/.config/mxdc/keys.dsa"
 
 더 최신 XtalFlow가 업그레이드한 데이터베이스는 이전 버전에서 열지 않습니다. 이 경우
 설치된 XtalFlow를 최신 버전으로 맞춥니다.
+
+스키마 18부터 position은 실험마다 따로 저장됩니다. 업그레이드할 때 확정된 실험이 쓰던
+position은 그 실험으로 복사되고, 어느 실험에도 쓰이지 않은 position은 workspace에
+남아 새 실험을 시작할 때 가져올지 묻습니다. 이전 버전으로 되돌려야 하면 업그레이드 때
+만든 `reviews.sqlite3.schema17-*.bak` 백업을 복원합니다.
 
 ### 사용자별 이미지 검토 설정
 

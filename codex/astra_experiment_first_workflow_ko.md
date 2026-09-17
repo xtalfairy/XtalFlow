@@ -374,3 +374,20 @@ Solvent/Cryo 조건 행렬의 상세 설계는 `codex/condition_matrix_experimen
 구현 전에 확인할 사항: 연구실이 승인한 선택 예시 이미지, Raw Crystal position의 의미, 조건 행렬 실험의 drop 부피 출처와 수확 시각 기준점. 확인되지 않은 값을 편의상 기본값으로 고정하지 않는다.
 
 이 설계의 완성 조건은 사용자가 "무엇을 준비하는지", "다음에 무엇을 할지", "무엇이 부족한지", "어떤 파일이 어디에 저장됐는지"를 화면만 보고 설명할 수 있는 것이다.
+
+## 18. 구현 현황 (`experiment-first` 브랜치)
+
+2026-09-17 기준으로 1–11절의 흐름을 구현했다. 제안과 다르게 정한 부분은 다음과 같다.
+
+| 항목 | 구현 | 이유 |
+|---|---|---|
+| Workspace 선택 | 시작 화면 아래의 `New experiments use workspace` 한 줄. Setup에는 읽기 전용으로 표시 | 실험을 만든 뒤 workspace를 바꾸면 실험별 position과 plate 연결이 끊긴다 |
+| 이전 position | 새 실험 시작 시 어느 실험에도 속하지 않은 workspace position이 있으면 한 번 묻고 복사 | 스키마 18 이전에 찍은 position을 잃지 않게 하기 위함 |
+| 다른 실험이 쓴 well | Select wells의 현재 이미지 설명에 `also used in <실험 이름>`, Review 표의 Usage 열 | 같은 결정을 두 실험에 쓰는 실수를 막되 막지는 않는다 |
+| Conditions의 순서 변경 | 배정이 바뀌는 well 목록을 먼저 보여주고 `Apply reassignment` / `Keep current order` | 10절의 의도하지 않은 재배정 방지 |
+| Finalize | Review의 `Finalize and continue`가 실험 ID, well·position 수, 대상 장비를 확인창으로 보여준다 | 확정이 실험 실행이 아님을 알림 |
+| Worksheet 저장 실패 | 화면 안에 "No worksheets were saved"와 `Try again`, `Save to another folder…` | 모달 선택 대신 결과 영역에서 복구 |
+| 예시 이미지 | Select wells의 `Show examples` 창. `--examples-dir` 폴더의 이미지와 같은 이름의 `.txt` 설명 | 연구실 승인 예시를 코드에 넣지 않기 위함. 폴더가 없으면 설정 방법을 안내 |
+| MxLive | Worksheets 아래 접힌 `Send records to MxLive (optional)` | 기존 업로드·결과 모름·Verify 흐름 유지 |
+
+아직 남은 일: 조건 행렬 실험(Solvent / Cryo, `codex/condition_matrix_experiments_ko.md`), Raw Crystal position 의미의 연구실 확인, 연구실 승인 예시 이미지 준비.

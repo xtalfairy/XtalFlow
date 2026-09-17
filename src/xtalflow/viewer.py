@@ -144,6 +144,7 @@ from xtalflow.infrastructure.mxlive_config import (
     resolve_mxlive_account,
 )
 from xtalflow.infrastructure.instrument_config import load_instrument_destinations
+from xtalflow.infrastructure.examples import load_examples
 from xtalflow.infrastructure.user_preferences import JsonUserPreferencesStore
 from xtalflow.presentation import ProjectImageSetListModel
 from xtalflow.settings import (
@@ -158,6 +159,7 @@ from xtalflow.ui.review_widgets import (
     ImageSetListView,
 )
 from xtalflow.ui.plan_editors import FragmentScreeningEditor, RawCrystalEditor
+from xtalflow.ui.examples_panel import ExamplesPanel
 from xtalflow.ui.experiment_page import ExperimentPage
 from xtalflow.ui.experiment_steps import SetupStep, WorksheetsStep
 from xtalflow.ui.home_page import EXPERIMENT_CHOICES, HomePage, RecentExperiment
@@ -541,6 +543,9 @@ class ViewerWindow(QMainWindow):
         selection_layout.addWidget(self.selection_label)
         selection_layout.addWidget(self.project_progress_label)
         selection_layout.addStretch()
+        self.examples_button = QPushButton("Show examples")
+        self.examples_button.setToolTip("Example images of where to place positions")
+        selection_layout.addWidget(self.examples_button)
         selection_layout.addWidget(self.target_summary_button)
         self.selection_bar = QFrame()
         self.selection_bar.setObjectName("SelectionBar")
@@ -629,6 +634,7 @@ class ViewerWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self.add_plates_button.clicked.connect(self.open_load_plates_dialog)
         self.load_plates_form.submitted.connect(self._load_plates_from_form)
+        self.examples_button.clicked.connect(self.show_examples)
         self.home_page.start_requested.connect(self.start_experiment)
         self.home_page.resume_requested.connect(self.resume_experiment)
         self.home_page.delete_requested.connect(self.delete_experiment)
@@ -700,6 +706,13 @@ class ViewerWindow(QMainWindow):
         self.image_canvas.cancel_requested.connect(
             self._cancel_manual_calibration_from_keyboard
         )
+
+    def show_examples(self) -> None:
+        directory = self.settings.examples_directory
+        panel = ExamplesPanel(load_examples(directory), directory, self)
+        panel.setAttribute(Qt.WA_DeleteOnClose)
+        panel.show()
+        self.examples_panel = panel
 
     def show_shortcuts(self) -> None:
         ShortcutsDialog(self).exec_()
@@ -3356,6 +3369,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Allow ECHO/SHIFTER directories that are not mounted network shares "
         "(testing only; instruments will not see these files)",
     )
+    parser.add_argument(
+        "--examples-dir",
+        type=Path,
+        help="Folder of lab-approved example images, each with a same-named .txt caption",
+    )
     parser.add_argument("--plate", help="Plate code to load at startup")
     parser.add_argument(
         "--plate-format",
@@ -3388,6 +3406,7 @@ def settings_from_arguments(args: argparse.Namespace) -> ApplicationSettings:
         mxlive_key_path=args.mxlive_key,
         mxlive_ca_bundle=args.mxlive_ca,
         mxlive_config_path=args.mxlive_config,
+        examples_directory=args.examples_dir,
     )
     configured = load_instrument_destinations(args.mxlive_config)
     if configured is not None:

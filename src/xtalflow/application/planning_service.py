@@ -58,10 +58,9 @@ class PlanningStorePort(Protocol):
 
 @dataclass(frozen=True)
 class PlanStatus:
-    """How a plan's lifecycle is shown in the plan editor and the plan list."""
+    """How an experiment's plan lifecycle is shown."""
 
     label: str
-    list_status: str
     finalized: bool = False
 
 
@@ -276,30 +275,10 @@ def saved_plan_status(
 ) -> PlanStatus:
     if last_revision is not None and last_revision_snapshot == current_snapshot:
         finalized = f"Finalized r{last_revision.revision}"
-        return PlanStatus(finalized, finalized, finalized=True)
+        return PlanStatus(finalized, finalized=True)
     if last_revision is not None:
-        changed = f"Draft changes after r{last_revision.revision}"
-        return PlanStatus(changed, changed)
-    return PlanStatus("Draft · saved", "Draft")
-
-
-def restored_plan_status(
-    last_revision: PlanRevision | None,
-    current_snapshot: str | None,
-    selection_owned: bool,
-) -> PlanStatus | None:
-    """Status of a plan reopened from the database, or None for a plain draft."""
-    if not selection_owned:
-        return PlanStatus(
-            "Legacy Draft · selection needs review", "Legacy · Review selection"
-        )
-    if last_revision is None:
-        return None
-    if last_revision.snapshot_json == current_snapshot:
-        finalized = f"Finalized r{last_revision.revision}"
-        return PlanStatus(finalized, finalized, finalized=True)
-    changed = f"Draft changes after r{last_revision.revision}"
-    return PlanStatus(changed, changed)
+        return PlanStatus(f"Draft changes after r{last_revision.revision}")
+    return PlanStatus("Draft · saved")
 
 
 class PlanningService:

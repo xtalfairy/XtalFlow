@@ -67,6 +67,7 @@ class ApplicationSettings:
     mxlive_ca_bundle: Path | None = None
     mxlive_timeout_seconds: float = 10.0
     mxlive_config_path: Path | None = None
+    examples_directory: Path | None = None
 
     def __post_init__(self) -> None:
         ids = [destination.instrument for destination in self.instruments]

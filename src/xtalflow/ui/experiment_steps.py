@@ -58,6 +58,8 @@ class SetupStep(QWidget):
         form.setHorizontalSpacing(theme.SPACING_XL)
         form.addRow("Protein", protein_field)
         form.addRow("Name", editor.name_input)
+        for label, field in editor.setup_fields():
+            form.addRow(label, field)
         form.addRow("Type", self.type_label)
         form.addRow("Workspace", self.workspace_label)
         layout = QVBoxLayout()
@@ -113,6 +115,10 @@ class WorksheetsStep(QWidget):
         self.result_label.setWordWrap(True)
         self.result_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.result_label.hide()
+        # Condition tests: when to dispense and harvest, as a checklist to follow.
+        self.schedule_label = QLabel()
+        self.schedule_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.schedule_label.hide()
         self.retry_button = QPushButton("Try again")
         self.choose_location_button = QPushButton("Save to another folder…")
         self.copy_paths_button = QPushButton("Copy paths")
@@ -149,6 +155,7 @@ class WorksheetsStep(QWidget):
         layout.addWidget(self.instrument_table)
         layout.addWidget(self.atomic_hint)
         layout.addLayout(result_row)
+        layout.addWidget(self.schedule_label)
         layout.addSpacing(theme.SPACING_XL)
         layout.addLayout(mxlive_header)
         layout.addWidget(self.mxlive_table, 1)
@@ -182,6 +189,10 @@ class WorksheetsStep(QWidget):
         self.choose_location_button.setVisible(can_retry)
         self._copy_text = copy_text
         self.copy_paths_button.setVisible(bool(copy_text))
+
+    def show_schedule(self, lines: tuple[str, ...]) -> None:
+        self.schedule_label.setText("Schedule\n" + "\n".join(lines) if lines else "")
+        self.schedule_label.setVisible(bool(lines))
 
     def _toggle_mxlive(self, visible: bool) -> None:
         self.mxlive_table.setVisible(visible)

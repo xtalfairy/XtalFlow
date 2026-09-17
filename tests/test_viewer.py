@@ -11,7 +11,7 @@ import pytest
 from PyQt5.QtCore import QPoint, Qt
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication, QInputDialog, QMessageBox
+from PyQt5.QtWidgets import QApplication, QMessageBox
 
 from xtalflow.domain import (
     PLATE_FORMATS,
@@ -354,12 +354,12 @@ def test_main_window_starts_on_home_and_guides_an_experiment(
 
     assert window.pages.currentWidget() is window.home_page
     assert set(window.workspace_sidebar.start_buttons) == {
-        PlanType.FRAGMENT_SCREENING, PlanType.RAW_CRYSTAL
+        "fragment_screening", "raw_crystal", "solvent_test", "cryo_test"
     }
     assert not window.home_page.recent_empty_label.isHidden()
     assert window.workspace_sidebar.new_workspace_button.toolTip() == "New workspace"
 
-    window.workspace_sidebar.start_buttons[PlanType.RAW_CRYSTAL].click()
+    window.workspace_sidebar.start_buttons[PlanType.RAW_CRYSTAL.value].click()
     editor = window.current_editor
 
     assert window.pages.currentWidget() is page
@@ -1155,7 +1155,7 @@ def test_raw_crystal_experiment_runs_from_setup_to_saved_worksheets(
     monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
     page = window.experiment_page
 
-    window.workspace_sidebar.start_buttons[PlanType.RAW_CRYSTAL].click()
+    window.workspace_sidebar.start_buttons[PlanType.RAW_CRYSTAL.value].click()
     first = window.current_editor
     first.protein_input.setText("BRD4")
     page.primary_button.click()
@@ -2312,7 +2312,7 @@ def test_workspace_panel_can_be_hidden_everywhere_and_is_remembered(tmp_path: Pa
     assert not window.home_page.panel_button.isHidden()
     assert not window.workspace_panel_action.isChecked()
 
-    window.workspace_sidebar.start_buttons[PlanType.RAW_CRYSTAL].click()
+    window.workspace_sidebar.start_buttons[PlanType.RAW_CRYSTAL.value].click()
     assert not window.experiment_page.panel_button.isHidden()
     window.experiment_page.panel_button.click()
     assert window.workspace_sidebar.isVisible()
@@ -2327,5 +2327,99 @@ def test_workspace_panel_can_be_hidden_everywhere_and_is_remembered(tmp_path: Pa
     app.processEvents()
     assert not reopened.workspace_sidebar.isVisible()
     assert preferences.load().workspace_panel_visible is False
+    reopened.close()
+    app.processEvents()
+
+
+def test_solvent_test_runs_from_conditions_to_saved_worksheets_and_reopens(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from xtalflow.domain.condition_test import ConditionTestDesign
+    from xtalflow.ui.condition_test_editor import ConditionTestEditor
+
+    app = QApplication.instance() or QApplication([])
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        instruments=standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
+        ),
+        create_missing_instrument_roots=True,
+    )
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store, settings=settings)
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    page = window.experiment_page
+
+    window.workspace_sidebar.start_buttons["solvent_test"].click()
+    editor = window.current_editor
+    assert isinstance(editor, ConditionTestEditor)
+    assert editor.plan_name.startswith("Solvent Test ")
+    assert list(page.stepper.buttons) == [
+        WorkflowStep.SETUP, WorkflowStep.CONDITIONS, WorkflowStep.SELECT_WELLS,
+        WorkflowStep.REVIEW, WorkflowStep.WORKSHEETS,
+    ]
+    editor.protein_input.setText("BRD4")
+    editor.drop_volume_input.setValue(100)
+    assert page.primary_button.text() == "Set conditions"
+    page.primary_button.click()
+    assert window._current_step is WorkflowStep.CONDITIONS
+    assert editor.design_error == "Enter the source plate and well for DMSO."
+    assert "Enter the source plate" in page.footer_status_label.text()
+    editor.source_plate_input.setText("LDV-1")
+    editor.source_well_input.setText("a1")
+    editor._additive_edited()
+    assert editor.design_error is None
+    assert editor.matrix_table.horizontalHeaderItem(2).text() == "10 %\n10 nL → 9.1 %"
+    editor._reduce_replicates()
+    editor._toggle_cell(3, 3)
+    assert editor.matrix_table.item(3, 3).text() == "excluded"
+    assert editor.design.required_crystals == 15
+    assert page.footer_status_label.text() == "✓ 15 conditions · 15 crystals"
+    assert page.primary_button.text() == "Select wells"
+    page.primary_button.click()
+    assert window._current_step is WorkflowStep.SELECT_WELLS
+
+    now = datetime.now(timezone.utc)
+    crystals = tuple(
+        SelectedCrystal(
+            f"image-{index}", "2070", f"{'ABCDEFGH'[index // 12]}{index % 12 + 1:02d}a",
+            (CrystalTarget(f"target-{index}", Decimal(0), Decimal(0), now + timedelta(seconds=index)),),
+            SWISSCI_MIDI_3_LENS.id,
+        )
+        for index in range(15)
+    )
+    # Leaving Select wells re-reads the image review, so inject wells after moving on.
+    window.go_to_step(WorkflowStep.REVIEW)
+    window._sync_editor_selection(editor, crystals[:10])
+    assert editor.experiment_status.status_of(WorkflowStep.SELECT_WELLS).message == (
+        "10 of 15 wells selected"
+    )
+    window._sync_editor_selection(editor, crystals)
+    assert editor.current_plan is not None
+    assert window._finalize_plan(editor).experiment_id.startswith("PreTest-")
+    window.go_to_step(WorkflowStep.WORKSHEETS)
+    assert editor.worksheets_step.schedule_label.text().splitlines()[:3] == [
+        "Schedule",
+        "T+0 min · dispense with the ECHO file (11 wells)",
+        "T+0 min · harvest A01a, A02a, A03a, A04a",
+    ]
+    page.primary_button.click()
+    (export,) = store.audit.list_worksheet_exports(editor.last_revision.id)
+    assert export.status == "succeeded"
+    assert Path(export.path_for("echo650")).is_file()
+
+    plan_id, workspace_id = editor.plan_id, editor.project_id
+    window.show_home()
+    window.close()
+    app.processEvents()
+    reopened = ViewerWindow(
+        RockMakerImageRepository(tmp_path), SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        settings=settings,
+    )
+    restored = reopened.resume_experiment(workspace_id, plan_id)
+    assert isinstance(restored.design, ConditionTestDesign)
+    assert restored.design.required_crystals == 15
+    assert restored.design.additives[0].source_well == "A1"
     reopened.close()
     app.processEvents()

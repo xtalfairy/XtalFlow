@@ -73,7 +73,13 @@ from xtalflow.domain import (
 )
 from xtalflow.domain.fragment_screening import FragmentLibrary, FragmentScreenPlan
 from xtalflow.domain.experiment_naming import suggest_experiment_id
-from xtalflow.domain.labwork import build_fragment_labworks, build_raw_crystal_labworks
+from xtalflow.domain.condition_test import TEMPLATES as CONDITION_TEMPLATES
+from xtalflow.domain.condition_test import ConditionTestPlan, format_minutes
+from xtalflow.domain.labwork import (
+    build_condition_test_labworks,
+    build_fragment_labworks,
+    build_raw_crystal_labworks,
+)
 from xtalflow.domain.plan_lifecycle import (
     PlanningDraft,
     PlanRevision,
@@ -100,6 +106,7 @@ from xtalflow.application.planning_service import (
     EXPERIMENT_ID_PREFIXES,
     PlanningService,
     PlanStatus,
+    condition_test_plan_snapshot,
     fragment_plan_snapshot,
     plan_from_snapshot,
     raw_crystal_plan_snapshot,
@@ -163,8 +170,10 @@ from xtalflow.ui.help_button import HelpButton
 from xtalflow.ui.experiment_page import ExperimentPage
 from xtalflow.ui.experiment_steps import SetupStep, WorksheetsStep
 from xtalflow.ui.workspace_sidebar import WorkspaceSidebar
+from xtalflow.ui.condition_test_editor import ConditionTestEditor
 from xtalflow.ui.home_page import (
     EXPERIMENT_CHOICES,
+    PLAN_TYPE_TITLES,
     HomePage,
     RecentExperiment,
     WorkspaceEntry,
@@ -182,7 +191,7 @@ IMAGE_SOURCE_ERRORS = (ValueError, OSError, ReviewPersistenceError)
 
 T = TypeVar("T")
 
-PLAN_TYPE_LABELS = {choice.plan_type: choice.title for choice in EXPERIMENT_CHOICES}
+PLAN_TYPE_LABELS = PLAN_TYPE_TITLES
 
 STEP_HINTS = {
     WorkflowStep.SETUP: "",
@@ -599,7 +608,7 @@ class ViewerWindow(QMainWindow):
         self.add_plates_button.clicked.connect(self.open_load_plates_dialog)
         self.load_plates_form.submitted.connect(self._load_plates_from_form)
         self.examples_button.clicked.connect(self.show_examples)
-        self.workspace_sidebar.start_requested.connect(self.start_experiment)
+        self.workspace_sidebar.start_requested.connect(self.start_experiment_choice)
         self.home_page.resume_requested.connect(self.resume_experiment)
         self.home_page.delete_requested.connect(self.delete_experiment)
         self.experiment_page.home_requested.connect(self.show_home)
@@ -830,7 +839,13 @@ class ViewerWindow(QMainWindow):
         names.update({plan_id: editor.plan_name for plan_id, editor in self._editors.items()})
         return names
 
-    def start_experiment(self, plan_type: PlanType, name: str | None = None):
+    def start_experiment_choice(self, key: str):
+        choice = next(item for item in EXPERIMENT_CHOICES if item.key == key)
+        return self.start_experiment(choice.plan_type, template=choice.template)
+
+    def start_experiment(
+        self, plan_type: PlanType, name: str | None = None, template: str | None = None
+    ):
         """Create an empty experiment in the chosen workspace and open its first step."""
         target = self._target_workspace()
         if target is not None and not self._open_workspace(target.id):
@@ -845,16 +860,22 @@ class ViewerWindow(QMainWindow):
             self._sync_project_widgets()
         project = self.project_controller.active_project
         editor = self._create_editor(
-            plan_type, str(uuid4()), name or self._default_experiment_name(plan_type),
-            project.id,
+            plan_type, str(uuid4()),
+            name or self._default_experiment_name(plan_type, template),
+            project.id, template=template,
         )
         self._offer_workspace_positions(editor)
         self._open_editor(editor, WorkflowStep.SETUP)
         editor.protein_input.setFocus(Qt.OtherFocusReason)
         return editor
 
-    def _default_experiment_name(self, plan_type: PlanType) -> str:
-        stem = f"{PLAN_TYPE_LABELS[plan_type]} {datetime.now():%Y-%m-%d}"
+    def _default_experiment_name(self, plan_type: PlanType, template: str | None = None) -> str:
+        title = next(
+            (choice.title for choice in EXPERIMENT_CHOICES
+             if choice.plan_type is plan_type and choice.template == template),
+            PLAN_TYPE_LABELS[plan_type],
+        )
+        stem = f"{title} {datetime.now():%Y-%m-%d}"
         existing = set(self._experiment_names().values())
         name, number = stem, 2
         while name in existing:
@@ -1002,6 +1023,10 @@ class ViewerWindow(QMainWindow):
             or editor.selected_well_count
             or getattr(editor, "library_id", None)
             or editor.last_revision is not None
+            or (
+                editor.plan_type is PlanType.CONDITION_TEST
+                and editor.design.to_json() != editor.initial_details
+            )
         )
 
     def _leave_experiment(self, editor) -> None:
@@ -1023,6 +1048,7 @@ class ViewerWindow(QMainWindow):
         name: str,
         workspace_id: str,
         restored: PlanningDraft | None = None,
+        template: str | None = None,
     ):
         """One experiment's plan state, lifecycle, and step pages."""
         if plan_type is PlanType.FRAGMENT_SCREENING:
@@ -1036,6 +1062,10 @@ class ViewerWindow(QMainWindow):
             )
         elif plan_type is PlanType.RAW_CRYSTAL:
             editor = RawCrystalEditor(None, self.editor_holder)
+        elif plan_type is PlanType.CONDITION_TEST:
+            editor = ConditionTestEditor(
+                CONDITION_TEMPLATES[template or "solvent"](), self.editor_holder
+            )
         else:
             raise ValueError(f"{plan_type.value} experiments are not available yet")
         editor.hide()
@@ -1062,6 +1092,10 @@ class ViewerWindow(QMainWindow):
         editor.experiment_status = None
         if restored is not None:
             editor.restore_draft(restored)
+        # What a condition test looked like when opened, to tell an edit from a look.
+        editor.initial_details = (
+            editor.design.to_json() if plan_type is PlanType.CONDITION_TEST else None
+        )
         editor.set_title(name)
         editor.autosave_timer = QTimer(editor)
         editor.autosave_timer.setSingleShot(True)
@@ -1226,7 +1260,11 @@ class ViewerWindow(QMainWindow):
         """The next action, named for what it does, and whether it can run now."""
         state = status.status_of(step).state
         if step is WorkflowStep.SETUP:
-            return "Select wells", state is StepState.COMPLETE
+            next_step = steps[steps.index(step) + 1]
+            return (
+                "Set conditions" if next_step is WorkflowStep.CONDITIONS else "Select wells",
+                state is StepState.COMPLETE,
+            )
         if step is WorkflowStep.SELECT_WELLS:
             if editor.wells_needing_attention:
                 return f"Check {_count(editor.wells_needing_attention, 'well')}", True
@@ -1234,6 +1272,8 @@ class ViewerWindow(QMainWindow):
                 return f"Use {_count(editor.selected_well_count, 'well')}", True
             return "Use wells", False
         if step is WorkflowStep.CONDITIONS:
+            if steps[steps.index(step) + 1] is WorkflowStep.SELECT_WELLS:
+                return "Select wells", state is StepState.COMPLETE
             return "Review assignments", state is StepState.COMPLETE
         if step is WorkflowStep.REVIEW:
             revision = editor.last_revision
@@ -1282,12 +1322,39 @@ class ViewerWindow(QMainWindow):
 
     def _instruments_for(self, plan_type: PlanType):
         kinds = {WorksheetKind.SHIFTER}
-        if plan_type is PlanType.FRAGMENT_SCREENING:
+        if plan_type in (PlanType.FRAGMENT_SCREENING, PlanType.CONDITION_TEST):
             kinds.add(WorksheetKind.ECHO)
         return tuple(item for item in self.settings.instruments if item.worksheet in kinds)
 
     def _experiment_facts(self, editor) -> ExperimentFacts:
         plan = editor.current_plan
+        if editor.plan_type is PlanType.CONDITION_TEST:
+            revision = editor.last_revision
+            design = editor.design
+            shortage = design.required_crystals > editor.selected_well_count
+            return ExperimentFacts(
+                editor.plan_type,
+                editor.protein_input.text(),
+                editor.selected_well_count,
+                editor.selected_position_count,
+                editor.wells_needing_attention,
+                editor.design_error,
+                0,
+                revision.revision if revision is not None else None,
+                revision is not None
+                and self._plan_snapshot(editor) == editor.last_revision_snapshot,
+                self._worksheets_saved(revision),
+                editor.save_failed,
+                required_well_count=design.required_crystals,
+                conditions_summary=(
+                    f"{_count(len(design.conditions()), 'condition')} · "
+                    f"{_count(design.required_crystals, 'crystal')}"
+                ),
+                selection_error=None if shortage else editor.selection_error,
+                unused_well_count=(
+                    len(plan.unused_wells) if isinstance(plan, ConditionTestPlan) else 0
+                ),
+            )
         if plan is not None:
             conditions_error = None
         elif editor.selection is None:
@@ -1479,6 +1546,18 @@ class ViewerWindow(QMainWindow):
                 where,
             ))
         editor.worksheets_step.show_instruments(tuple(rows))
+        schedule: list[tuple[int, str]] = []
+        if isinstance(plan, ConditionTestPlan):
+            rounds = plan.dispense_rounds
+            for index, (minute, additions) in enumerate(rounds, start=1):
+                name = f"ECHO file _R{index}" if len(rounds) > 1 else "ECHO file"
+                schedule.append((minute, f"dispense with the {name} ({_count(len(additions), 'well')})"))
+            for minute, group in plan.harvest_groups:
+                schedule.append((minute, f"harvest {', '.join(item.selected_well.well_address for item in group)}"))
+        schedule.sort(key=lambda item: item[0])
+        editor.worksheets_step.show_schedule(tuple(
+            f"T+{format_minutes(minute)} · {action}" for minute, action in schedule
+        ))
         if latest is None:
             # Not finalized yet: the footer names that and disables saving.
             editor.worksheets_step.show_result("", "muted")
@@ -1583,6 +1662,8 @@ class ViewerWindow(QMainWindow):
         protein = editor.protein_input.text()
         if editor.plan_type is PlanType.RAW_CRYSTAL:
             return raw_crystal_plan_snapshot(plan, protein)
+        if editor.plan_type is PlanType.CONDITION_TEST:
+            return condition_test_plan_snapshot(plan, protein)
         return fragment_plan_snapshot(
             plan, protein, editor.library_input.currentData(Qt.UserRole),
             editor.rows_input.text(),
@@ -1592,6 +1673,13 @@ class ViewerWindow(QMainWindow):
     def _draft_from_editor(editor) -> PlanningDraft:
         now = datetime.now(timezone.utc)
         step = getattr(editor, "workflow_step", None)
+        if editor.plan_type is PlanType.CONDITION_TEST:
+            return PlanningDraft(
+                editor.plan_id, editor.project_id, PlanType.CONDITION_TEST.value,
+                editor.plan_name, None, "", editor.protein_input.text(), "0",
+                editor.order_input.currentData().value, editor.plan_created_at, now,
+                editor.assigned_experiment_id, step, editor.design.to_json(),
+            )
         if editor.plan_type is PlanType.RAW_CRYSTAL:
             return PlanningDraft(
                 editor.plan_id, editor.project_id, PlanType.RAW_CRYSTAL.value,
@@ -1759,11 +1847,11 @@ class ViewerWindow(QMainWindow):
                 self, "Cannot upload", "Finalize the current plan revision first."
             )
             return
-        build_labworks = (
-            build_raw_crystal_labworks
-            if editor.plan_type is PlanType.RAW_CRYSTAL
-            else build_fragment_labworks
-        )
+        build_labworks = {
+            PlanType.RAW_CRYSTAL: build_raw_crystal_labworks,
+            PlanType.FRAGMENT_SCREENING: build_fragment_labworks,
+            PlanType.CONDITION_TEST: build_condition_test_labworks,
+        }[editor.plan_type]
         snapshot = json.loads(revision.snapshot_json)
         self._upload_labworks(
             editor,

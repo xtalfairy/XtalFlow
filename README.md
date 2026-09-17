@@ -21,6 +21,11 @@ Fragment Screening입니다.
    저장할 수 없으면 아무 파일도 저장하지 않고 다시 시도하거나 다른 폴더를 고르게
    합니다. MxLive 전송은 이 화면 아래에서 선택적으로 합니다.
 
+**Solvent Test / Cryo Test**는 Setup(단백질, drop 부피) → Conditions(추가제별 최종 농도 × 시간
+표, 셀 클릭으로 포함/제외) → Select wells(필요한 결정 수만큼) → Review(배정·일정) → Worksheets
+순서입니다. 분주 시각이 여러 번이면 ECHO 파일이 `_R1`, `_R2`로 나뉘고 SHIFTER는 수확 시각 순으로
+저장됩니다. 실험 ID는 `PreTest-YYYYMM-PROTEIN-NN`입니다.
+
 Select wells의 `Show examples`는 `--examples-dir`로 지정한 폴더의 이미지를 보여줍니다.
 각 이미지 옆에 같은 이름의 `.txt` 파일을 두면 설명으로 표시됩니다.
 

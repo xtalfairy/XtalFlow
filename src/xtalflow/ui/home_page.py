@@ -62,6 +62,7 @@ def panel_toggle_button(tooltip: str) -> QToolButton:
 
 @dataclass(frozen=True)
 class ExperimentChoice:
+    key: str
     plan_type: PlanType
     title: str
     description: str
@@ -70,10 +71,12 @@ class ExperimentChoice:
     # Icon colour and its tile: a quiet way to tell the types apart at a glance.
     tint: str
     tint_soft: str
+    template: str | None = None
 
 
 EXPERIMENT_CHOICES = (
     ExperimentChoice(
+        PlanType.FRAGMENT_SCREENING.value,
         PlanType.FRAGMENT_SCREENING,
         "Fragment Screening",
         "One library fragment soaked into each well.",
@@ -83,6 +86,7 @@ EXPERIMENT_CHOICES = (
         theme.FOCUS_SOFT,
     ),
     ExperimentChoice(
+        PlanType.RAW_CRYSTAL.value,
         PlanType.RAW_CRYSTAL,
         "Raw Crystal",
         "Harvest the selected wells as they are.",
@@ -91,7 +95,35 @@ EXPERIMENT_CHOICES = (
         theme.SUCCESS,
         theme.SUCCESS_SOFT,
     ),
+    ExperimentChoice(
+        "solvent_test",
+        PlanType.CONDITION_TEST,
+        "Solvent Test",
+        "How crystals tolerate a solvent by concentration and time.",
+        "ECHO + SHIFTER worksheets",
+        icons.SOLVENT_TEST,
+        theme.VIOLET,
+        theme.VIOLET_SOFT,
+        "solvent",
+    ),
+    ExperimentChoice(
+        "cryo_test",
+        PlanType.CONDITION_TEST,
+        "Cryo Test",
+        "Compare cryoprotectant concentrations before harvesting.",
+        "ECHO + SHIFTER worksheets",
+        icons.CRYO_TEST,
+        theme.CYAN,
+        theme.CYAN_SOFT,
+        "cryo",
+    ),
 )
+
+PLAN_TYPE_TITLES = {
+    PlanType.FRAGMENT_SCREENING: "Fragment Screening",
+    PlanType.RAW_CRYSTAL: "Raw Crystal",
+    PlanType.CONDITION_TEST: "Condition Test",
+}
 
 
 @dataclass(frozen=True)
@@ -261,7 +293,7 @@ class HomePage(QWidget):
         )
         self.recent_table.setColumnHidden(3, selected is not None)
         self.recent_table.setRowCount(len(experiments))
-        labels = {choice.plan_type: choice.title for choice in EXPERIMENT_CHOICES}
+        labels = PLAN_TYPE_TITLES
         for row, experiment in enumerate(experiments):
             values = (
                 experiment.name,

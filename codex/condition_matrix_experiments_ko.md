@@ -1,7 +1,7 @@
 # 조건 행렬 실험 설계 — Solvent / Cryo Test를 실험 노트처럼 계획하기
 
 작성일: 2026-09-17  
-상태: 설계 초안 · **사용자 확인 후 구현** (`experiment-first` 브랜치의 Phase 7)  
+상태: 1차 구현 완료 (`experiment-first` 브랜치, 11절 참고)  
 관련 문서: `codex/astra_experiment_first_workflow_ko.md`
 
 ## 1. 목적
@@ -138,3 +138,23 @@ T+1 h    ECHO round 2   Glycerol(복합 2단계)       PreTest-…-01_R2.csv
 4. 단계 순서(Conditions → Select wells), 조건별 묶음 배정, Review 표.
 5. 일정 계산, ECHO round 파일, SHIFTER 순서, 체크리스트, MxLive 레코드.
 6. 시작 화면 카드 활성화, README·제안서 갱신.
+
+## 11. 1차 구현 현황 (2026-09-17)
+
+9절 질문은 아직 답을 받지 못해 권장 기본값으로 구현했고, 확인되지 않은 수치는 기본값으로 고정하지 않았다.
+
+| 항목 | 구현 |
+|---|---|
+| 실험 종류 | 왼쪽 패널 New experiment에 **Solvent Test**(DMSO 0/5/10/20 % × 0/30 min/1 h/2 h, 반복 2)와 **Cryo Test**(Glycerol 0/10/20/25 % × 0 min, 반복 2). 저장 유형은 `condition_test` 하나, 실험 ID `PreTest-YYYYMM-PROTEIN-NN` |
+| 단계 | Setup → Conditions → Select wells → Review → Worksheets |
+| Q1 drop 부피 | Setup의 필수 입력(기본값 없음) |
+| Q2 수확 기준 | A안: T+0 분주, 조건별 시간에 수확. 복합 처리의 뒤 단계는 앞 단계 대기 후 따로 분주 |
+| Q3 ECHO | 표준 8열 그대로, 분주 시각별 파일 `_R1`, `_R2`(한 번뿐이면 접미사 없음) |
+| Q4 SHIFTER | 15열, Comment 비움, 수확 시각 순 |
+| Q5 source 용량 | 검사하지 않음. Review에 추가제별 필요 총량 표시 |
+| Q6 MxLive | `soak_plate=pretest`, `soak_well=Z00`, `soak_id=DMSO10%-1h-r2` 형식 |
+| 조건 입력 | 탭(추가제)마다 stock %, source plate/well, SMILES, 선택적 앞 처리(After … at … for …). 표 셀 클릭으로 포함/제외(지우지 않고 줄긋기), 우클릭으로 반복 수, 머리글 우클릭으로 행·열 일괄 변경·삭제. 열 머리글에 분주 nL와 실제 % |
+| 결정 예산 | Crystals available 입력 시 필요/부족 수와 "반복 1로 줄이기" 제안 |
+| 저장 | 스키마 20: `planning_draft.details_json`, worksheet 출력 키를 순서 기준으로 변경(한 장비에 여러 파일) |
+
+다음 단계 후보: 결과 기록(결정 상태·해상도 heatmap), 조건 목록 보기, 템플릿 저장/불러오기, source well 용량 설정.

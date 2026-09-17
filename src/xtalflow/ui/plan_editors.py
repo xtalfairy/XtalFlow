@@ -150,6 +150,10 @@ class PlanEditorBase(QWidget):
     def conditions_widget(self) -> QWidget | None:
         return None
 
+    def setup_fields(self) -> list[tuple[str, QWidget]]:
+        """Plan-specific rows for the Setup step, below the shared ones."""
+        return []
+
     def review_widget(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout()

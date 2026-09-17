@@ -19,7 +19,6 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from xtalflow.domain import PlanType
 from xtalflow.ui import icons, theme
 from xtalflow.ui.home_page import (
     ALL_EXPERIMENTS,
@@ -100,7 +99,8 @@ class WorkspaceSidebar(QWidget):
         top.addWidget(self.collapse_button)
 
         # New experiments sit at the top of the panel, like a chat app's New chat.
-        self.start_buttons: dict[PlanType, QPushButton] = {}
+        # Keyed by choice: a plan type for the single-template types, else a name.
+        self.start_buttons: dict[str, QPushButton] = {}
         new_title = QLabel("New experiment")
         new_title.setObjectName("SidebarTitle")
         new_title.setContentsMargins(10, 0, 0, theme.SPACING_S)
@@ -109,7 +109,7 @@ class WorkspaceSidebar(QWidget):
         new_buttons.addWidget(new_title)
         for choice in EXPERIMENT_CHOICES:
             button = self._new_experiment_button(choice)
-            self.start_buttons[choice.plan_type] = button
+            self.start_buttons[choice.key] = button
             new_buttons.addWidget(button)
         divider = QFrame()
         divider.setObjectName("SidebarDivider")
@@ -181,7 +181,7 @@ class WorkspaceSidebar(QWidget):
         button.setAccessibleName(f"New {choice.title} experiment")
         button.setAccessibleDescription(f"{choice.description} {choice.outputs}.")
         button.clicked.connect(
-            lambda _=False, selected=choice.plan_type: self.start_requested.emit(selected)
+            lambda _=False, selected=choice.key: self.start_requested.emit(selected)
         )
         return button
 

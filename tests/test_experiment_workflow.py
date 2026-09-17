@@ -96,3 +96,25 @@ def test_conditions_are_not_complete_before_wells_are_selected() -> None:
     assert conditions.state is StepState.INCOMPLETE
     assert conditions.message == "Select wells to check the fragment assignment."
     assert status.status_of(WorkflowStep.SETUP).message == "Protein: BRD4"
+
+
+def test_condition_test_sets_conditions_before_wells_and_counts_crystals() -> None:
+    facts = ExperimentFacts(
+        PlanType.CONDITION_TEST, "BRD4", well_count=10, position_count=10,
+        required_well_count=16, conditions_summary="8 conditions · 16 crystals",
+    )
+    status = evaluate_experiment(facts)
+
+    assert steps_for(PlanType.CONDITION_TEST)[1] is WorkflowStep.CONDITIONS
+    assert status.status_of(WorkflowStep.CONDITIONS).message == "8 conditions · 16 crystals"
+    assert status.status_of(WorkflowStep.SELECT_WELLS).message == "10 of 16 wells selected"
+    assert not status.ready_to_finalize
+
+    enough = evaluate_experiment(replace(facts, well_count=17, position_count=17, unused_well_count=1))
+    assert enough.ready_to_finalize
+    assert enough.notes == ("The last 1 selected well is not used.",)
+    split = evaluate_experiment(
+        replace(facts, well_count=16, selection_error="A01a: cannot be split")
+    )
+    assert split.status_of(WorkflowStep.SELECT_WELLS).state is StepState.ATTENTION
+    assert not split.ready_to_finalize

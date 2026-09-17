@@ -26,6 +26,19 @@ RAW_CRYSTAL = (
 )
 
 
+# A flask of solvent: how long crystals survive in it.
+SOLVENT_TEST = (
+    '<path d="M9.5 3.5h5M10.5 3.5v5.2L5.4 17.6a2 2 0 0 0 1.7 2.9h9.8a2 2 0 0 0 1.7-2.9'
+    'L13.5 8.7V3.5"/>'
+    '<path d="M7.6 14h8.8"/>'
+)
+
+# A snowflake: cryoprotectant before freezing.
+CRYO_TEST = (
+    '<path d="M12 3v18M4.2 7.5l15.6 9M4.2 16.5l15.6-9"/>'
+    '<path d="M9.8 4.8 12 7l2.2-2.2M9.8 19.2 12 17l2.2 2.2"/>'
+)
+
 # A window with its side panel, for showing or hiding the workspace panel.
 SIDEBAR = (
     '<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/>'

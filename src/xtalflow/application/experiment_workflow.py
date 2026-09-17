@@ -31,7 +31,16 @@ STEP_LABELS = {
 
 
 def steps_for(plan_type: PlanType) -> tuple[WorkflowStep, ...]:
-    """Raw crystal harvesting has no conditions to choose."""
+    """Raw crystal harvesting has no conditions to choose.
+
+    A condition test decides its conditions first, because they set how many
+    crystals to select.
+    """
+    if plan_type is PlanType.CONDITION_TEST:
+        return (
+            WorkflowStep.SETUP, WorkflowStep.CONDITIONS, WorkflowStep.SELECT_WELLS,
+            WorkflowStep.REVIEW, WorkflowStep.WORKSHEETS,
+        )
     if plan_type is PlanType.RAW_CRYSTAL:
         return (
             WorkflowStep.SETUP, WorkflowStep.SELECT_WELLS,
@@ -68,6 +77,12 @@ class ExperimentFacts:
     revision_matches_current: bool = False
     worksheets_saved_for_revision: bool = False
     local_save_failed: bool = False
+    # Condition tests: crystals the included conditions need, a one-line summary
+    # of them, a problem found only with the chosen wells, and wells left over.
+    required_well_count: int = 0
+    conditions_summary: str = ""
+    selection_error: str | None = None
+    unused_well_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -100,7 +115,7 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
         statuses[WorkflowStep.SETUP] = StepStatus(
             WorkflowStep.SETUP, StepState.COMPLETE, f"Protein: {facts.protein.strip()}"
         )
-    except ValueError as error:
+    except ValueError:
         message = (
             "Enter a protein name to continue."
             if not facts.protein.strip() else "Fix the protein name to continue."
@@ -110,7 +125,18 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
         )
 
     selection = f"{_count(facts.well_count, 'well')} · {_count(facts.position_count, 'position')}"
-    if facts.well_count == 0:
+    condition_test = facts.plan_type is PlanType.CONDITION_TEST
+    if condition_test and facts.required_well_count and facts.well_count < facts.required_well_count:
+        statuses[WorkflowStep.SELECT_WELLS] = StepStatus(
+            WorkflowStep.SELECT_WELLS,
+            StepState.ATTENTION if facts.wells_needing_attention else StepState.INCOMPLETE,
+            f"{facts.well_count} of {facts.required_well_count} wells selected",
+        )
+    elif condition_test and facts.selection_error and not facts.wells_needing_attention:
+        statuses[WorkflowStep.SELECT_WELLS] = StepStatus(
+            WorkflowStep.SELECT_WELLS, StepState.ATTENTION, facts.selection_error
+        )
+    elif facts.well_count == 0:
         statuses[WorkflowStep.SELECT_WELLS] = StepStatus(
             WorkflowStep.SELECT_WELLS, StepState.INCOMPLETE,
             "Select at least one well to continue.",
@@ -126,8 +152,20 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
             WorkflowStep.SELECT_WELLS, StepState.COMPLETE, selection
         )
 
+    if condition_test and facts.unused_well_count:
+        notes.append(
+            f"The last {_count(facts.unused_well_count, 'selected well')} "
+            f"{'is' if facts.unused_well_count == 1 else 'are'} not used."
+        )
+
     steps = steps_for(facts.plan_type)
-    if WorkflowStep.CONDITIONS in steps:
+    if condition_test:
+        statuses[WorkflowStep.CONDITIONS] = (
+            StepStatus(WorkflowStep.CONDITIONS, StepState.ATTENTION, facts.conditions_error)
+            if facts.conditions_error
+            else StepStatus(WorkflowStep.CONDITIONS, StepState.COMPLETE, facts.conditions_summary)
+        )
+    elif WorkflowStep.CONDITIONS in steps:
         if facts.conditions_error:
             statuses[WorkflowStep.CONDITIONS] = StepStatus(
                 WorkflowStep.CONDITIONS, StepState.ATTENTION, facts.conditions_error

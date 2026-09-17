@@ -171,6 +171,8 @@ class ConditionTestDesign:
     series: tuple[ConditionSeries, ...]
     drop_volume_nl: Decimal | None = None
     purpose: str = ""
+    # Crystals the researcher can spend; None when they have not said.
+    available_crystals: int | None = None
 
     def additive(self, additive_id: str) -> Additive:
         found = next((item for item in self.additives if item.id == additive_id), None)
@@ -209,6 +211,7 @@ class ConditionTestDesign:
                     str(self.drop_volume_nl) if self.drop_volume_nl is not None else None
                 ),
                 "purpose": self.purpose,
+                "available_crystals": self.available_crystals,
                 "additives": [
                     {
                         "id": item.id, "name": item.name,
@@ -272,6 +275,7 @@ class ConditionTestDesign:
             ),
             Decimal(drop) if drop is not None else None,
             data.get("purpose", ""),
+            data.get("available_crystals"),
         )
 
 

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import csv
+import os
 import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -135,22 +137,15 @@ class WorksheetExporter:
         self, plan: RawCrystalPlan, experiment_id: str,
         directories: tuple[Path, Path],
     ) -> ShifterExportResult:
+        shifter_rows = tuple(row.values() for row in build_shifter_worksheet(plan))
         try:
             file_stem = self._available_file_stem(experiment_id, directories)
-            staging = (
-                self.settings.worksheet_staging_directory
-                / self.username
-                / file_stem
-            )
-            staging.mkdir(parents=True, exist_ok=False)
-            staged = staging / "shifter.csv"
-            self._write_csv(
-                staged, SHIFTER_HEADER,
-                tuple(row.values() for row in build_shifter_worksheet(plan)),
-            )
             destinations = tuple(directory / f"{file_stem}.csv" for directory in directories)
-            shutil.copy2(staged, destinations[0])
-            shutil.copy2(staged, destinations[1])
+            with self._staging_directory(file_stem) as staging_path:
+                staging = Path(staging_path)
+                staged = staging / "shifter.csv"
+                self._write_csv(staged, SHIFTER_HEADER, shifter_rows)
+                self._publish(((staged, destinations[0]), (staged, destinations[1])))
         except OSError as error:
             raise WorksheetDestinationUnavailable(
                 f"could not save worksheets: {error}"
@@ -165,30 +160,24 @@ class WorksheetExporter:
         experiment_id: str,
         directories: tuple[Path, ...],
     ) -> WorksheetExportResult:
+        echo_rows = tuple(row.values() for row in build_echo_worksheet(plan))
+        shifter_rows = tuple(row.values() for row in build_shifter_worksheet(plan))
         try:
             file_stem = self._available_file_stem(experiment_id, directories)
-            staging = (
-                self.settings.worksheet_staging_directory
-                / self.username
-                / file_stem
-            )
-            staging.mkdir(parents=True, exist_ok=False)
-            echo_staged = staging / "echo.csv"
-            shifter_staged = staging / "shifter.csv"
-            self._write_csv(
-                echo_staged,
-                ECHO_HEADER,
-                tuple(row.values() for row in build_echo_worksheet(plan)),
-            )
-            self._write_csv(
-                shifter_staged,
-                SHIFTER_HEADER,
-                tuple(row.values() for row in build_shifter_worksheet(plan)),
-            )
             destinations = tuple(directory / f"{file_stem}.csv" for directory in directories)
-            shutil.copy2(echo_staged, destinations[0])
-            shutil.copy2(shifter_staged, destinations[1])
-            shutil.copy2(shifter_staged, destinations[2])
+            with self._staging_directory(file_stem) as staging_path:
+                staging = Path(staging_path)
+                echo_staged = staging / "echo.csv"
+                shifter_staged = staging / "shifter.csv"
+                self._write_csv(echo_staged, ECHO_HEADER, echo_rows)
+                self._write_csv(shifter_staged, SHIFTER_HEADER, shifter_rows)
+                self._publish(
+                    (
+                        (echo_staged, destinations[0]),
+                        (shifter_staged, destinations[1]),
+                        (shifter_staged, destinations[2]),
+                    )
+                )
         except OSError as error:
             raise WorksheetDestinationUnavailable(
                 f"could not save worksheets: {error}"
@@ -196,6 +185,36 @@ class WorksheetExporter:
         return WorksheetExportResult(
             experiment_id, file_stem, destinations[0], destinations[1], destinations[2]
         )
+
+    def _staging_directory(self, file_stem: str) -> tempfile.TemporaryDirectory:
+        root = self.settings.worksheet_staging_directory / self.username
+        root.mkdir(parents=True, exist_ok=True)
+        return tempfile.TemporaryDirectory(prefix=f"{file_stem}.", dir=root)
+
+    @staticmethod
+    def _publish(files: tuple[tuple[Path, Path], ...]) -> None:
+        """Copy every worksheet beside its destination, then rename all of them.
+
+        Instruments never see a partially written file, and a failed export
+        leaves no worksheet behind that could be run or block a retry.
+        """
+        pending: list[tuple[Path, Path]] = []
+        published: list[Path] = []
+        try:
+            for staged, destination in files:
+                partial = destination.with_name(f".{destination.name}.partial")
+                pending.append((partial, destination))
+                shutil.copyfile(staged, partial)
+            for partial, destination in pending:
+                os.replace(partial, destination)
+                published.append(destination)
+        except OSError:
+            for path in (*published, *(partial for partial, _ in pending)):
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise
 
     def _instrument_bases(self) -> tuple[Path, Path, Path]:
         return (

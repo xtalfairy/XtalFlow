@@ -178,3 +178,92 @@ def test_raw_crystal_export_writes_only_shifter_files(tmp_path: Path) -> None:
     assert result.shifter1_path.is_file()
     assert result.shifter2_path.is_file()
     assert not (tmp_path / "echo650").exists()
+
+
+def _development_settings(tmp_path: Path):
+    return replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        echo_output_directory=tmp_path / "echo650",
+        shifter1_output_directory=tmp_path / "shifter1",
+        shifter2_output_directory=tmp_path / "shifter2",
+        create_missing_instrument_roots=True,
+    )
+
+
+def _worksheet_files(tmp_path: Path) -> list[Path]:
+    return sorted(
+        path
+        for name in ("echo650", "shifter1", "shifter2")
+        for path in (tmp_path / name).rglob("*")
+        if path.is_file()
+    )
+
+
+def test_failed_copy_leaves_no_worksheet_and_retry_reuses_experiment_id(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import xtalflow.infrastructure.worksheet_exporter as exporter_module
+
+    original_copyfile = exporter_module.shutil.copyfile
+
+    def shifter1_share_drops(source, destination, **kwargs):
+        if "shifter1" in str(destination):
+            raise OSError(112, "Host is down")
+        return original_copyfile(source, destination, **kwargs)
+
+    exporter = WorksheetExporter(_development_settings(tmp_path), "scientist")
+    monkeypatch.setattr(exporter_module.shutil, "copyfile", shifter1_share_drops)
+
+    with pytest.raises(WorksheetDestinationUnavailable, match="Host is down"):
+        exporter.export(fragment_plan(), "FragSC-202607-BRD4-01")
+
+    assert _worksheet_files(tmp_path) == []
+    monkeypatch.setattr(exporter_module.shutil, "copyfile", original_copyfile)
+    result = exporter.export(fragment_plan(), "FragSC-202607-BRD4-01")
+    assert result.file_stem == "FragSC-202607-BRD4-01"
+    assert _worksheet_files(tmp_path) == sorted(
+        (result.echo_path, result.shifter1_path, result.shifter2_path)
+    )
+
+
+def test_failed_rename_removes_worksheets_already_published(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import xtalflow.infrastructure.worksheet_exporter as exporter_module
+
+    original_replace = exporter_module.os.replace
+
+    def shifter2_rename_fails(source, destination):
+        if "shifter2" in str(destination):
+            raise PermissionError("permission denied for test")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(exporter_module.os, "replace", shifter2_rename_fails)
+
+    with pytest.raises(WorksheetDestinationUnavailable, match="permission denied"):
+        WorksheetExporter(_development_settings(tmp_path), "scientist").export(
+            fragment_plan(), "FragSC-202607-BRD4-01"
+        )
+
+    assert _worksheet_files(tmp_path) == []
+
+
+def test_invalid_plan_does_not_leave_staging_that_blocks_export(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import xtalflow.infrastructure.worksheet_exporter as exporter_module
+
+    def invalid_plan(plan):
+        raise ValueError("invalid plan for test")
+
+    exporter = WorksheetExporter(_development_settings(tmp_path), "scientist")
+    with monkeypatch.context() as patch:
+        patch.setattr(exporter_module, "build_echo_worksheet", invalid_plan)
+        with pytest.raises(ValueError, match="invalid plan"):
+            exporter.export(fragment_plan(), "FragSC-202607-BRD4-01")
+
+    result = exporter.export(fragment_plan(), "FragSC-202607-BRD4-01")
+
+    assert result.file_stem == "FragSC-202607-BRD4-01"
+    assert list((tmp_path / "staging" / "scientist").iterdir()) == []

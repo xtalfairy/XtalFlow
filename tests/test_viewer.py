@@ -270,6 +270,42 @@ def test_planning_tab_lists_libraries_from_designated_directory(
     app.processEvents()
 
 
+def test_refreshing_libraries_keeps_selected_library_rows(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    (tmp_path / "library.csv").write_text(
+        "Vendor,Library,No,ID,Formula,MW,Smile,Conc_mM,Solvent,Plate_ID,Plate_well\n"
+        + "".join(
+            f"Vendor,Lib,{number},CMP-{number},C2H6O,46.07,CCO,100,DMSO,SRC-1,A{number:02d}\n"
+            for number in (1, 2, 3)
+        ),
+        encoding="utf-8",
+    )
+    window = ViewerWindow(
+        RockMakerImageRepository(tmp_path),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        settings=replace(DEFAULT_SETTINGS, fragment_library_directory=tmp_path),
+    )
+    crystal = SelectedCrystal(
+        "image",
+        "1070",
+        "A01a",
+        (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
+        SWISSCI_MIDI_3_LENS.id,
+    )
+    window._add_fragment_plan(None, (crystal,))
+    editor = window.plan_stack.currentWidget()
+    editor.library_input.setCurrentIndex(1)
+    assert editor.rows_input.text() == "1-3"
+    editor.rows_input.setText("2-3")
+
+    window._refresh_fragment_library_choices()
+
+    assert editor.library_input.currentIndex() == 1
+    assert editor.rows_input.text() == "2-3"
+    window.close()
+    app.processEvents()
+
+
 def test_raw_crystal_plan_has_shifter_preview_without_echo(tmp_path: Path) -> None:
     app = QApplication.instance() or QApplication([])
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
@@ -756,6 +792,66 @@ def test_trusted_plate_auto_confirms_well_above_user_threshold(
     assert window.auto_confirm_plate_checkbox.isChecked()
     assert window.current_calibration.confirmed
     assert "Confirmed" in window.calibration_label.text()
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_typing_auto_confirm_threshold_applies_only_finished_value(
+    tmp_path: Path,
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        preferences_store=JsonUserPreferencesStore(tmp_path / "preferences.json"),
+    )
+    window.load_plate("2070", SWISSCI_MRC_2_WELL)
+    assert window.auto_confirm_plate_checkbox.isChecked()
+    thresholds = []
+    window.project_controller.confirm_valid_automatic_calibrations = (
+        lambda threshold, image_set_id: thresholds.append(threshold)
+    )
+    line_edit = window.auto_confirm_confidence_input.lineEdit()
+    line_edit.setFocus()
+    line_edit.selectAll()
+
+    QTest.keyClicks(line_edit, "85")
+    assert thresholds == []
+    QTest.keyClick(line_edit, Qt.Key_Return)
+
+    assert thresholds == [0.85]
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_unexpected_slot_error_saves_current_targets_and_reports(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(FIXTURE_ROOT), store)
+    window.error_log_path = tmp_path / "xtalflow-errors.log"
+    window.load_plate("1070", SWISSCI_MIDI_3_LENS)
+    image = window.controller.current_image
+    window.controller.add_target(10, 20, 1224, 1024)
+    messages = []
+    monkeypatch.setattr(
+        QMessageBox, "critical", lambda *args, **kwargs: messages.append(args[2])
+    )
+
+    try:
+        raise OSError(112, "Host is down")
+    except OSError as error:
+        window.handle_unexpected_error(type(error), error, error.__traceback__)
+
+    image_set = window.project_controller.active_image_set
+    assert len(store.scoped_to(image_set.id).load_images((image.image_key,))) == 1
+    assert "Targets on the current image were saved." in messages[0]
+    assert "Host is down" in window.error_log_path.read_text(encoding="utf-8")
     window.close()
     app.processEvents()
 

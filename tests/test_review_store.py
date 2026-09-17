@@ -414,6 +414,57 @@ def test_reviewed_images_are_scoped_and_restored(tmp_path: Path) -> None:
     store.close()
 
 
+def _create_standalone_target_database(database_path: Path) -> str:
+    image_key = "1070:5947:1:1:profileID_1"
+    connection = sqlite3.connect(database_path)
+    connection.execute(
+        "CREATE TABLE target_point(target_id TEXT PRIMARY KEY, image_key TEXT, x_px REAL, y_px REAL)"
+    )
+    connection.execute(
+        "INSERT INTO target_point VALUES ('t1', ?, 10, 20)", (image_key,)
+    )
+    connection.commit()
+    connection.close()
+    return image_key
+
+
+def test_deleted_imported_targets_stay_deleted_after_reopen(tmp_path: Path) -> None:
+    database_path = tmp_path / "reviews.sqlite3"
+    image_key = _create_standalone_target_database(database_path)
+    image_set_id = "legacy:1070:5947:profileID_1"
+    store = SQLiteReviewStore(database_path)
+    scoped = store.scoped_to(image_set_id)
+    assert len(scoped.load_images((image_key,))) == 1
+    progress = ReviewProgress.create("1070", 5947, "profileID_1", image_key)
+
+    scoped.save_checkpoint(image_key, (), progress, ReviewPreferences(1), True)
+    store.close()
+
+    reopened = SQLiteReviewStore(database_path)
+    assert reopened.scoped_to(image_set_id).load_images((image_key,)) == ()
+    reopened.close()
+
+
+def test_upgrade_does_not_restore_targets_deleted_before_import_tracking(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "reviews.sqlite3"
+    image_key = _create_standalone_target_database(database_path)
+    image_set_id = "legacy:1070:5947:profileID_1"
+    SQLiteReviewStore(database_path).close()
+    connection = sqlite3.connect(database_path)
+    connection.execute("DELETE FROM image_set_target_point")
+    connection.execute("DROP TABLE legacy_target_import")
+    connection.execute("PRAGMA user_version = 15")
+    connection.commit()
+    connection.close()
+
+    store = SQLiteReviewStore(database_path)
+
+    assert store.scoped_to(image_set_id).load_images((image_key,)) == ()
+    store.close()
+
+
 def test_standalone_targets_are_imported_into_a_project(tmp_path: Path) -> None:
     database_path = tmp_path / "reviews.sqlite3"
     connection = sqlite3.connect(database_path)

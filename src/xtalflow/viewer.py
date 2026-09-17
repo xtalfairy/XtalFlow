@@ -5,6 +5,7 @@ import getpass
 import json
 import re
 import sys
+import traceback
 from collections.abc import Callable
 from dataclasses import replace
 from decimal import Decimal
@@ -494,6 +495,7 @@ class FragmentScreeningEditor(QWidget):
         super().__init__(parent)
         initial_library = library
         self.library: FragmentLibrary | None = None
+        self.library_id: str | None = None
         self.selection = (
             selection
             if isinstance(selection, CrystalSelection)
@@ -715,8 +717,11 @@ class FragmentScreeningEditor(QWidget):
 
     def _library_changed(self, index: int) -> None:
         library = self.library_input.itemData(index, Qt.UserRole + 1)
-        changed = library is not self.library
+        library_id = self.library_input.itemData(index, Qt.UserRole)
+        # Refreshing reloads every CSV; keep the chosen rows unless the path changed.
+        changed = library_id != self.library_id
         self.library = library
+        self.library_id = library_id
         if library is None:
             self.library_label.setText("No library selected")
             if changed:
@@ -809,6 +814,7 @@ class FragmentScreeningEditor(QWidget):
         self.library = self.library_input.itemData(
             self.library_input.currentIndex(), Qt.UserRole + 1
         )
+        self.library_id = self.library_input.currentData(Qt.UserRole)
         self.rows_input.setText(draft.library_rows)
         self.protein_input.setText(draft.protein)
         self.assigned_experiment_id = draft.experiment_id
@@ -1292,6 +1298,8 @@ class ViewerWindow(QMainWindow):
         self._manual_calibration_points: list[tuple[float, float]] | None = None
         self._target_summary_window_expansion = 0
         self._planning_project_id: str | None = None
+        self.error_log_path: Path | None = None
+        self._handling_unexpected_error = False
         self._planning_drafts: dict[
             str, list[tuple[str, FragmentScreeningEditor]]
         ] = {}
@@ -1384,6 +1392,9 @@ class ViewerWindow(QMainWindow):
         )
         self.auto_confirm_confidence_input = QSpinBox()
         self.auto_confirm_confidence_input.setRange(0, 100)
+        # Lowering the threshold confirms calibrations permanently, so apply only
+        # the finished value rather than intermediate digits such as 8 of 85.
+        self.auto_confirm_confidence_input.setKeyboardTracking(False)
         self.auto_confirm_confidence_input.setValue(
             self.user_preferences.auto_confirm_confidence_percent
         )
@@ -4006,6 +4017,48 @@ class ViewerWindow(QMainWindow):
         self.status_message_label.show_message(f"Not saved: {error}")
         QMessageBox.warning(self, "Review was not saved", str(error))
 
+    def handle_unexpected_error(self, error_type, error, error_traceback) -> None:
+        """Report an exception raised in a Qt slot instead of letting PyQt abort."""
+        if issubclass(error_type, KeyboardInterrupt):
+            sys.__excepthook__(error_type, error, error_traceback)
+            return
+        details = "".join(
+            traceback.format_exception(error_type, error, error_traceback)
+        )
+        print(details, file=sys.stderr)
+        if self.error_log_path is not None:
+            try:
+                self.error_log_path.parent.mkdir(parents=True, exist_ok=True)
+                with self.error_log_path.open("a", encoding="utf-8") as stream:
+                    stream.write(f"{datetime.now(timezone.utc).isoformat()}\n{details}\n")
+            except OSError:
+                pass
+        if self._handling_unexpected_error:
+            return
+        self._handling_unexpected_error = True
+        try:
+            saved = "There were no review targets to save."
+            if self.controller is not None:
+                try:
+                    self.controller.checkpoint_current()
+                    self._set_save_status("saved")
+                    saved = "Targets on the current image were saved."
+                except Exception:  # noqa: BLE001 - already reporting a failure
+                    self._set_save_status("failed")
+                    saved = "Targets on the current image could NOT be saved."
+            location = (
+                f"Details were written to {self.error_log_path}."
+                if self.error_log_path is not None
+                else "Details were written to the terminal."
+            )
+            QMessageBox.critical(
+                self,
+                "Unexpected error",
+                f"{error_type.__name__}: {error}\n\n{saved}\n{location}",
+            )
+        finally:
+            self._handling_unexpected_error = False
+
     def _set_save_status(self, state: str) -> None:
         styles = {
             "saved": ("Saved", "#2e7d32"),
@@ -4112,6 +4165,10 @@ def main(argv: list[str] | None = None) -> int:
         review_store,
         settings=settings,
     )
+    window.error_log_path = database_path.parent / "xtalflow-errors.log"
+    # PyQt5 aborts the application on an unhandled slot exception unless a
+    # custom hook is installed.
+    sys.excepthook = window.handle_unexpected_error
     if args.plate:
         if not args.plate_format:
             print("xtalflow-viewer: --plate-format is required with --plate", file=sys.stderr)

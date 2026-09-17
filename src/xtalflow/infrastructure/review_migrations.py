@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 
-LATEST_SCHEMA_VERSION = 15
+LATEST_SCHEMA_VERSION = 16
 IMPORTED_PROJECT_ID = "imported-standalone-reviews"
 LEGACY_PLATE_FORMAT_ID = "swissci-midi-3-lens-hr3-194"
 LEGACY_PLATE_FORMAT_VERSION = 1
@@ -72,6 +72,7 @@ def migrate_review_database(connection: sqlite3.Connection) -> None:
         _create_experiment_project_schema(connection)
         if starting_version < 10:
             _assign_legacy_selection_times(connection, "target_point")
+        _create_legacy_target_import_schema(connection, starting_version)
         _import_standalone_reviews(connection)
         if starting_version < 10:
             _assign_legacy_selection_times(connection, "image_set_target_point")
@@ -419,6 +420,26 @@ def _create_project_schema(connection: sqlite3.Connection) -> None:
     )
 
 
+def _create_legacy_target_import_schema(
+    connection: sqlite3.Connection, starting_version: int
+) -> None:
+    """Remember imported standalone targets so later deletions stay deleted."""
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS legacy_target_import (
+            target_id TEXT PRIMARY KEY
+        )
+        """
+    )
+    if 0 < starting_version < 16:
+        # Earlier versions imported every standalone target on each open. Rows
+        # missing from image_set_target_point were deleted by the user.
+        connection.execute(
+            "INSERT OR IGNORE INTO legacy_target_import(target_id) "
+            "SELECT target_id FROM target_point"
+        )
+
+
 def _import_standalone_reviews(connection: sqlite3.Connection) -> None:
     state_rows = connection.execute(
         """
@@ -429,7 +450,9 @@ def _import_standalone_reviews(connection: sqlite3.Connection) -> None:
     ).fetchall()
     target_rows = connection.execute(
         "SELECT target_id, image_key, x_px, y_px, selected_at "
-        "FROM target_point ORDER BY selected_at, rowid"
+        "FROM target_point WHERE target_id NOT IN "
+        "(SELECT target_id FROM legacy_target_import) "
+        "ORDER BY selected_at, rowid"
     ).fetchall()
     if not state_rows and not target_rows:
         return
@@ -494,6 +517,10 @@ def _import_standalone_reviews(connection: sqlite3.Connection) -> None:
                     "INSERT OR IGNORE INTO image_set_target_point "
                     "VALUES (?, ?, ?, ?, ?, ?)",
                     (target_id, image_set_id, image_key, x_px, y_px, selected_at),
+                )
+                connection.execute(
+                    "INSERT OR IGNORE INTO legacy_target_import(target_id) VALUES (?)",
+                    (target_id,),
                 )
 
     first_image_set = connection.execute(

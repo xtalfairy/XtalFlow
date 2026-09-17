@@ -2192,7 +2192,11 @@ def test_workspace_panel_creates_filters_renames_and_hides_workspaces(
 
     second = window.start_experiment(PlanType.RAW_CRYSTAL, "CypA harvest")
     second.protein_input.setText("CypA")
-    window.show_home()
+    assert window.experiment_page.home_button.text() == "‹ CypA campaign"
+    assert not home.isVisible() or window.pages.currentWidget() is window.experiment_page
+    home.workspace_list.setCurrentRow(0)
+    window.experiment_page.home_button.click()
+    assert home.title_label.text() == "CypA campaign"
     assert second.project_id == second_id
     assert [home.recent_table.item(row, 0).text() for row in range(home.recent_table.rowCount())] == [
         "CypA harvest"

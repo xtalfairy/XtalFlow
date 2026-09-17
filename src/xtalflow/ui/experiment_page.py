@@ -38,8 +38,12 @@ class ExperimentPage(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setStyleSheet(PAGE_STYLE)
+        # Breadcrumb: the workspace this experiment belongs to leads back to its list.
         self.home_button = QPushButton("‹ Experiments")
         self.home_button.setObjectName("HomeLink")
+        self.home_button.setToolTip("Back to this workspace's experiments")
+        self.crumb_separator = QLabel("/")
+        self.crumb_separator.setObjectName("Muted")
         self.title_label = QLabel("Experiment")
         self.title_label.setObjectName("PrimaryHeading")
         self.type_label = QLabel()
@@ -76,6 +80,7 @@ class ExperimentPage(QWidget):
         header = QHBoxLayout()
         header.setSpacing(theme.SPACING_M)
         header.addWidget(self.home_button)
+        header.addWidget(self.crumb_separator)
         header.addWidget(self.title_label)
         header.addWidget(self.type_label)
         header.addStretch()
@@ -135,7 +140,10 @@ class ExperimentPage(QWidget):
         self.step_hint_label.setText(hint)
         self.step_hint_label.setVisible(bool(hint))
 
-    def show_identity(self, name: str, plan_type_label: str, lifecycle: str) -> None:
+    def show_identity(
+        self, name: str, plan_type_label: str, lifecycle: str, workspace_name: str = ""
+    ) -> None:
+        self.home_button.setText(f"‹ {workspace_name or 'Experiments'}")
         self.title_label.setText(name)
         self.type_label.setText(plan_type_label)
         self.lifecycle_label.setText(lifecycle)

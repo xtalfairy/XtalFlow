@@ -5,10 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from PyQt5.QtCore import QEvent, Qt, pyqtSignal
-from PyQt5.QtGui import QColor
+from PyQt5.QtCore import QEvent, QSize, Qt, pyqtSignal
+from PyQt5.QtGui import QColor, QIcon
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -34,15 +35,12 @@ QWidget#ExperimentHome {{ background: {theme.BACKGROUND}; color: {theme.TEXT}; }
 QLabel#HomeTitle {{ color: {theme.TEXT}; font-weight: 600; }}
 QLabel#HomeSection {{ color: {theme.TEXT}; font-weight: 600; }}
 QLabel#HomeMuted {{ color: {theme.TEXT_MUTED}; }}
-QPushButton#HomeCard {{ background: {theme.SURFACE}; border: 1px solid {theme.BORDER};
-    min-height: 132px; max-height: 132px;
-    border-radius: 16px; padding: 0; text-align: left; }}
-QPushButton#HomeCard:hover {{ background: {theme.SUBTLE}; border-color: {theme.BORDER}; }}
-QPushButton#HomeCard:pressed {{ background: {theme.SELECTED}; }}
-QPushButton#HomeCard:focus {{ border: 2px solid {theme.FOCUS}; }}
-QPushButton#HomeCard QLabel {{ background: transparent; border: none; }}
-QLabel#HomeCardTitle {{ color: {theme.TEXT}; font-weight: 600; }}
-QLabel#HomeCardArrow {{ color: {theme.TEXT_MUTED}; }}
+QPushButton#NewExperiment {{ background: transparent; border: none; border-radius: 8px;
+    text-align: left; padding: 7px 10px; color: {theme.TEXT}; font-weight: 500; }}
+QPushButton#NewExperiment:hover {{ background: {theme.SUBTLE}; }}
+QPushButton#NewExperiment:pressed {{ background: {theme.SELECTED}; }}
+QPushButton#NewExperiment:focus {{ background: {theme.SUBTLE}; }}
+QFrame#SidebarDivider {{ border: none; border-top: 1px solid {theme.BORDER}; }}
 QPushButton#HomePrimary {{ background: {theme.PRIMARY}; color: white;
     border: 1px solid {theme.PRIMARY}; border-radius: 16px; padding: 5px 20px; }}
 QPushButton#HomePrimary:hover {{ background: {theme.PRIMARY_HOVER}; }}
@@ -168,6 +166,25 @@ class HomePage(QWidget):
         self._all_recent: tuple[RecentExperiment, ...] = ()
         self._recent: tuple[RecentExperiment, ...] = ()
 
+        # New experiments sit at the top of the panel, like a chat app's New chat.
+        self.start_buttons: dict[PlanType, QPushButton] = {}
+        new_title = QLabel("New experiment")
+        new_title.setObjectName("SidebarTitle")
+        new_title.setContentsMargins(10, 0, 0, theme.SPACING_S)
+        new_buttons = QVBoxLayout()
+        new_buttons.setSpacing(2)
+        new_buttons.addWidget(new_title)
+        for choice in EXPERIMENT_CHOICES:
+            button = self._new_experiment_button(choice)
+            self.start_buttons[choice.plan_type] = button
+            new_buttons.addWidget(button)
+        self.new_target_label = QLabel()
+        self.new_target_label.setObjectName("HomeMuted")
+        self.new_target_label.setContentsMargins(10, 0, 0, 0)
+        divider = QFrame()
+        divider.setObjectName("SidebarDivider")
+        divider.setFixedHeight(1)
+
         # Folder panel: where experiments live, and where a new one will be made.
         sidebar_title = QLabel("Workspaces")
         sidebar_title.setObjectName("SidebarTitle")
@@ -199,6 +216,11 @@ class HomePage(QWidget):
         sidebar_layout = QVBoxLayout()
         sidebar_layout.setContentsMargins(theme.SPACING_M, 32, theme.SPACING_M, theme.SPACING_L)
         sidebar_layout.setSpacing(theme.SPACING_S)
+        sidebar_layout.addLayout(new_buttons)
+        sidebar_layout.addWidget(self.new_target_label)
+        sidebar_layout.addSpacing(theme.SPACING_L)
+        sidebar_layout.addWidget(divider)
+        sidebar_layout.addSpacing(theme.SPACING_L)
         sidebar_layout.addLayout(sidebar_header)
         sidebar_layout.addWidget(self.workspace_list, 1)
         sidebar_layout.addWidget(self.hidden_toggle)
@@ -228,23 +250,6 @@ class HomePage(QWidget):
         heading.addWidget(self.title_label)
         heading.addWidget(self.workspace_actions_button, 0, Qt.AlignVCenter)
         heading.addStretch()
-
-        new_title = QLabel("New experiment")
-        new_title.setObjectName("HomeSection")
-        self.new_target_label = QLabel()
-        self.new_target_label.setObjectName("HomeMuted")
-        new_heading = QHBoxLayout()
-        new_heading.setSpacing(theme.SPACING_M)
-        new_heading.addWidget(new_title)
-        new_heading.addWidget(self.new_target_label)
-        new_heading.addStretch()
-        self.start_buttons: dict[PlanType, QPushButton] = {}
-        choices = QHBoxLayout()
-        choices.setSpacing(theme.SPACING_L)
-        for choice in EXPERIMENT_CHOICES:
-            card = self._choice_card(choice)
-            self.start_buttons[choice.plan_type] = card
-            choices.addWidget(card, 1)
 
         recent_title = QLabel("Experiments")
         recent_title.setObjectName("HomeSection")
@@ -288,10 +293,7 @@ class HomePage(QWidget):
         content.setContentsMargins(40, 32, 40, 24)
         content.setSpacing(theme.SPACING_M)
         content.addLayout(heading)
-        content.addSpacing(24)
-        content.addLayout(new_heading)
-        content.addLayout(choices)
-        content.addSpacing(28)
+        content.addSpacing(20)
         content.addLayout(recent_header)
         content.addWidget(self.recent_empty_label)
         content.addWidget(self.recent_table, 1)
@@ -335,52 +337,19 @@ class HomePage(QWidget):
         self.hidden_list.customContextMenuRequested.connect(self._show_hidden_menu)
         self.show_workspaces((), None, "")
 
-    def _choice_card(self, choice: ExperimentChoice) -> QPushButton:
-        """The whole card starts the experiment; nothing inside it is a second target."""
-        card = QPushButton()
-        card.setObjectName("HomeCard")
-        card.setCursor(Qt.PointingHandCursor)
-        card.setAccessibleName(f"New {choice.title} experiment")
-        card.setAccessibleDescription(f"{choice.description} {choice.outputs}.")
-        card.setFocusPolicy(Qt.TabFocus)
-        card.setMinimumHeight(132)
-        card.setMinimumWidth(320)
-        icon = QLabel()
-        icon.setObjectName("HomeCardIcon")
-        icon.setFixedSize(48, 48)
-        icon.setAlignment(Qt.AlignCenter)
-        icon.setPixmap(icons.svg_pixmap(choice.icon, 26, choice.tint))
-        icon.setStyleSheet(f"background: {choice.tint_soft}; border-radius: 12px;")
-        title = QLabel(choice.title)
-        title.setObjectName("HomeCardTitle")
-        description = QLabel(choice.description)
-        description.setWordWrap(True)
-        description.setObjectName("HomeMuted")
-        outputs = QLabel(choice.outputs)
-        outputs.setObjectName("HomeMuted")
-        arrow = QLabel("›")
-        arrow.setObjectName("HomeCardArrow")
-        font = arrow.font()
-        font.setPointSizeF(font.pointSizeF() * 1.6)
-        arrow.setFont(font)
-        text = QVBoxLayout()
-        text.setSpacing(2)
-        text.addWidget(title)
-        text.addWidget(description)
-        text.addWidget(outputs)
-        layout = QHBoxLayout()
-        layout.setContentsMargins(theme.SPACING_XL, theme.SPACING_M, theme.SPACING_XL, theme.SPACING_M)
-        layout.setSpacing(theme.SPACING_XL)
-        layout.addWidget(icon, 0, Qt.AlignVCenter)
-        layout.addLayout(text, 1)
-        layout.addWidget(arrow, 0, Qt.AlignVCenter)
-        card.setLayout(layout)
-        for label in (icon, title, description, outputs, arrow):
-            label.setAttribute(Qt.WA_TransparentForMouseEvents)
-        card.clicked.connect(
+    def _new_experiment_button(self, choice: ExperimentChoice) -> QPushButton:
+        button = QPushButton(choice.title)
+        button.setObjectName("NewExperiment")
+        button.setCursor(Qt.PointingHandCursor)
+        button.setIcon(QIcon(icons.svg_pixmap(choice.icon, 18, choice.tint)))
+        button.setIconSize(QSize(18, 18))
+        button.setToolTip(f"New {choice.title} experiment\n{choice.description}\n{choice.outputs}")
+        button.setAccessibleName(f"New {choice.title} experiment")
+        button.setAccessibleDescription(f"{choice.description} {choice.outputs}.")
+        button.clicked.connect(
             lambda _=False, selected=choice.plan_type: self.start_requested.emit(selected)
         )
-        return card
+        return button
 
     def show_workspaces(
         self,
@@ -455,6 +424,9 @@ class HomePage(QWidget):
         self.new_target_label.setText(
             f"in {self._target_workspace_name}" if self._target_workspace_name else ""
         )
+        self.new_target_label.setToolTip(
+            f"New experiments are created in {self._target_workspace_name}"
+        )
 
         experiments = tuple(
             experiment for experiment in self._all_recent
@@ -480,11 +452,21 @@ class HomePage(QWidget):
                 item.setToolTip(value)
                 self.recent_table.setItem(row, column, item)
         self.recent_table.setVisible(bool(experiments))
-        self.recent_empty_label.setText(
-            "No experiments in this workspace yet." if selected else "No experiments yet."
-        )
+        if self._all_recent:
+            self.recent_empty_label.setText("No experiments in this workspace yet.")
+        else:
+            # The only moment with room to spare, so the types are explained here.
+            self.recent_empty_label.setText(
+                "No experiments yet. Start one from the left:\n\n"
+                + "\n".join(
+                    f"{choice.title} — {choice.description} {choice.outputs}."
+                    for choice in EXPERIMENT_CHOICES
+                )
+            )
         self.recent_empty_label.setVisible(not experiments)
         self._bottom_stretch.setVisible(not experiments)
+        self.delete_button.setVisible(bool(experiments))
+        self.resume_button.setVisible(bool(experiments))
         self._selection_changed()
 
     def _workspace_item_changed(self, current, _previous) -> None:

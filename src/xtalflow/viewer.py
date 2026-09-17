@@ -739,6 +739,8 @@ class ViewerWindow(QMainWindow):
     def show_home(self) -> None:
         editor = self.current_editor
         if editor is not None and self.pages.currentWidget() is self.experiment_page:
+            # Return to the folder the experiment belongs to.
+            self._home_workspace_id = editor.project_id
             if self._current_step is WorkflowStep.SELECT_WELLS:
                 self._selection_sync_timer.stop()
                 self._sync_editor_selection(editor)
@@ -1293,9 +1295,14 @@ class ViewerWindow(QMainWindow):
             return
         steps = steps_for(editor.plan_type)
         page = self.experiment_page
+        workspace = next(
+            (item for item in self.project_controller.projects if item.id == editor.project_id),
+            None,
+        )
         page.show_identity(
             editor.plan_name, PLAN_TYPE_LABELS[editor.plan_type],
             editor.lifecycle_label.text(),
+            workspace.name if workspace is not None else "",
         )
         page.show_progress(status.steps, step, compact=self.width() < 1360)
         current = status.status_of(step)

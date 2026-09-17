@@ -155,6 +155,10 @@ from xtalflow.settings import (
 )
 
 
+# Image sets live on the RockMaker SMB share. A dropped share raises plain OSError
+# (for example "Host is down"), not only PlateImagesNotFoundError.
+IMAGE_SOURCE_ERRORS = (ValueError, OSError, ReviewPersistenceError)
+
 class ImageCanvas(QWidget):
     image_clicked = pyqtSignal(float, float, int)
     previous_requested = pyqtSignal()
@@ -1755,7 +1759,7 @@ class ViewerWindow(QMainWindow):
             crystals = self.project_controller.selected_crystals_for_plan()
             if not crystals:
                 raise ValueError("select at least one crystal target first")
-        except (ValueError, PlateImagesNotFoundError, ReviewPersistenceError) as error:
+        except IMAGE_SOURCE_ERRORS as error:
             try:
                 candidate_count = (
                     self.project_controller
@@ -1765,7 +1769,7 @@ class ViewerWindow(QMainWindow):
                     not summary.is_ready
                     for summary in self.project_controller.project_target_summaries()
                 )
-            except (ValueError, PlateImagesNotFoundError, ReviewPersistenceError):
+            except IMAGE_SOURCE_ERRORS:
                 candidate_count = 0
                 warning_count = 0
             if not warning_count:
@@ -1783,11 +1787,7 @@ class ViewerWindow(QMainWindow):
                     self._adopt_active_review()
                     self._sync_project_widgets()
                     crystals = self.project_controller.selected_crystals_for_plan()
-                except (
-                    ValueError,
-                    PlateImagesNotFoundError,
-                    ReviewPersistenceError,
-                ) as retry_error:
+                except IMAGE_SOURCE_ERRORS as retry_error:
                     remaining = sum(
                         not summary.is_ready
                         for summary in self.project_controller.project_target_summaries()
@@ -2138,7 +2138,7 @@ class ViewerWindow(QMainWindow):
             crystals = self.project_controller.selected_crystals_for_plan()
             if not crystals:
                 raise ValueError("select at least one well first")
-        except (ValueError, PlateImagesNotFoundError, ReviewPersistenceError) as error:
+        except IMAGE_SOURCE_ERRORS as error:
             QMessageBox.warning(self, "Cannot adopt selection", str(error))
             return
         well_count = len(crystals)
@@ -2962,7 +2962,7 @@ class ViewerWindow(QMainWindow):
             crystals = self.project_controller.selected_crystals_for_plan()
             if not crystals:
                 raise ValueError("select at least one crystal target first")
-        except (ValueError, PlateImagesNotFoundError, ReviewPersistenceError) as error:
+        except IMAGE_SOURCE_ERRORS as error:
             editor.current_plan = None
             editor.error_label.setText(
                 f"Targets changed: {error}. Review warnings in Image Review."
@@ -2993,7 +2993,7 @@ class ViewerWindow(QMainWindow):
             self._planning_drafts[project_id] = []
             try:
                 crystals = self.project_controller.selected_crystals_for_plan()
-            except (ValueError, PlateImagesNotFoundError, ReviewPersistenceError):
+            except IMAGE_SOURCE_ERRORS:
                 crystals = ()
             for draft in self.review_store.load_planning_drafts(project_id):
                 if draft.plan_type == "fragment_screening":
@@ -3054,16 +3054,30 @@ class ViewerWindow(QMainWindow):
             self.target_summary_table.setFocus(Qt.OtherFocusReason)
 
     def _initialize_projects(self) -> None:
+        unavailable: Exception | None = None
         if self.project_controller.projects:
             project_ids = {project.id for project in self.project_controller.projects}
             project_id = self.project_controller.last_open_project_id
             if project_id not in project_ids:
                 project_id = self.project_controller.projects[0].id
-            self.project_controller.open_project(project_id)
+            try:
+                self.project_controller.open_project(project_id)
+            except IMAGE_SOURCE_ERRORS as error:
+                # Start without images so the user can retry or switch workspace.
+                unavailable = error
         else:
             self.project_controller.create_project("Untitled Project")
         self._adopt_active_review()
         self._sync_project_widgets()
+        if unavailable is not None:
+            self._show_images_unavailable(unavailable)
+
+    def _show_images_unavailable(self, error: Exception) -> None:
+        self.navigation_label.setText("Images unavailable")
+        self.review_summary_label.setText(
+            f"Images unavailable: {error} · select the plate again to retry"
+        )
+        self.status_message_label.show_message(f"Images unavailable: {error}")
 
     def _target_summary_visibility_changed(self, visible: bool) -> None:
         if visible:
@@ -3140,10 +3154,16 @@ class ViewerWindow(QMainWindow):
             return
         try:
             self.project_controller.open_project(project_id)
+        except IMAGE_SOURCE_ERRORS as error:
+            # The workspace may already be open without its image set; show the
+            # controller's actual state instead of the previous plate.
             self._adopt_active_review()
             self._sync_project_widgets()
-        except (ValueError, PlateImagesNotFoundError, ReviewPersistenceError) as error:
-            QMessageBox.warning(self, "Cannot open workspace", str(error))
+            self._show_images_unavailable(error)
+            QMessageBox.warning(self, "Cannot open workspace images", str(error))
+            return
+        self._adopt_active_review()
+        self._sync_project_widgets()
 
     def _image_set_selected(self, index) -> None:
         image_set_id = index.data(ProjectImageSetListModel.ImageSetIdRole)
@@ -3153,7 +3173,8 @@ class ViewerWindow(QMainWindow):
             self.project_controller.activate_image_set(image_set_id)
             self._adopt_active_review()
             self._sync_project_widgets()
-        except (ValueError, PlateImagesNotFoundError, ReviewPersistenceError) as error:
+        except IMAGE_SOURCE_ERRORS as error:
+            self._sync_project_widgets()
             QMessageBox.warning(self, "Cannot open image set", str(error))
 
     def _selected_image_set_id(self) -> str | None:
@@ -3177,7 +3198,7 @@ class ViewerWindow(QMainWindow):
             self.project_controller.activate_image_set(image_sets[destination].id)
             self._adopt_active_review()
             self._sync_project_widgets()
-        except (ValueError, PlateImagesNotFoundError, ReviewPersistenceError) as error:
+        except IMAGE_SOURCE_ERRORS as error:
             QMessageBox.warning(self, "Cannot open image set", str(error))
 
     def _move_selected_image_set(self, offset: int) -> None:
@@ -3216,7 +3237,7 @@ class ViewerWindow(QMainWindow):
             self.project_controller.archive_image_set(image_set_id)
             self._adopt_active_review()
             self._sync_project_widgets()
-        except (ValueError, PlateImagesNotFoundError, ReviewPersistenceError) as error:
+        except IMAGE_SOURCE_ERRORS as error:
             QMessageBox.warning(self, "Cannot remove image set", str(error))
 
     def _restore_archived_image_set(self) -> None:
@@ -3241,7 +3262,7 @@ class ViewerWindow(QMainWindow):
             self.project_controller.restore_image_set(image_set.id)
             self._adopt_active_review()
             self._sync_project_widgets()
-        except (ValueError, PlateImagesNotFoundError, ReviewPersistenceError) as error:
+        except IMAGE_SOURCE_ERRORS as error:
             QMessageBox.warning(self, "Cannot restore image set", str(error))
 
     def _adopt_active_review(self) -> None:
@@ -3365,7 +3386,7 @@ class ViewerWindow(QMainWindow):
                     return
             self._adopt_active_review()
             self._sync_project_widgets()
-        except (ValueError, PlateImagesNotFoundError, ReviewPersistenceError) as error:
+        except IMAGE_SOURCE_ERRORS as error:
             QMessageBox.warning(self, "Cannot load plate", str(error))
 
     def _choose_and_add_plate(
@@ -3476,7 +3497,7 @@ class ViewerWindow(QMainWindow):
             self.project_controller.set_image_set_plate_format(image_set_id, plate_format)
             self._adopt_active_review()
             self._sync_project_widgets()
-        except (ValueError, PlateImagesNotFoundError, ReviewPersistenceError) as error:
+        except IMAGE_SOURCE_ERRORS as error:
             QMessageBox.warning(self, "Cannot set plate format", str(error))
 
     def _refresh_target_summary(self) -> None:
@@ -3490,7 +3511,7 @@ class ViewerWindow(QMainWindow):
         )
         try:
             all_summaries = self.project_controller.project_target_summaries()
-        except (ValueError, PlateImagesNotFoundError, ReviewPersistenceError) as error:
+        except IMAGE_SOURCE_ERRORS as error:
             self.status_message_label.show_message(
                 f"Target summary unavailable: {error}"
             )
@@ -3505,7 +3526,7 @@ class ViewerWindow(QMainWindow):
                 self.project_controller
                 .valid_unconfirmed_automatic_calibration_count()
             )
-        except (ValueError, PlateImagesNotFoundError, ReviewPersistenceError):
+        except IMAGE_SOURCE_ERRORS:
             acceptable_count = 0
         self.accept_valid_auto_wells_button.setText(
             f"Accept Valid Auto Wells ({acceptable_count})"
@@ -3609,7 +3630,7 @@ class ViewerWindow(QMainWindow):
                 self.project_controller
                 .valid_unconfirmed_automatic_calibration_count()
             )
-        except (ValueError, PlateImagesNotFoundError, ReviewPersistenceError) as error:
+        except IMAGE_SOURCE_ERRORS as error:
             QMessageBox.warning(self, "Cannot confirm wells", str(error))
             return
         if not count:
@@ -3628,7 +3649,7 @@ class ViewerWindow(QMainWindow):
             confirmed = self.project_controller.confirm_valid_automatic_calibrations()
             self._adopt_active_review()
             self._sync_project_widgets()
-        except (ValueError, PlateImagesNotFoundError, ReviewPersistenceError) as error:
+        except IMAGE_SOURCE_ERRORS as error:
             QMessageBox.warning(self, "Cannot confirm wells", str(error))
             return
         self.status_message_label.show_message(
@@ -3723,12 +3744,7 @@ class ViewerWindow(QMainWindow):
                 self._set_save_status("saved")
             self._sync_project_widgets()
             self.target_summary_table.setFocus(Qt.OtherFocusReason)
-        except (
-            StopIteration,
-            ValueError,
-            PlateImagesNotFoundError,
-            ReviewPersistenceError,
-        ) as error:
+        except (StopIteration, *IMAGE_SOURCE_ERRORS) as error:
             QMessageBox.warning(self, "Cannot open target", str(error))
 
     def show_previous(self) -> bool:
@@ -3768,7 +3784,7 @@ class ViewerWindow(QMainWindow):
             moved = self.project_controller.move_across_image_sets(
                 direction, self.controller.image_filter
             )
-        except (PlateImagesNotFoundError, ReviewPersistenceError) as error:
+        except IMAGE_SOURCE_ERRORS as error:
             self._show_persistence_error(error)
             return False
         if not moved:
@@ -4144,7 +4160,7 @@ class ViewerWindow(QMainWindow):
                 f"No-target {statistics.reviewed_without_targets} · "
                 f"Pending {statistics.unreviewed_images} · Points {statistics.target_points}"
             )
-        except (PlateImagesNotFoundError, ReviewPersistenceError):
+        except IMAGE_SOURCE_ERRORS:
             self.project_progress_label.setText("Project totals unavailable")
         self._update_navigation()
 
@@ -4375,7 +4391,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         try:
             window.load_plate(args.plate, plate_format)
-        except (ValueError, PlateImagesNotFoundError, ReviewPersistenceError) as error:
+        except IMAGE_SOURCE_ERRORS as error:
             print(f"xtalflow-viewer: {error}", file=sys.stderr)
             window.close()
             return 2

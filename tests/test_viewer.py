@@ -201,6 +201,32 @@ def test_empty_workspace_clears_image_from_previous_workspace(
     app.processEvents()
 
 
+def test_viewer_starts_when_workspace_images_are_unavailable(tmp_path: Path) -> None:
+    from xtalflow.domain import Project
+
+    app = QApplication.instance() or QApplication([])
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    project = Project.create("Offline share")
+    project.add_image_set(
+        "1070", 5947, "profileID_1", "1070:5947:1:1:profileID_1",
+        SWISSCI_MIDI_3_LENS.id, SWISSCI_MIDI_3_LENS.version,
+    )
+    store.save_project(project)
+    store.save_last_open_project(project.id)
+
+    class OfflineRepository(RockMakerImageRepository):
+        def load_plate_batch(self, *args, **kwargs):
+            raise OSError(112, "Host is down")
+
+    window = ViewerWindow(OfflineRepository(tmp_path), store)
+
+    assert window.controller is None
+    assert window.project_controller.active_project.id == project.id
+    assert "Host is down" in window.review_summary_label.text()
+    window.close()
+    app.processEvents()
+
+
 def test_auto_confirm_confidence_is_saved_per_user(tmp_path: Path) -> None:
     app = QApplication.instance() or QApplication([])
     preferences_path = tmp_path / ".config" / "xtalflow" / "preferences.json"

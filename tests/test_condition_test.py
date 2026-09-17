@@ -188,3 +188,22 @@ def test_condition_worksheets_and_labworks_follow_dispense_and_harvest_times() -
     assert payload["soak_id"] == "DMSO10%-0min-r1"
     assert payload["soak_smile"] == "CS(=O)C"
     assert records[0].to_payload()["soak_smile"] == "none"
+
+
+def test_finalized_condition_test_snapshot_rebuilds_the_same_plan() -> None:
+    from xtalflow.application.planning_service import (
+        condition_test_plan_snapshot,
+        plan_from_snapshot,
+    )
+
+    design = _design(percents=("0", "10"), times=(0, 60), replicates=1)
+    plan = build_condition_test_plan(design, _selection(4, positions=2))
+    snapshot = condition_test_plan_snapshot(plan, "BRD4")
+
+    rebuilt = plan_from_snapshot("plan", snapshot)
+
+    assert condition_test_plan_snapshot(rebuilt, "BRD4") == snapshot
+    assert [item.condition.id for item in rebuilt.assignments] == [
+        item.condition.id for item in plan.assignments
+    ]
+    assert rebuilt.assignments[3].doses == plan.assignments[3].doses

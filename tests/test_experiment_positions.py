@@ -246,3 +246,58 @@ def test_schema18_database_gains_hidden_workspaces_and_keeps_projects(tmp_path: 
     upgraded.workspace.save_project(loaded[0])
     assert upgraded.workspace.load_projects()[0].hidden_at == NOW
     upgraded.close()
+
+
+def test_schema19_database_keys_worksheet_outputs_by_order_and_keeps_rows(tmp_path: Path) -> None:
+    from xtalflow.domain.instruments import InstrumentOutput
+    from xtalflow.domain.plan_lifecycle import PlanRevision, WorksheetExportEvent
+
+    database_path = tmp_path / "reviews.sqlite3"
+    store = SQLiteReviewStore(database_path)
+    project, _ = _workspace(store)
+    store.planning.save_planning_draft(
+        PlanningDraft("plan", project.id, "raw_crystal", "Harvest", None, "", "BRD4", "0",
+                      "selection", NOW, NOW)
+    )
+    revision = store.planning.finalize_plan_revision(
+        PlanRevision("revision", "plan", 0, "RawCrystal-202609-BRD4-01", "{}", "jjh", NOW)
+    )
+    store.audit.record_worksheet_export(
+        WorksheetExportEvent(
+            "export", revision.id, "jjh", NOW, "succeeded",
+            (InstrumentOutput("shifter1", "/shifter1/a.csv"),),
+        )
+    )
+    store.close()
+    connection = sqlite3.connect(database_path)
+    connection.executescript(
+        """
+        ALTER TABLE worksheet_export_output RENAME TO output_new;
+        CREATE TABLE worksheet_export_output (
+            export_id TEXT NOT NULL
+                REFERENCES worksheet_export_event(export_id) ON DELETE CASCADE,
+            output_order INTEGER NOT NULL CHECK(output_order > 0),
+            instrument TEXT NOT NULL,
+            path TEXT NOT NULL,
+            PRIMARY KEY(export_id, instrument)
+        );
+        INSERT INTO worksheet_export_output SELECT * FROM output_new;
+        DROP TABLE output_new;
+        ALTER TABLE planning_draft DROP COLUMN details_json;
+        PRAGMA user_version = 19;
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    upgraded = SQLiteReviewStore(database_path)
+    (event,) = upgraded.audit.list_worksheet_exports(revision.id)
+    upgraded.close()
+
+    connection = sqlite3.connect(database_path)
+    key = [row[1] for row in connection.execute("PRAGMA table_info(worksheet_export_output)") if row[5]]
+    draft_columns = [row[1] for row in connection.execute("PRAGMA table_info(planning_draft)")]
+    connection.close()
+    assert key == ["export_id", "output_order"]
+    assert "details_json" in draft_columns
+    assert event.outputs == (InstrumentOutput("shifter1", "/shifter1/a.csv"),)

@@ -9,12 +9,14 @@ from pathlib import Path
 from typing import Union
 
 from xtalflow.application import ReviewPersistenceError
+from xtalflow.domain.condition_test import ConditionTestPlan
 from xtalflow.domain.fragment_screening import FragmentScreenPlan
 from xtalflow.domain.instruments import InstrumentOutput, WorksheetKind
 from xtalflow.domain.raw_crystal import RawCrystalPlan
 from xtalflow.domain.worksheets import (
     ECHO_HEADER,
     SHIFTER_HEADER,
+    build_condition_echo_rounds,
     build_echo_worksheet,
     build_shifter_worksheet,
 )
@@ -22,7 +24,7 @@ from xtalflow.infrastructure.mounts import is_network_mount
 from xtalflow.settings import ApplicationSettings, InstrumentDestination
 
 
-WorksheetPlan = Union[FragmentScreenPlan, RawCrystalPlan]
+WorksheetPlan = Union[FragmentScreenPlan, RawCrystalPlan, ConditionTestPlan]
 
 
 class WorksheetDestinationUnavailable(ReviewPersistenceError):
@@ -42,24 +44,43 @@ class WorksheetExportResult:
         )
 
 
-def worksheets_for(
-    plan: WorksheetPlan,
-) -> dict[WorksheetKind, tuple[tuple[str, ...], tuple[tuple[str, ...], ...]]]:
-    """Header and rows of every worksheet a plan needs, by worksheet kind.
+@dataclass(frozen=True)
+class WorksheetFile:
+    """One file for the instruments that read a worksheet kind."""
+
+    suffix: str
+    header: tuple[str, ...]
+    rows: tuple[tuple[str, ...], ...]
+
+
+def worksheets_for(plan: WorksheetPlan) -> dict[WorksheetKind, tuple[WorksheetFile, ...]]:
+    """Every worksheet file a plan needs, by worksheet kind.
 
     Raw crystal plans only harvest, so they need no ECHO dispensing worksheet.
+    A condition test dispenses at several times, so it gets one ECHO file per
+    time, suffixed _R1, _R2, ... when there is more than one.
     """
-    worksheets = {
-        WorksheetKind.SHIFTER: (
-            SHIFTER_HEADER,
-            tuple(row.values() for row in build_shifter_worksheet(plan)),
-        ),
-    }
+    shifter = WorksheetFile(
+        "", SHIFTER_HEADER, tuple(row.values() for row in build_shifter_worksheet(plan))
+    )
+    worksheets = {WorksheetKind.SHIFTER: (shifter,)}
     if isinstance(plan, FragmentScreenPlan):
         worksheets[WorksheetKind.ECHO] = (
-            ECHO_HEADER,
-            tuple(row.values() for row in build_echo_worksheet(plan)),
+            WorksheetFile(
+                "", ECHO_HEADER, tuple(row.values() for row in build_echo_worksheet(plan))
+            ),
         )
+    elif isinstance(plan, ConditionTestPlan):
+        rounds = build_condition_echo_rounds(plan)
+        if rounds:
+            worksheets[WorksheetKind.ECHO] = tuple(
+                WorksheetFile(
+                    f"_R{index}" if len(rounds) > 1 else "",
+                    ECHO_HEADER,
+                    tuple(row.values() for row in rows),
+                )
+                for index, (_minute, rows) in enumerate(rounds, start=1)
+            )
     return worksheets
 
 
@@ -141,24 +162,33 @@ class WorksheetExporter:
     def _export_to_directories(
         self,
         experiment_id: str,
-        worksheets: dict[WorksheetKind, tuple],
+        worksheets: dict[WorksheetKind, tuple[WorksheetFile, ...]],
         destinations: tuple[InstrumentDestination, ...],
         directories: tuple[Path, ...],
     ) -> WorksheetExportResult:
         try:
-            file_stem = self._available_file_stem(experiment_id, directories)
-            files = tuple(directory / f"{file_stem}.csv" for directory in directories)
+            suffixes = tuple(
+                {item.suffix for files in worksheets.values() for item in files}
+            )
+            file_stem = self._available_file_stem(experiment_id, directories, suffixes)
             with self._staging_directory(file_stem) as staging_path:
-                staged: dict[WorksheetKind, Path] = {}
-                for kind, (header, rows) in worksheets.items():
-                    staged[kind] = Path(staging_path) / f"{kind.value}.csv"
-                    self._write_csv(staged[kind], header, rows)
-                self._publish(
-                    tuple(
-                        (staged[destination.worksheet], file)
-                        for destination, file in zip(destinations, files)
+                staged: dict[tuple[WorksheetKind, str], Path] = {}
+                for kind, files in worksheets.items():
+                    for item in files:
+                        staged[(kind, item.suffix)] = (
+                            Path(staging_path) / f"{kind.value}{item.suffix}.csv"
+                        )
+                        self._write_csv(staged[(kind, item.suffix)], item.header, item.rows)
+                publications = tuple(
+                    (
+                        destination,
+                        staged[(destination.worksheet, item.suffix)],
+                        directory / f"{file_stem}{item.suffix}.csv",
                     )
+                    for destination, directory in zip(destinations, directories)
+                    for item in worksheets[destination.worksheet]
                 )
+                self._publish(tuple((source, target) for _, source, target in publications))
         except OSError as error:
             raise WorksheetDestinationUnavailable(
                 f"could not save worksheets: {error}"
@@ -167,8 +197,8 @@ class WorksheetExporter:
             experiment_id,
             file_stem,
             tuple(
-                InstrumentOutput(destination.instrument, str(file))
-                for destination, file in zip(destinations, files)
+                InstrumentOutput(destination.instrument, str(target))
+                for destination, _, target in publications
             ),
         )
 
@@ -204,12 +234,16 @@ class WorksheetExporter:
 
     @staticmethod
     def _available_file_stem(
-        experiment_id: str, directories: tuple[Path, ...]
+        experiment_id: str, directories: tuple[Path, ...], suffixes: tuple[str, ...] = ("",)
     ) -> str:
         sequence = 0
         while True:
             stem = experiment_id if sequence == 0 else f"{experiment_id}_{sequence:02d}"
-            if not any((directory / f"{stem}.csv").exists() for directory in directories):
+            if not any(
+                (directory / f"{stem}{suffix}.csv").exists()
+                for directory in directories
+                for suffix in suffixes
+            ):
                 return stem
             sequence += 1
 

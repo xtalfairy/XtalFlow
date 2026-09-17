@@ -10,6 +10,7 @@ from .crystal_selection import CrystalSelection
 class PlanType(str, Enum):
     RAW_CRYSTAL = "raw_crystal"
     FRAGMENT_SCREENING = "fragment_screening"
+    CONDITION_TEST = "condition_test"
 
 
 @dataclass(frozen=True)

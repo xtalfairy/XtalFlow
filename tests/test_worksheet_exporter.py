@@ -373,3 +373,74 @@ def test_plan_needing_an_unconfigured_worksheet_is_not_partly_exported(
         build_raw_crystal_plan(fragment_plan().selection), "RawCrystal-202607-BRD4-01"
     )
     assert [output.instrument for output in raw.outputs] == ["shifter1"]
+
+
+def test_condition_test_sends_one_echo_file_per_dispense_time(tmp_path: Path) -> None:
+    from xtalflow.domain import crystal_selection_from_selected_crystals
+    from xtalflow.domain.condition_test import (
+        Additive,
+        ConditionTestDesign,
+        Treatment,
+        build_condition_test_plan,
+        new_series,
+    )
+    from xtalflow.domain.plan_lifecycle import PlanRevision, WorksheetExportEvent
+    from xtalflow.infrastructure import SQLiteReviewStore
+
+    dmso = Additive("dmso", "DMSO", Decimal("100"), "CS(=O)C", "LDV-1", "A1")
+    glycerol = Additive("gly", "Glycerol", Decimal("50"), "OCC(O)CO", "LDV-1", "B1")
+    series = new_series(
+        glycerol.id, (Decimal("20"),), (0,), 1, before=(Treatment(dmso.id, Decimal("5"), 60),)
+    )
+    design = ConditionTestDesign((dmso, glycerol), (series,), Decimal("200"))
+    crystal = SelectedCrystal(
+        "image", "2069", "A01a",
+        (CrystalTarget("target", Decimal("0"), Decimal("0"), datetime.now(timezone.utc)),),
+        SWISSCI_MIDI_3_LENS.id,
+    )
+    plan = build_condition_test_plan(
+        design, crystal_selection_from_selected_crystals("plan", (crystal,))
+    )
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        instruments=standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
+        ),
+        create_missing_instrument_roots=True,
+    )
+
+    result = WorksheetExporter(settings, "scientist").export(plan, "PreTest-202609-BRD4-01")
+
+    echo_files = [Path(output.path).name for output in result.outputs if output.instrument == "echo650"]
+    assert echo_files == ["PreTest-202609-BRD4-01_R1.csv", "PreTest-202609-BRD4-01_R2.csv"]
+    with (tmp_path / "echo650" / "scientist" / echo_files[1]).open(encoding="utf-8") as stream:
+        rows = list(csv.reader(stream))
+    assert rows[1][:3] == ["LDV-1", "B1", "140.0"]
+
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    event = WorksheetExportEvent(
+        "export", "revision", "scientist", datetime.now(timezone.utc), "succeeded",
+        result.outputs,
+    )
+    project_id = "workspace"
+    from xtalflow.domain import Project
+    from xtalflow.domain.plan_lifecycle import PlanningDraft
+
+    workspace = Project("workspace", "Workspace", datetime.now(timezone.utc), datetime.now(timezone.utc))
+    store.workspace.save_project(workspace)
+    now = datetime.now(timezone.utc)
+    store.planning.save_planning_draft(
+        PlanningDraft("plan", project_id, "condition_test", "Test", None, "", "BRD4", "0",
+                      "selection", now, now, None, None, design.to_json())
+    )
+    assert store.planning.load_planning_drafts(project_id)[0].details_json == design.to_json()
+    revision = store.planning.finalize_plan_revision(
+        PlanRevision("revision", "plan", 0, "PreTest-202609-BRD4-01", "{}", "scientist", now)
+    )
+    store.audit.record_worksheet_export(replace(event, revision_id=revision.id))
+    (stored,) = store.audit.list_worksheet_exports(revision.id)
+    assert [Path(output.path).name for output in stored.outputs] == [
+        Path(output.path).name for output in result.outputs
+    ]
+    store.close()

@@ -1455,26 +1455,30 @@ class ViewerWindow(QMainWindow):
         worksheets = worksheets_for(plan) if plan is not None else {}
         username = getpass.getuser()
         latest = self._latest_worksheet_export(revision) if finalized else None
-        saved = (
-            {output.instrument: output.path for output in latest.outputs}
-            if latest is not None and latest.status == WORKSHEETS_SUCCEEDED else {}
-        )
-        # Before saving, the folder each file will go to; after, the file itself.
-        editor.worksheets_step.show_instruments(
-            tuple(
-                (
-                    destination.label,
-                    destination.worksheet.value.upper(),
-                    str(len(worksheets[destination.worksheet][1]))
-                    if destination.worksheet in worksheets else "—",
-                    saved.get(
-                        destination.instrument,
-                        str(destination.output_directory / username),
-                    ),
-                )
-                for destination in self._instruments_for(editor.plan_type)
-            )
-        )
+        saved: dict[str, list[Path]] = {}
+        if latest is not None and latest.status == WORKSHEETS_SUCCEEDED:
+            for output in latest.outputs:
+                saved.setdefault(output.instrument, []).append(Path(output.path))
+        # Before saving, the folder each file will go to; after, the files themselves.
+        rows = []
+        for destination in self._instruments_for(editor.plan_type):
+            files = worksheets.get(destination.worksheet, ())
+            count = sum(len(item.rows) for item in files)
+            kind = destination.worksheet.value.upper()
+            paths = saved.get(destination.instrument, [])
+            if len(paths) == 1:
+                where = str(paths[0])
+            elif paths:
+                where = f"{paths[0].parent}/{', '.join(path.name for path in paths)}"
+            else:
+                where = str(destination.output_directory / username)
+            rows.append((
+                destination.label,
+                f"{kind} × {len(files)}" if len(files) > 1 else kind,
+                str(count) if files else "—",
+                where,
+            ))
+        editor.worksheets_step.show_instruments(tuple(rows))
         if latest is None:
             # Not finalized yet: the footer names that and disables saving.
             editor.worksheets_step.show_result("", "muted")

@@ -21,6 +21,8 @@ class PlanningDraft:
     updated_at: datetime
     experiment_id: str | None = None
     workflow_step: str | None = None
+    # Inputs a plan type keeps beyond the shared columns, as JSON.
+    details_json: str | None = None
 
 
 @dataclass(frozen=True)

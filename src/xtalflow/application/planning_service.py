@@ -20,6 +20,12 @@ from xtalflow.domain.crystal_selection import (
     SelectedWell,
     SoakingPosition,
 )
+from xtalflow.domain.condition_test import (
+    ConditionAssignment,
+    ConditionTestDesign,
+    ConditionTestPlan,
+    Dose,
+)
 from xtalflow.domain.crystal_workflow import AssignmentOrder
 from xtalflow.domain.experiment_naming import suggest_experiment_id
 from xtalflow.domain.experiment_project import ExperimentPlan, ExperimentProject, PlanType
@@ -33,12 +39,14 @@ from xtalflow.domain.fragment_screening import (
 from xtalflow.domain.plan_lifecycle import PlanningDraft, PlanRevision
 from xtalflow.domain.raw_crystal import RawCrystalPlan, RawCrystalSelection
 
-Plan = Union[FragmentScreenPlan, RawCrystalPlan]
+Plan = Union[FragmentScreenPlan, RawCrystalPlan, ConditionTestPlan]
 
 
 EXPERIMENT_ID_PREFIXES = {
     PlanType.FRAGMENT_SCREENING: "FragSC",
     PlanType.RAW_CRYSTAL: "RawCrystal",
+    # Earlier XtalViewer solvent and cryo pretests used this prefix on MxLive.
+    PlanType.CONDITION_TEST: "PreTest",
 }
 
 
@@ -131,6 +139,42 @@ def raw_crystal_plan_snapshot(plan: RawCrystalPlan, protein: str) -> str:
     })
 
 
+def condition_test_plan_snapshot(plan: ConditionTestPlan, protein: str) -> str:
+    return _canonical_json({
+        "schema": 1,
+        "plan_type": PlanType.CONDITION_TEST.value,
+        "protein": protein,
+        "assignment_order": plan.assignment_order.value,
+        "design": json.loads(plan.design.to_json()),
+        "assignments": [
+            {
+                "image_key": item.selected_well.image_key,
+                "image_path": item.selected_well.image_path,
+                "plate": item.selected_well.plate_code,
+                "well": item.selected_well.well_address,
+                **_plate_format_fields(item.selected_well),
+                "condition_id": item.condition.id,
+                "replicate": item.replicate,
+                "targets": [
+                    {"id": position.source_target_id,
+                     "x_mm": str(position.x_mm),
+                     "y_mm": str(position.y_mm),
+                     "selected_at": position.selected_at.isoformat()}
+                    for position in item.selected_well.soaking_positions
+                ],
+                "doses": [
+                    {"additive_id": dose.additive_id,
+                     "volume_nl": str(dose.volume_nl),
+                     "actual_percent": str(dose.actual_percent),
+                     "start_minutes": dose.start_minutes}
+                    for dose in item.doses
+                ],
+            }
+            for item in plan.assignments
+        ],
+    })
+
+
 def _plate_format_fields(selected_well: SelectedWell) -> dict[str, object]:
     # Schema 1 snapshots finalized before format versions were recorded mean
     # version 1. Omitting that default keeps them byte-identical, so existing
@@ -157,13 +201,13 @@ def selection_from_snapshot(
     always yields the same selection.
     """
     plan_type = PlanType(payload.get("plan_type"))
-    items = payload["assignments" if plan_type is PlanType.FRAGMENT_SCREENING else "selections"]
+    items = payload["selections" if plan_type is PlanType.RAW_CRYSTAL else "assignments"]
     if not isinstance(items, list) or not items:
         raise ValueError("snapshot contains no selected wells")
     grouped: dict[str, dict] = {}
     for item in items:
         image_key = str(item["image_key"])
-        targets = item["targets"] if plan_type is PlanType.FRAGMENT_SCREENING else [item["target"]]
+        targets = [item["target"]] if plan_type is PlanType.RAW_CRYSTAL else item["targets"]
         entry = grouped.setdefault(
             image_key,
             {
@@ -233,6 +277,25 @@ def plan_from_snapshot(plan_id: str, snapshot_json: str) -> Plan:
     selection = selection_from_snapshot(plan_id, payload)
     wells = {well.image_key: well for well in selection.wells}
     order = AssignmentOrder(payload["assignment_order"])
+    if PlanType(payload["plan_type"]) is PlanType.CONDITION_TEST:
+        design = ConditionTestDesign.from_json(json.dumps(payload["design"]))
+        conditions = {condition.id: condition for condition in design.conditions()}
+        assignments = tuple(
+            ConditionAssignment(
+                wells[str(item["image_key"])],
+                conditions[str(item["condition_id"])],
+                int(item["replicate"]),
+                tuple(
+                    Dose(
+                        str(dose["additive_id"]), Decimal(str(dose["volume_nl"])),
+                        Decimal(str(dose["actual_percent"])), int(dose["start_minutes"]),
+                    )
+                    for dose in item["doses"]
+                ),
+            )
+            for item in payload["assignments"]
+        )
+        return ConditionTestPlan(selection, design, assignments, order)
     if PlanType(payload["plan_type"]) is PlanType.RAW_CRYSTAL:
         consumed: dict[str, int] = {}
         selections = []

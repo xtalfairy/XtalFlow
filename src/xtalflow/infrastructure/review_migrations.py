@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 
-LATEST_SCHEMA_VERSION = 19
+LATEST_SCHEMA_VERSION = 20
 IMPORTED_PROJECT_ID = "imported-standalone-reviews"
 LEGACY_PLATE_FORMAT_ID = "swissci-midi-3-lens-hr3-194"
 LEGACY_PLATE_FORMAT_VERSION = 1
@@ -253,6 +253,10 @@ def _create_planning_schema(connection: sqlite3.Connection) -> None:
     if "workflow_step" not in draft_columns:
         # Schema 18: the guided step to resume an experiment at.
         connection.execute("ALTER TABLE planning_draft ADD COLUMN workflow_step TEXT")
+    if "details_json" not in draft_columns:
+        # Schema 20: plan inputs that do not fit the fixed columns, such as a
+        # condition test's additives and tables.
+        connection.execute("ALTER TABLE planning_draft ADD COLUMN details_json TEXT")
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS plan_revision (
@@ -305,10 +309,11 @@ def _create_planning_schema(connection: sqlite3.Connection) -> None:
             output_order INTEGER NOT NULL CHECK(output_order > 0),
             instrument TEXT NOT NULL,
             path TEXT NOT NULL,
-            PRIMARY KEY(export_id, instrument)
+            PRIMARY KEY(export_id, output_order)
         )
         """
     )
+    _key_worksheet_outputs_by_order(connection)
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS webdb_upload_event (
@@ -517,6 +522,43 @@ LEGACY_WORKSHEET_PATH_COLUMNS = (
 )
 
 
+def _key_worksheet_outputs_by_order(connection: sqlite3.Connection) -> None:
+    """Schema 20: one instrument can receive several files from one export.
+
+    A condition test sends one ECHO file per dispense time, so outputs are keyed
+    by their order instead of by instrument.
+    """
+    key = {
+        row[1] for row in connection.execute("PRAGMA table_info(worksheet_export_output)")
+        if row[5]
+    }
+    if "instrument" not in key:
+        return
+    connection.execute(
+        "ALTER TABLE worksheet_export_output RENAME TO worksheet_export_output_schema19"
+    )
+    connection.execute(
+        """
+        CREATE TABLE worksheet_export_output (
+            export_id TEXT NOT NULL
+                REFERENCES worksheet_export_event(export_id) ON DELETE CASCADE,
+            output_order INTEGER NOT NULL CHECK(output_order > 0),
+            instrument TEXT NOT NULL,
+            path TEXT NOT NULL,
+            PRIMARY KEY(export_id, output_order)
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO worksheet_export_output(export_id, output_order, instrument, path)
+        SELECT export_id, output_order, instrument, path
+        FROM worksheet_export_output_schema19
+        """
+    )
+    connection.execute("DROP TABLE worksheet_export_output_schema19")
+
+
 def _move_worksheet_paths_to_instrument_outputs(connection: sqlite3.Connection) -> None:
     """Replace one path column per instrument with one output row per file.
 
@@ -562,7 +604,7 @@ def _move_worksheet_paths_to_instrument_outputs(connection: sqlite3.Connection) 
             output_order INTEGER NOT NULL CHECK(output_order > 0),
             instrument TEXT NOT NULL,
             path TEXT NOT NULL,
-            PRIMARY KEY(export_id, instrument)
+            PRIMARY KEY(export_id, output_order)
         )
         """
     )

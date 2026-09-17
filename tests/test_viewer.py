@@ -121,17 +121,57 @@ def test_fragment_editor_previews_and_reassigns_by_plate_well() -> None:
     assert editor.count_label.text() == "✓ 2 fragments → 2 wells · counts match"
     assert editor.echo_table.rowCount() == 2
     assert editor.shifter_table.rowCount() == 2
+    assert editor.table.item(0, 8).text() == "25.0 nL × 1"
     editor.order_input.setCurrentIndex(
         editor.order_input.findData(AssignmentOrder.PLATE_WELL)
     )
+    assert not editor.reassignment_panel.isHidden()
+    assert "3 A01a: CMP-15 → CMP-8" in editor.reassignment_label.text()
+    assert editor.table.item(0, 1).text() == "20"
+    assert editor.order_input.currentData() is AssignmentOrder.SELECTION
+    editor.apply_reassignment_button.click()
+    assert editor.reassignment_panel.isHidden()
+    assert editor.order_input.currentData() is AssignmentOrder.PLATE_WELL
     assert editor.table.item(0, 1).text() == "3"
     assert editor.table.item(0, 5).text() == "CMP-8"
+    assert editor.all_rows_radio.isChecked() and not editor.rows_input.isEnabled()
+    editor.choose_rows_radio.setChecked(True)
     editor.rows_input.setText("2")
     assert editor.current_plan is None
+    assert not editor.conditions_error_label.isHidden()
     assert "enough fragments" in editor.error_label.text()
     assert editor.count_label.text().startswith("△ 2 wells, 1 fragments — choose 1 more")
     assert editor.echo_table.rowCount() == 0
     assert editor.shifter_table.rowCount() == 0
+    editor.close()
+    app.processEvents()
+
+
+def test_conditions_explain_a_volume_that_cannot_be_split_equally() -> None:
+    app = QApplication.instance() or QApplication([])
+    now = datetime.now(timezone.utc)
+    crystal = SelectedCrystal(
+        "image", "20", "A01a",
+        tuple(
+            CrystalTarget(f"t{number}", Decimal(0), Decimal(0), now + timedelta(seconds=number))
+            for number in range(3)
+        ),
+        SWISSCI_MIDI_3_LENS.id,
+    )
+    editor = FragmentScreeningEditor(FragmentLibrary("Library", (_fragment(1),)), (crystal,))
+    editor.conditions_page = editor.conditions_widget()
+    editor.volume_input.setValue(25)
+
+    assert editor.current_plan is None
+    assert editor.conditions_error_label.text() == (
+        "25 nL cannot be split equally between 3 positions in A01a in 2.5 nL steps. "
+        "Use 22.5 nL or 30 nL, or change the positions."
+    )
+    editor.volume_input.setValue(30)
+    assert editor.current_plan is not None
+    assert editor.conditions_error_label.isHidden()
+    assert editor.table.item(0, 8).text() == "10.0 nL × 3"
+    assert "30.0 nL per well" in editor.checklist_label.text()
     editor.close()
     app.processEvents()
 

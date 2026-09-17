@@ -1060,6 +1060,10 @@ class ViewerWindow(QMainWindow):
             editor.last_revision = self.planning_service.latest_revision(plan_id)
             if editor.last_revision is not None:
                 editor.last_revision_snapshot = editor.last_revision.snapshot_json
+        editor.set_destinations(
+            ", ".join(item.label for item in self._instruments_for(plan_type))
+            or "no configured instruments"
+        )
         editor.setup_step = SetupStep(editor, PLAN_TYPE_LABELS[plan_type])
         editor.worksheets_step = WorksheetsStep(editor.mxlive_widget())
         editor.step_pages = {

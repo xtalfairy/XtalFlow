@@ -20,6 +20,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QRadioButton,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -36,6 +37,7 @@ from xtalflow.domain import (
 from xtalflow.domain.fragment_screening import (
     AssignmentOrder,
     FragmentLibrary,
+    FragmentScreenPlan,
     SelectedCrystal,
     build_fragment_screen_plan,
 )
@@ -111,6 +113,10 @@ class PlanEditorBase(QWidget):
         self.lifecycle_label = QLabel("Draft · not saved")
         self.facts_label = QLabel()
         self.facts_label.setObjectName("Muted")
+        self.checklist_label = QLabel()
+        self.checklist_label.setWordWrap(True)
+        self.checklist_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.destinations_text = ""
         self.experiment_id_label = QLabel("Experiment ID: determined when finalized")
         self.experiment_id_label.setObjectName("Muted")
         self.experiment_id_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -157,7 +163,7 @@ class PlanEditorBase(QWidget):
         widget = QWidget()
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.facts_label)
+        layout.addWidget(self.checklist_label)
         layout.addWidget(self.error_label)
         layout.addWidget(self.preview_tabs, 1)
         layout.addWidget(self.experiment_id_label)
@@ -179,6 +185,29 @@ class PlanEditorBase(QWidget):
         if reused:
             facts += f" · {reused} used before"
         self.facts_label.setText(facts)
+        self.checklist_label.setText("\n".join(self._checklist_lines()))
+
+    def _checklist_lines(self) -> list[str]:
+        """What finalizing will fix, one checked fact per line."""
+        wells = self.selection.wells if self.selection is not None else ()
+        positions = sum(len(well.soaking_positions) for well in wells)
+        lines = [
+            f"{theme.SYMBOL_OK if wells else theme.SYMBOL_ATTENTION} "
+            f"{_plural(len(wells), 'well')} · {_plural(positions, 'position')}"
+        ]
+        reused = sum(1 for well in wells if self.well_usage.get(well.image_key))
+        if reused:
+            lines.append(
+                f"{theme.SYMBOL_ATTENTION} {_plural(reused, 'well')} already used in "
+                "another experiment · see Usage"
+            )
+        if self.destinations_text:
+            lines.append(f"{theme.SYMBOL_OK} Worksheets for {self.destinations_text}")
+        return lines
+
+    def set_destinations(self, text: str) -> None:
+        self.destinations_text = text
+        self._refresh_facts()
 
     def set_crystals(self, crystals: tuple[SelectedCrystal, ...]) -> None:
         project_id = (
@@ -306,9 +335,37 @@ class FragmentScreeningEditor(PlanEditorBase):
         self.volume_input.setSuffix(" nL / well")
         self.volume_input.setValue(25.0)
         self.table = _preview_table(
-            ("Order", "Plate", "Well", "Positions", "Usage", "Fragment", "Source", "Total"),
+            (
+                "Order", "Plate", "Well", "Positions", "Usage", "Fragment", "Source",
+                "Total", "Per position",
+            ),
             stretch_last=True,
         )
+        self.all_rows_radio = QRadioButton("All rows")
+        self.choose_rows_radio = QRadioButton("Choose rows")
+        self.all_rows_radio.setChecked(True)
+        self.rows_input.setEnabled(False)
+        self.conditions_error_label = QLabel()
+        self.conditions_error_label.setWordWrap(True)
+        self.conditions_error_label.setStyleSheet(theme.status_style("attention"))
+        self.conditions_error_label.hide()
+        # Changing the order after seeing assignments shows what moves first.
+        self.reassignment_label = QLabel()
+        self.reassignment_label.setWordWrap(True)
+        self.apply_reassignment_button = QPushButton("Apply reassignment")
+        self.keep_assignment_button = QPushButton("Keep current order")
+        self.reassignment_panel = QWidget()
+        reassignment_layout = QVBoxLayout()
+        reassignment_layout.setContentsMargins(0, 0, 0, 0)
+        reassignment_layout.addWidget(self.reassignment_label)
+        reassignment_actions = QHBoxLayout()
+        reassignment_actions.addWidget(self.apply_reassignment_button)
+        reassignment_actions.addWidget(self.keep_assignment_button)
+        reassignment_actions.addStretch()
+        reassignment_layout.addLayout(reassignment_actions)
+        self.reassignment_panel.setLayout(reassignment_layout)
+        self.reassignment_panel.hide()
+        self._pending_order: AssignmentOrder | None = None
         self.echo_table = _preview_table(ECHO_HEADER)
 
         self.count_label = QLabel()
@@ -318,7 +375,10 @@ class FragmentScreeningEditor(PlanEditorBase):
 
         self.rows_input.textChanged.connect(self.refresh_plan)
         self.volume_input.valueChanged.connect(self.refresh_plan)
-        self.order_input.currentIndexChanged.connect(self.refresh_plan)
+        self.order_input.currentIndexChanged.connect(self._order_changed)
+        self.all_rows_radio.toggled.connect(self._row_mode_changed)
+        self.apply_reassignment_button.clicked.connect(self._apply_reassignment)
+        self.keep_assignment_button.clicked.connect(self._keep_assignment)
         self.library_input.currentIndexChanged.connect(self._library_changed)
         self.refresh_libraries_button.clicked.connect(self.library_refresh_requested.emit)
         if library is not None:
@@ -347,9 +407,14 @@ class FragmentScreeningEditor(PlanEditorBase):
         self.volume_input.setMaximumWidth(200)
         form = QFormLayout()
         form.setFieldGrowthPolicy(QFormLayout.FieldsStayAtSizeHint)
+        rows_row = QHBoxLayout()
+        rows_row.addWidget(self.all_rows_radio)
+        rows_row.addWidget(self.choose_rows_radio)
+        rows_row.addWidget(self.rows_input)
+        rows_row.addStretch()
         form.addRow("Library *", library_row)
         form.addRow("", self.library_label)
-        form.addRow("Data rows", self.rows_input)
+        form.addRow("Fragments", rows_row)
         form.addRow("", rows_hint)
         form.addRow("Total volume/well *", self.volume_input)
         form.addRow("", volume_hint)
@@ -359,6 +424,8 @@ class FragmentScreeningEditor(PlanEditorBase):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(form)
         layout.addWidget(self.count_label)
+        layout.addWidget(self.conditions_error_label)
+        layout.addWidget(self.reassignment_panel)
         layout.addStretch()
         widget.setLayout(layout)
         return widget
@@ -405,7 +472,85 @@ class FragmentScreeningEditor(PlanEditorBase):
                 self.rows_input.clear()
             else:
                 self.rows_input.setText(f"1-{len(library.fragments)}")
+            self._show_row_mode()
         self.refresh_plan()
+
+    def _all_rows_text(self) -> str | None:
+        return f"1-{len(self.library.fragments)}" if self.library is not None else None
+
+    def _show_row_mode(self) -> None:
+        all_rows = self.rows_input.text() in ("", self._all_rows_text())
+        for radio in (self.all_rows_radio, self.choose_rows_radio):
+            radio.blockSignals(True)
+        self.all_rows_radio.setChecked(all_rows)
+        self.choose_rows_radio.setChecked(not all_rows)
+        for radio in (self.all_rows_radio, self.choose_rows_radio):
+            radio.blockSignals(False)
+        self.rows_input.setEnabled(not all_rows)
+
+    def _row_mode_changed(self, all_rows: bool) -> None:
+        self.rows_input.setEnabled(not all_rows)
+        if all_rows and self._all_rows_text() is not None:
+            self.rows_input.setText(self._all_rows_text())
+        elif not all_rows:
+            self.rows_input.setFocus(Qt.OtherFocusReason)
+            self.rows_input.selectAll()
+
+    def _order_changed(self, _index: int) -> None:
+        new_order = self.order_input.currentData()
+        plan = self.current_plan
+        if plan is None or new_order is plan.assignment_order:
+            self._keep_assignment()
+            self.refresh_plan()
+            return
+        try:
+            candidate = build_fragment_screen_plan(
+                plan.library, plan.selection, plan.volume_per_crystal_nl, new_order
+            )
+        except ValueError:
+            self.refresh_plan()
+            return
+        before = {
+            item.selected_well.image_key: item.fragment.compound_id
+            for item in plan.assignments
+        }
+        moves = [
+            (item.selected_well, before.get(item.selected_well.image_key), item.fragment.compound_id)
+            for item in candidate.assignments
+            if before.get(item.selected_well.image_key) != item.fragment.compound_id
+        ]
+        if not moves:
+            self.refresh_plan()
+            return
+        self._pending_order = new_order
+        self.order_input.blockSignals(True)
+        self.order_input.setCurrentIndex(self.order_input.findData(plan.assignment_order))
+        self.order_input.blockSignals(False)
+        shown = [
+            f"{well.plate_code} {well.well_address}: {old} → {new}"
+            for well, old, new in moves[:8]
+        ]
+        if len(moves) > 8:
+            shown.append(f"…and {len(moves) - 8} more")
+        self.reassignment_label.setText(
+            f"{theme.SYMBOL_ATTENTION} This order gives {_plural(len(moves), 'well')} a "
+            "different fragment:\n" + "\n".join(shown)
+        )
+        self.reassignment_panel.show()
+
+    def _apply_reassignment(self) -> None:
+        order = self._pending_order
+        self._keep_assignment()
+        if order is None:
+            return
+        self.order_input.blockSignals(True)
+        self.order_input.setCurrentIndex(self.order_input.findData(order))
+        self.order_input.blockSignals(False)
+        self.refresh_plan()
+
+    def _keep_assignment(self) -> None:
+        self._pending_order = None
+        self.reassignment_panel.hide()
 
     def _update_library_label(self) -> None:
         if self.library is not None:
@@ -419,9 +564,9 @@ class FragmentScreeningEditor(PlanEditorBase):
 
     def refresh_plan(self) -> None:
         try:
-            selection = self._require_selection()
             if self.library is None:
                 raise ValueError("Choose a fragment library.")
+            selection = self._require_selection()
             selected_library = self.library.select_rows(self.rows_input.text())
             self._show_counts(len(selected_library.fragments), len(selection.wells))
             plan = build_fragment_screen_plan(
@@ -433,6 +578,10 @@ class FragmentScreeningEditor(PlanEditorBase):
         except ValueError as error:
             if self.selection is None or self.library is None:
                 self.count_label.setText("")
+            # Without wells there is nothing to check the conditions against yet.
+            conditions_error = "" if self.selection is None and self.library else str(error)
+            self.conditions_error_label.setText(conditions_error)
+            self.conditions_error_label.setVisible(bool(conditions_error))
             self.table.setRowCount(0)
             self.echo_table.setRowCount(0)
             self.shifter_table.setRowCount(0)
@@ -441,6 +590,7 @@ class FragmentScreeningEditor(PlanEditorBase):
         self.current_plan = plan
         self.error_label.setText("")
         self.error_label.hide()
+        self.conditions_error_label.hide()
         self.table.setRowCount(len(plan.assignments))
         for row, assignment in enumerate(plan.assignments):
             selected_well = assignment.selected_well
@@ -456,6 +606,7 @@ class FragmentScreeningEditor(PlanEditorBase):
                 assignment.fragment.compound_id,
                 f"{assignment.fragment.source_plate} / {assignment.fragment.source_well}",
                 f"{assignment.total_volume_nl} nL",
+                f"{assignment.transfers[0].volume_nl} nL × {len(assignment.transfers)}",
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
@@ -473,6 +624,25 @@ class FragmentScreeningEditor(PlanEditorBase):
         self._refresh_facts()
         self._refresh_experiment_id()
         self.draft_changed.emit()
+
+    def _checklist_lines(self) -> list[str]:
+        lines = super()._checklist_lines()
+        plan = self.current_plan
+        if isinstance(plan, FragmentScreenPlan):
+            used = len(plan.assignments)
+            line = (
+                f"{theme.SYMBOL_OK} {_plural(used, 'fragment')} from {plan.library.name}"
+                f" (rows {self.rows_input.text()})"
+            )
+            if plan.unused_fragments:
+                line += f" · last {len(plan.unused_fragments)} not used"
+            lines.insert(1, line)
+            lines.insert(
+                2,
+                f"{theme.SYMBOL_OK} {plan.volume_per_crystal_nl} nL per well, shared "
+                "equally between its positions",
+            )
+        return lines
 
     def _show_counts(self, fragments: int, wells: int) -> None:
         if fragments < wells:
@@ -505,6 +675,7 @@ class FragmentScreeningEditor(PlanEditorBase):
         self.library_id = self.library_input.currentData(Qt.UserRole)
         self._update_library_label()
         self.rows_input.setText(draft.library_rows)
+        self._show_row_mode()
         self.protein_input.setText(draft.protein)
         self.name_input.setText(draft.name)
         self.assigned_experiment_id = draft.experiment_id
@@ -602,6 +773,10 @@ class RawCrystalEditor(PlanEditorBase):
         self._refresh_facts()
         self._refresh_experiment_id()
         self.draft_changed.emit()
+
+
+def _plural(value: int, noun: str) -> str:
+    return f"{value} {noun}{'' if value == 1 else 's'}"
 
 
 def _well_usage_display(

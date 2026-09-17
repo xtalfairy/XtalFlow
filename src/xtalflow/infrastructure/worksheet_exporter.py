@@ -16,6 +16,7 @@ from xtalflow.domain.worksheets import (
     build_echo_worksheet,
     build_shifter_worksheet,
 )
+from xtalflow.infrastructure.mounts import is_network_mount
 from xtalflow.settings import ApplicationSettings
 
 
@@ -53,9 +54,8 @@ class WorksheetExporter:
         bases = self._instrument_bases()
         missing = self._unavailable_bases(bases)
         if missing and not self.settings.create_missing_instrument_roots:
-            paths = ", ".join(str(path) for path in missing)
             raise WorksheetDestinationUnavailable(
-                f"instrument output location is unavailable: {paths}"
+                "instrument output location is unavailable: " + ", ".join(missing)
             )
         try:
             for base in bases:
@@ -94,8 +94,7 @@ class WorksheetExporter:
         missing = self._unavailable_bases(bases)
         if missing and not self.settings.create_missing_instrument_roots:
             raise WorksheetDestinationUnavailable(
-                "instrument output location is unavailable: "
-                + ", ".join(str(path) for path in missing)
+                "instrument output location is unavailable: " + ", ".join(missing)
             )
         directories = tuple(base / self.username for base in bases)
         try:
@@ -122,15 +121,19 @@ class WorksheetExporter:
             ) from error
         return self._export_shifter_to_directories(plan, experiment_id, directories)
 
-    @staticmethod
-    def _unavailable_bases(bases: tuple[Path, ...]) -> list[Path]:
+    def _unavailable_bases(self, bases: tuple[Path, ...]) -> list[str]:
         unavailable = []
         for base in bases:
             try:
                 if not base.is_dir():
-                    unavailable.append(base)
+                    unavailable.append(str(base))
+                elif (
+                    self.settings.require_network_instrument_mounts
+                    and not is_network_mount(base)
+                ):
+                    unavailable.append(f"{base} (network share is not mounted)")
             except OSError:
-                unavailable.append(base)
+                unavailable.append(str(base))
         return unavailable
 
     def _export_shifter_to_directories(

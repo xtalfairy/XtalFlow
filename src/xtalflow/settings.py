@@ -6,7 +6,7 @@ line arguments may override the defaults without changing source code.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 
@@ -22,6 +22,7 @@ class ApplicationSettings:
     shifter1_output_directory: Path
     shifter2_output_directory: Path
     create_missing_instrument_roots: bool
+    require_network_instrument_mounts: bool = False
     review_database_filename: str = "reviews.sqlite3"
     mxlive_base_url: str | None = None
     mxlive_beamline: str = "BL-5C"
@@ -63,6 +64,7 @@ OPERATING_SERVER_SETTINGS = ApplicationSettings(
     shifter1_output_directory=Path("/smbmount/shifter1"),
     shifter2_output_directory=Path("/smbmount/shifter2"),
     create_missing_instrument_roots=False,
+    require_network_instrument_mounts=True,
     mxlive_base_url="https://mxlive.postech.ac.kr",
     mxlive_ca_bundle=Path("/etc/pki/tls/certs/ca-bundle.crt"),
     mxlive_config_path=Path("/etc/xtalflow/xtalflow.toml"),
@@ -74,3 +76,40 @@ OPERATING_SERVER_SETTINGS = ApplicationSettings(
 # Change this one assignment for an operating-server installation. CLI path
 # arguments can still override individual directories.
 DEFAULT_SETTINGS = DEVELOPMENT_SETTINGS
+
+
+def with_instrument_output_policy(
+    settings: ApplicationSettings, allow_local_instrument_directories: bool = False
+) -> ApplicationSettings:
+    """Treat instrument folders outside this repository as real network shares.
+
+    Development defaults create missing folders under ``tests/runtime``.  Keeping
+    that behavior for operating paths given on the command line would silently
+    write worksheets to local disk when a share is not mounted.
+    """
+    if allow_local_instrument_directories:
+        return replace(
+            settings,
+            create_missing_instrument_roots=True,
+            require_network_instrument_mounts=False,
+        )
+    directories = (
+        settings.echo_output_directory,
+        settings.shifter1_output_directory,
+        settings.shifter2_output_directory,
+    )
+    if all(_is_within_project(directory) for directory in directories):
+        return settings
+    return replace(
+        settings,
+        create_missing_instrument_roots=False,
+        require_network_instrument_mounts=True,
+    )
+
+
+def _is_within_project(path: Path) -> bool:
+    try:
+        path.resolve().relative_to(PROJECT_ROOT)
+    except ValueError:
+        return False
+    return True

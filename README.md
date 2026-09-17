@@ -85,6 +85,12 @@ xtalflow-viewer \
   --shifter2-dir /smbmount/shifter2
 ```
 
+ECHO/SHIFTER 경로가 저장소 밖에 있으면 XtalFlow은 해당 폴더가 실제로 마운트된
+네트워크 공유(cifs, smb3, nfs)인지 확인합니다. 공유가 마운트되지 않아 빈
+mountpoint만 남아 있으면 worksheet를 로컬 디스크에 쓰지 않고 저장 위치를 다시
+선택하도록 안내합니다. 테스트 목적으로 로컬 폴더에 저장해야 할 때만
+`--allow-local-instrument-dirs`를 추가합니다. 이 경우 장비는 파일을 받지 못합니다.
+
 전체 실행 옵션은 다음 명령으로 확인할 수 있습니다.
 
 ```bash

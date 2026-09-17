@@ -1,4 +1,12 @@
-from xtalflow.settings import DEFAULT_SETTINGS, OPERATING_SERVER_SETTINGS, PROJECT_ROOT
+from pathlib import Path
+
+from xtalflow.settings import (
+    DEFAULT_SETTINGS,
+    DEVELOPMENT_SETTINGS,
+    OPERATING_SERVER_SETTINGS,
+    PROJECT_ROOT,
+    with_instrument_output_policy,
+)
 from xtalflow.viewer import build_parser
 
 
@@ -33,3 +41,23 @@ def test_cli_uses_central_defaults_and_allows_site_overrides() -> None:
     assert overridden.mxlive_url == "https://mxlive.example"
     assert str(overridden.mxlive_key) == "/keys.dsa"
     assert defaults.mxlive_config == DEFAULT_SETTINGS.mxlive_config_path
+
+
+def test_instrument_directories_outside_repository_must_be_network_shares() -> None:
+    from dataclasses import replace
+
+    development = with_instrument_output_policy(DEVELOPMENT_SETTINGS)
+    operating_paths = with_instrument_output_policy(
+        replace(DEVELOPMENT_SETTINGS, echo_output_directory=Path("/smbmount/echo650"))
+    )
+    allowed = with_instrument_output_policy(
+        replace(DEVELOPMENT_SETTINGS, echo_output_directory=Path("/tmp/echo650")),
+        allow_local_instrument_directories=True,
+    )
+
+    assert development == DEVELOPMENT_SETTINGS
+    assert not operating_paths.create_missing_instrument_roots
+    assert operating_paths.require_network_instrument_mounts
+    assert OPERATING_SERVER_SETTINGS.require_network_instrument_mounts
+    assert allowed.create_missing_instrument_roots
+    assert not allowed.require_network_instrument_mounts

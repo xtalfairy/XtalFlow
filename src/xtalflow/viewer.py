@@ -148,7 +148,11 @@ from xtalflow.infrastructure.user_preferences import (
     UserPreferences,
 )
 from xtalflow.presentation import AspectFitTransform, ProjectImageSetListModel
-from xtalflow.settings import ApplicationSettings, DEFAULT_SETTINGS
+from xtalflow.settings import (
+    ApplicationSettings,
+    DEFAULT_SETTINGS,
+    with_instrument_output_policy,
+)
 
 
 class ImageCanvas(QWidget):
@@ -4291,6 +4295,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_SETTINGS.shifter2_output_directory,
         help="SHIFTER 2 worksheet output directory",
     )
+    parser.add_argument(
+        "--allow-local-instrument-dirs",
+        action="store_true",
+        help="Allow ECHO/SHIFTER directories that are not mounted network shares "
+        "(testing only; instruments will not see these files)",
+    )
     parser.add_argument("--plate", help="Plate code to load at startup")
     parser.add_argument(
         "--plate-format",
@@ -4335,6 +4345,9 @@ def main(argv: list[str] | None = None) -> int:
         mxlive_key_path=args.mxlive_key,
         mxlive_ca_bundle=args.mxlive_ca,
         mxlive_config_path=args.mxlive_config,
+    )
+    settings = with_instrument_output_policy(
+        settings, args.allow_local_instrument_dirs
     )
     try:
         review_store = SQLiteReviewStore(database_path)

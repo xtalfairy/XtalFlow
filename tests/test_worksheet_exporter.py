@@ -267,3 +267,28 @@ def test_invalid_plan_does_not_leave_staging_that_blocks_export(
 
     assert result.file_stem == "FragSC-202607-BRD4-01"
     assert list((tmp_path / "staging" / "scientist").iterdir()) == []
+
+
+def test_unmounted_share_directory_is_not_used_for_instrument_output(
+    tmp_path: Path, monkeypatch
+) -> None:
+    settings = replace(
+        _development_settings(tmp_path),
+        create_missing_instrument_roots=False,
+        require_network_instrument_mounts=True,
+    )
+    for name in ("echo650", "shifter1", "shifter2"):
+        (tmp_path / name).mkdir()
+    monkeypatch.setattr(
+        "xtalflow.infrastructure.worksheet_exporter.is_network_mount",
+        lambda path: path.name != "shifter2",
+    )
+
+    with pytest.raises(
+        WorksheetDestinationUnavailable, match="shifter2 \\(network share is not mounted\\)"
+    ):
+        WorksheetExporter(settings, "scientist").export(
+            fragment_plan(), "FragSC-202607-BRD4-01"
+        )
+
+    assert _worksheet_files(tmp_path) == []

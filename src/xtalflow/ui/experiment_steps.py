@@ -5,9 +5,12 @@ from __future__ import annotations
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QFormLayout,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
+    QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
@@ -71,6 +74,19 @@ class WorksheetsStep(QWidget):
         self.result_label.setWordWrap(True)
         self.result_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.result_label.hide()
+        self.retry_button = QPushButton("Try again")
+        self.choose_location_button = QPushButton("Save to another folder…")
+        self.copy_paths_button = QPushButton("Copy paths")
+        self._copy_text = ""
+        result_actions = QHBoxLayout()
+        result_actions.setContentsMargins(0, 0, 0, 0)
+        for button in (self.retry_button, self.choose_location_button, self.copy_paths_button):
+            button.hide()
+            result_actions.addWidget(button)
+        result_actions.addStretch()
+        self.copy_paths_button.clicked.connect(
+            lambda: QApplication.clipboard().setText(self._copy_text)
+        )
 
         self.mxlive_toggle = QToolButton()
         self.mxlive_toggle.setText("Send records to MxLive (optional)")
@@ -87,6 +103,7 @@ class WorksheetsStep(QWidget):
         layout.addWidget(self.instrument_table)
         layout.addWidget(self.atomic_hint)
         layout.addWidget(self.result_label)
+        layout.addLayout(result_actions)
         layout.addWidget(self.mxlive_toggle)
         layout.addWidget(self.mxlive_panel, 1)
         layout.addStretch()
@@ -105,10 +122,16 @@ class WorksheetsStep(QWidget):
                 item.setToolTip(value)
                 self.instrument_table.setItem(row, column, item)
 
-    def show_result(self, text: str, kind: str) -> None:
+    def show_result(
+        self, text: str, kind: str, *, can_retry: bool = False, copy_text: str = ""
+    ) -> None:
         self.result_label.setText(text)
         self.result_label.setStyleSheet(theme.status_style(kind))
         self.result_label.setVisible(bool(text))
+        self.retry_button.setVisible(can_retry)
+        self.choose_location_button.setVisible(can_retry)
+        self._copy_text = copy_text
+        self.copy_paths_button.setVisible(bool(copy_text))
 
     def _toggle_mxlive(self, visible: bool) -> None:
         self.mxlive_panel.setVisible(visible)

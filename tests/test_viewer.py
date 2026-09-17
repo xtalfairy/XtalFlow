@@ -1063,25 +1063,28 @@ def test_unavailable_instrument_share_can_use_alternate_root(
         create_missing_instrument_roots=False,
     )
     window, store, editor = _fragment_plan_window(tmp_path, settings)
-    monkeypatch.setattr(QMessageBox, "exec_", lambda dialog: 0)
-    monkeypatch.setattr(
-        QMessageBox, "clickedButton",
-        lambda dialog: next(
-            button for button in dialog.buttons() if button.text().startswith("Choose")
-        ),
-    )
     monkeypatch.setattr(
         "xtalflow.viewer.QFileDialog.getExistingDirectory",
         lambda *args, **kwargs: str(tmp_path / "chosen"),
     )
-    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: None)
     assert window._finalize_plan(editor) is not None
+    window.go_to_step(WorkflowStep.WORKSHEETS)
+    step = editor.worksheets_step
 
-    window._save_plan_worksheets(editor)
+    window.experiment_page.primary_button.click()
+
+    assert step.result_label.text().startswith("! No worksheets were saved.")
+    assert not step.retry_button.isHidden()
+    assert window.experiment_page.primary_button.text() == "Save all worksheets"
+    step.choose_location_button.click()
 
     exports = store.audit.list_worksheet_exports(editor.last_revision.id)
-    assert [event.status for event in exports] == ["succeeded"]
-    assert exports[0].path_for("echo650").startswith(str(tmp_path / "chosen" / "echo650"))
+    assert [event.status for event in exports] == ["failed", "succeeded"]
+    assert exports[1].path_for("echo650").startswith(str(tmp_path / "chosen" / "echo650"))
+    assert step.retry_button.isHidden()
+    assert not step.copy_paths_button.isHidden()
+    step.copy_paths_button.click()
+    assert QApplication.clipboard().text().splitlines()[0] == exports[1].path_for("echo650")
     window.close()
     app.processEvents()
 

@@ -1066,6 +1066,16 @@ class ViewerWindow(QMainWindow):
         )
         editor.setup_step = SetupStep(editor, PLAN_TYPE_LABELS[plan_type])
         editor.worksheets_step = WorksheetsStep(editor.mxlive_widget())
+        editor.worksheets_step.retry_button.clicked.connect(
+            lambda _=False, selected_editor=editor: self._save_plan_worksheets(
+                selected_editor
+            )
+        )
+        editor.worksheets_step.choose_location_button.clicked.connect(
+            lambda _=False, selected_editor=editor: self._save_worksheets_elsewhere(
+                selected_editor
+            )
+        )
         editor.step_pages = {
             WorkflowStep.SETUP: editor.setup_step,
             WorkflowStep.SELECT_WELLS: self.select_wells_page,
@@ -1408,17 +1418,22 @@ class ViewerWindow(QMainWindow):
                 f"{self._instrument_label(output)}: {output.path}"
                 for output in latest.outputs
             )
-            editor.worksheets_step.show_result("\n".join(lines), "ok")
+            editor.worksheets_step.show_result(
+                "\n".join(lines), "ok",
+                copy_text="\n".join(output.path for output in latest.outputs),
+            )
         elif latest.status == WORKSHEETS_CANCELLED:
             editor.worksheets_step.show_result(
-                "No worksheets were saved. The save was cancelled.", "muted"
+                "No worksheets were saved. The save was cancelled.", "muted",
+                can_retry=True,
             )
         else:
             editor.worksheets_step.show_result(
                 f"{theme.SYMBOL_ERROR} No worksheets were saved. "
-                f"{latest.error_message or ''}\nMake the folders available or choose "
-                "another location, then save again.",
+                f"{latest.error_message or ''}\nMake the folders available and try "
+                "again, or save to another folder.",
                 "error",
+                can_retry=True,
             )
 
     def _worksheets_saved(self, revision) -> bool:
@@ -1913,8 +1928,8 @@ class ViewerWindow(QMainWindow):
         self._mxlive_experiment_ids.update(remote)
         return True
 
-    def _save_plan_worksheets(self, editor) -> None:
-        raw_crystal = editor.plan_type is PlanType.RAW_CRYSTAL
+    def _save_plan_worksheets(self, editor, alternate_root: Path | None = None) -> None:
+        """Save every worksheet of the finalized revision, or none of them."""
         revision = editor.last_revision
         if revision is None or self._plan_snapshot(editor) != editor.last_revision_snapshot:
             QMessageBox.warning(
@@ -1930,81 +1945,44 @@ class ViewerWindow(QMainWindow):
             QMessageBox.warning(self, "Cannot save worksheets", str(error))
             return
         service = self._worksheet_export_service()
+        destination = (
+            str(alternate_root) if alternate_root is not None
+            else "SHIFTER folders" if editor.plan_type is PlanType.RAW_CRYSTAL
+            else "instrument folders"
+        )
         try:
             result = self._run_in_background(
-                "Saving worksheets to "
-                + ("SHIFTER folders…" if raw_crystal else "instrument folders…"),
-                lambda: service.deliver(plan, revision.experiment_id),
+                f"Saving worksheets to {destination}…",
+                lambda: service.deliver(plan, revision.experiment_id, alternate_root),
             )
         except WorksheetDestinationUnavailable as error:
-            result = self._deliver_worksheets_to_alternate_root(
-                service, revision, plan, error, raw_crystal
+            self._record_worksheet_export(
+                service, revision, WORKSHEETS_FAILED, error=str(error)
             )
-            if result is None:
-                self._refresh_worksheets_step(editor)
-                self._refresh_experiment_status(editor)
-                return
-        self._record_worksheet_export(service, revision, WORKSHEETS_SUCCEEDED, result=result)
-        editor.experiment_id_label.setText(
-            f"Experiment ID: {result.experiment_id} · Saved as {result.file_stem}"
-        )
-        self.status_message_label.show_message(
-            f"Worksheets saved for {result.experiment_id}", 5000
-        )
+            self.status_message_label.show_message("No worksheets were saved", 5000)
+        else:
+            self._record_worksheet_export(
+                service, revision, WORKSHEETS_SUCCEEDED, result=result
+            )
+            editor.experiment_id_label.setText(
+                f"Experiment ID: {result.experiment_id} · Saved as {result.file_stem}"
+            )
+            self.status_message_label.show_message(
+                f"Worksheets saved for {result.experiment_id}", 5000
+            )
         self._refresh_worksheets_step(editor)
         self._refresh_experiment_status(editor)
+
+    def _save_worksheets_elsewhere(self, editor) -> None:
+        selected = QFileDialog.getExistingDirectory(
+            self, "Save worksheets to another folder", str(Path.home())
+        )
+        if selected:
+            self._save_plan_worksheets(editor, Path(selected))
 
     def _instrument_label(self, output: InstrumentOutput) -> str:
         destination = self.settings.instrument(output.instrument)
         return destination.label if destination is not None else output.label
-
-    def _deliver_worksheets_to_alternate_root(
-        self, service: WorksheetExportService, revision: PlanRevision, plan,
-        error: WorksheetDestinationUnavailable, raw_crystal: bool,
-    ):
-        dialog = QMessageBox(self)
-        dialog.setIcon(QMessageBox.Critical)
-        dialog.setWindowTitle(
-            "SHIFTER destination unavailable" if raw_crystal
-            else "Worksheet destination unavailable"
-        )
-        dialog.setText(str(error))
-        dialog.setInformativeText(
-            "No ECHO worksheet is required for a Raw Crystal Plan. "
-            "Choose an alternate root for the two SHIFTER worksheets?"
-            if raw_crystal else
-            "The worksheets were not delivered to the instrument folders. "
-            "Choose an alternate output root?"
-        )
-        choose_button = dialog.addButton(
-            "Choose Alternate Location…", QMessageBox.ActionRole
-        )
-        dialog.addButton(QMessageBox.Cancel)
-        dialog.exec_()
-        if dialog.clickedButton() is not choose_button:
-            self._record_worksheet_export(
-                service, revision, WORKSHEETS_FAILED, error=str(error)
-            )
-            return None
-        selected = QFileDialog.getExistingDirectory(
-            self, "Choose alternate worksheet output root", str(Path.home())
-        )
-        if not selected:
-            self._record_worksheet_export(
-                service, revision, WORKSHEETS_CANCELLED, error=str(error)
-            )
-            return None
-        try:
-            return self._run_in_background(
-                "Saving worksheets…",
-                lambda: service.deliver(plan, revision.experiment_id, Path(selected)),
-            )
-        except WorksheetDestinationUnavailable as fallback_error:
-            self._record_worksheet_export(
-                service, revision, WORKSHEETS_FAILED, error=str(fallback_error)
-            )
-            QMessageBox.critical(self, "Could not save worksheets", str(fallback_error))
-            return None
 
     def _worksheet_export_service(self) -> WorksheetExportService:
         return WorksheetExportService(

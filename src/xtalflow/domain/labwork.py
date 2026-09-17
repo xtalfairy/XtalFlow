@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
+from .condition_test import ConditionTestPlan
 from .fragment_screening import FragmentScreenPlan
 from .plate_format import plate_format_by_id
 from .raw_crystal import RawCrystalPlan
@@ -115,3 +116,32 @@ def build_raw_crystal_labworks(
         )
         for index, selected_well in enumerate(plan.selected_wells, start=1)
     )
+
+
+def build_condition_test_labworks(
+    plan: ConditionTestPlan, *, experiment_id: str, protein_name: str,
+    username: str, account_id: str,
+) -> tuple[LabworkRecord, ...]:
+    """One record per crystal, marked as a pretest the way earlier XtalViewer uploads were."""
+    records = []
+    for index, assignment in enumerate(plan.assignments, start=1):
+        selected_well = assignment.selected_well
+        additives = [plan.design.additive(dose.additive_id) for dose in assignment.doses]
+        smiles = ".".join(item.smiles for item in additives if item.smiles) or "none"
+        records.append(LabworkRecord(
+            username, experiment_id, protein_name,
+            _mxlive_plate_type(
+                selected_well.plate_format_id, selected_well.plate_format_version
+            ),
+            selected_well.plate_code,
+            selected_well.image_path or selected_well.image_key,
+            selected_well.well_address,
+            Decimal("0"), Decimal("0"), index,
+            "pretest", "Z00",
+            assignment.total_volume_nl,
+            f"{plan.design.label(assignment.condition, compact=True)}-r{assignment.replicate}",
+            smiles,
+            account_id,
+            "Uploaded by XtalFlow · Condition Test",
+        ))
+    return tuple(records)

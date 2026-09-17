@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
+from .condition_test import ConditionTestPlan
 from .crystal_selection import SelectedWell
 from .fragment_screening import FragmentScreenPlan
 from .raw_crystal import RawCrystalPlan
@@ -132,10 +133,49 @@ def build_echo_worksheet(plan: FragmentScreenPlan) -> tuple[EchoWorksheetRow, ..
     return tuple(rows)
 
 
+def build_condition_echo_rounds(
+    plan: ConditionTestPlan,
+) -> tuple[tuple[int, tuple[EchoWorksheetRow, ...]], ...]:
+    """One ECHO run per dispense time: every addition due at that minute."""
+    rounds = []
+    for minute, additions in plan.dispense_rounds:
+        rows: list[EchoWorksheetRow] = []
+        for assignment, dose in additions:
+            selected_well = assignment.selected_well
+            plate_format = _plate_format_for(selected_well)
+            additive = plan.design.additive(dose.additive_id)
+            per_position = dose.volume_nl / len(selected_well.soaking_positions)
+            for position in selected_well.soaking_positions:
+                x_um, y_um = plate_format.echo_offset_um(
+                    selected_well.well_address, float(position.x_mm), float(position.y_mm)
+                )
+                rows.append(
+                    EchoWorksheetRow(
+                        additive.source_plate,
+                        additive.source_well,
+                        per_position,
+                        selected_well.plate_code,
+                        selected_well.well_address,
+                        plate_format.echo_destination_well(selected_well.well_address),
+                        Decimal(str(round(x_um, 6))),
+                        Decimal(str(round(y_um, 6))),
+                    )
+                )
+        rounds.append((minute, tuple(rows)))
+    return tuple(rounds)
+
+
 def build_shifter_worksheet(
-    plan: FragmentScreenPlan | RawCrystalPlan,
+    plan: FragmentScreenPlan | RawCrystalPlan | ConditionTestPlan,
 ) -> tuple[ShifterWorksheetRow, ...]:
-    if isinstance(plan, RawCrystalPlan):
+    if isinstance(plan, ConditionTestPlan):
+        # Harvest order: the wells due first come first.
+        selected_wells = tuple(
+            assignment.selected_well
+            for _minute, group in plan.harvest_groups
+            for assignment in group
+        )
+    elif isinstance(plan, RawCrystalPlan):
         selected_wells = plan.selected_wells
     else:
         selected_wells = tuple(

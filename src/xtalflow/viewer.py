@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import json
 import re
 import sys
 import threading
@@ -95,6 +96,7 @@ from xtalflow.application.planning_service import (
     PlanningService,
     PlanStatus,
     fragment_plan_snapshot,
+    plan_from_snapshot,
     raw_crystal_plan_snapshot,
     restored_plan_status,
     saved_plan_status,
@@ -1432,20 +1434,24 @@ class ViewerWindow(QMainWindow):
             return None
 
     def _upload_plan_labworks(self, editor) -> None:
-        if editor.current_plan is None:
+        revision = getattr(editor, "last_revision", None)
+        if revision is None:
+            QMessageBox.warning(
+                self, "Cannot upload", "Finalize the current plan revision first."
+            )
             return
         build_labworks = (
             build_raw_crystal_labworks
             if editor.plan_type is PlanType.RAW_CRYSTAL
             else build_fragment_labworks
         )
+        snapshot = json.loads(revision.snapshot_json)
         self._upload_labworks(
             editor,
             build_labworks(
-                editor.current_plan,
-                experiment_id=editor.last_revision.experiment_id
-                if editor.last_revision else "",
-                protein_name=editor.protein_input.text().strip(),
+                plan_from_snapshot(editor.plan_id, revision.snapshot_json),
+                experiment_id=revision.experiment_id,
+                protein_name=str(snapshot.get("protein", "")).strip(),
                 username=self.mxlive_account.username if self.mxlive_account else "",
                 account_id=self.mxlive_account.account_id if self.mxlive_account else "",
             ),
@@ -1700,6 +1706,8 @@ class ViewerWindow(QMainWindow):
         revision = self._finalize_plan(editor)
         if revision is None:
             return
+        # Deliver what the revision fixed, not whatever the editor shows now.
+        plan = plan_from_snapshot(editor.plan_id, revision.snapshot_json)
         service = self._worksheet_export_service()
         try:
             result = self._run_in_background(

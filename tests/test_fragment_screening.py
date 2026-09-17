@@ -58,17 +58,32 @@ def test_plan_assigns_fragments_in_crystal_selection_order() -> None:
     assert [item.fragment.compound_id for item in plan.assignments] == ["CMP-1", "CMP-2"]
 
 
-def test_plan_splits_each_crystal_volume_across_its_own_targets() -> None:
+def test_plan_splits_each_crystal_volume_equally_across_its_own_targets() -> None:
     now = datetime.now(timezone.utc)
     plan = build_fragment_screen_plan(
-        FragmentLibrary("Library", (fragment(1),)),
+        FragmentLibrary("Library", (fragment(1), fragment(2))),
         (crystal("image", now, 3),),
-        Decimal("20"),
+        Decimal("22.5"),
     )
 
     volumes = [transfer.volume_nl for transfer in plan.assignments[0].transfers]
-    assert volumes == [Decimal("5.0"), Decimal("5.0"), Decimal("10.0")]
-    assert plan.assignments[0].total_volume_nl == Decimal("20.0")
+    assert volumes == [Decimal("7.5"), Decimal("7.5"), Decimal("7.5")]
+    assert plan.assignments[0].total_volume_nl == Decimal("22.5")
+    assert [item.compound_id for item in plan.unused_fragments] == ["CMP-2"]
+
+
+def test_volume_that_cannot_be_shared_equally_is_refused_with_alternatives() -> None:
+    now = datetime.now(timezone.utc)
+
+    with pytest.raises(ValueError) as captured:
+        build_fragment_screen_plan(
+            FragmentLibrary("Library", (fragment(1),)),
+            (crystal("image", now, 3),),
+            Decimal("25"),
+        )
+
+    assert "25 nL cannot be split equally between 3 positions" in str(captured.value)
+    assert "Use 22.5 nL or 30 nL" in str(captured.value)
 
 
 @pytest.mark.parametrize("volume", [Decimal("0"), Decimal("6")])
@@ -84,7 +99,7 @@ def test_plan_rejects_invalid_transfer_volume(volume: Decimal) -> None:
 
 def test_plan_rejects_zero_volume_transfers() -> None:
     now = datetime.now(timezone.utc)
-    with pytest.raises(ValueError, match="needs at least"):
+    with pytest.raises(ValueError, match="cannot be split equally"):
         build_fragment_screen_plan(
             FragmentLibrary("Library", (fragment(1),)),
             (crystal("image", now, 3),),

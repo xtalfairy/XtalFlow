@@ -103,6 +103,11 @@ class FragmentScreenPlan:
     volume_per_crystal_nl: Decimal
     assignment_order: AssignmentOrder
 
+    @property
+    def unused_fragments(self) -> tuple[Fragment, ...]:
+        """Selected library rows left over after one fragment per well."""
+        return self.library.fragments[len(self.assignments):]
+
 
 def build_fragment_screen_plan(
     library: FragmentLibrary,
@@ -132,25 +137,41 @@ def build_fragment_screen_plan(
             raise ValueError(
                 f"{selected_well.image_key} needs at least one soaking position"
             )
-        if total_units < position_count:
+        if total_units % position_count:
             raise ValueError(
-                f"{selected_well.image_key} needs at least "
-                f"{position_count * TRANSFER_INCREMENT_NL} nL"
+                unequal_split_message(
+                    volume_per_crystal_nl, position_count, selected_well.well_address
+                )
             )
-        quota, remainder = divmod(total_units, position_count)
         transfers = tuple(
             FragmentTransfer(
                 position=position,
-                volume_nl=TRANSFER_INCREMENT_NL
-                * (quota + (remainder if index == position_count - 1 else 0)),
+                volume_nl=TRANSFER_INCREMENT_NL * (total_units // position_count),
             )
-            for index, position in enumerate(selected_well.soaking_positions)
+            for position in selected_well.soaking_positions
         )
         assignments.append(FragmentAssignment(selected_well, fragment, transfers))
 
     return FragmentScreenPlan(
         selection, library, tuple(assignments), volume_per_crystal_nl,
         assignment_order,
+    )
+
+
+def unequal_split_message(
+    total_nl: Decimal, position_count: int, well_address: str
+) -> str:
+    """Explain why a volume cannot be shared equally and suggest volumes that can."""
+    step = TRANSFER_INCREMENT_NL * position_count
+    lower = (total_nl // step) * step
+    higher = lower + step
+    options = " or ".join(
+        f"{value.normalize():f} nL" for value in (lower, higher) if value > 0
+    )
+    return (
+        f"{total_nl.normalize():f} nL cannot be split equally between "
+        f"{position_count} positions in {well_address} in "
+        f"{TRANSFER_INCREMENT_NL} nL steps. Use {options}, or change the positions."
     )
 
 

@@ -10,6 +10,7 @@ from decimal import Decimal
 from uuid import NAMESPACE_URL, uuid5
 
 from xtalflow.application import ReviewPersistenceError
+from xtalflow.application.planning_service import selection_from_snapshot
 from xtalflow.domain import (
     CrystalSelection,
     ExperimentPlan,
@@ -500,81 +501,9 @@ def _project_from_legacy_snapshot(
         raise ValueError(
             f"snapshot plan type {snapshot_type!r} does not match {plan_type.value!r}"
         )
-    if plan_type is PlanType.FRAGMENT_SCREENING:
-        source_items = payload["assignments"]
-    else:
-        source_items = payload["selections"]
-    if not isinstance(source_items, list) or not source_items:
-        raise ValueError("snapshot contains no selected wells")
-
-    grouped: dict[str, dict] = {}
-    for item in source_items:
-        image_key = str(item["image_key"])
-        if plan_type is PlanType.FRAGMENT_SCREENING:
-            targets = item["targets"]
-        else:
-            targets = [item["target"]]
-        entry = grouped.setdefault(
-            image_key,
-            {
-                "image_key": image_key,
-                "image_path": str(item.get("image_path") or ""),
-                "plate": str(item["plate"]),
-                "well": str(item["well"]),
-                "plate_format_id": str(item.get("plate_format_id") or ""),
-                "plate_format_version": int(item.get("plate_format_version") or 1),
-                "targets": [],
-            },
-        )
-        entry["targets"].extend(targets)
-
-    selection_id = str(uuid5(NAMESPACE_URL, f"xtalflow:{plan_id}:selection"))
-    wells: list[SelectedWell] = []
-    for well_order, entry in enumerate(grouped.values(), start=1):
-        well_id = str(
-            uuid5(NAMESPACE_URL, f"xtalflow:{plan_id}:well:{entry['image_key']}")
-        )
-        positions: list[SoakingPosition] = []
-        for position_order, target in enumerate(entry["targets"], start=1):
-            selected_at = datetime.fromisoformat(str(target["selected_at"]))
-            source_target_id = str(target["id"])
-            positions.append(
-                SoakingPosition(
-                    str(uuid5(
-                        NAMESPACE_URL,
-                        f"xtalflow:{plan_id}:position:{source_target_id}:"
-                        f"{position_order}",
-                    )),
-                    well_id,
-                    source_target_id,
-                    position_order,
-                    Decimal(str(target["x_mm"])),
-                    Decimal(str(target["y_mm"])),
-                    selected_at,
-                )
-            )
-        if not positions:
-            raise ValueError(f"{entry['image_key']} contains no soaking positions")
-        wells.append(
-            SelectedWell(
-                id=well_id,
-                crystal_selection_id=selection_id,
-                image_key=entry["image_key"],
-                plate_code=entry["plate"],
-                well_address=entry["well"],
-                selection_order=well_order,
-                selected_at=min(position.selected_at for position in positions),
-                soaking_positions=tuple(positions),
-                image_path=entry["image_path"],
-                plate_format_id=entry["plate_format_id"],
-                plate_format_version=entry["plate_format_version"],
-            )
-        )
     created_at = datetime.fromisoformat(created_at_value)
     updated_at = datetime.fromisoformat(updated_at_value)
-    selection = CrystalSelection(
-        selection_id, plan_id, tuple(wells), created_at, updated_at
-    )
+    selection = selection_from_snapshot(plan_id, payload, created_at, updated_at)
     return ExperimentProject(
         plan_id,
         name,

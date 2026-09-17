@@ -11,15 +11,29 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Protocol
-from uuid import uuid4
+from decimal import Decimal
+from typing import Protocol, Union
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from xtalflow.domain.crystal_selection import CrystalSelection, SelectedWell
+from xtalflow.domain.crystal_selection import (
+    CrystalSelection,
+    SelectedWell,
+    SoakingPosition,
+)
+from xtalflow.domain.crystal_workflow import AssignmentOrder
 from xtalflow.domain.experiment_naming import suggest_experiment_id
 from xtalflow.domain.experiment_project import ExperimentPlan, ExperimentProject, PlanType
-from xtalflow.domain.fragment_screening import FragmentScreenPlan
+from xtalflow.domain.fragment_screening import (
+    Fragment,
+    FragmentAssignment,
+    FragmentLibrary,
+    FragmentScreenPlan,
+    FragmentTransfer,
+)
 from xtalflow.domain.plan_lifecycle import PlanningDraft, PlanRevision
-from xtalflow.domain.raw_crystal import RawCrystalPlan
+from xtalflow.domain.raw_crystal import RawCrystalPlan, RawCrystalSelection
+
+Plan = Union[FragmentScreenPlan, RawCrystalPlan]
 
 
 EXPERIMENT_ID_PREFIXES = {
@@ -130,6 +144,129 @@ def _plate_format_fields(selected_well: SelectedWell) -> dict[str, object]:
 
 def _canonical_json(payload: dict) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def selection_from_snapshot(
+    plan_id: str,
+    payload: dict,
+    created_at: datetime | None = None,
+    updated_at: datetime | None = None,
+) -> CrystalSelection:
+    """Rebuild the selected wells recorded in a revision snapshot.
+
+    IDs are derived from the plan and source targets, so the same snapshot
+    always yields the same selection.
+    """
+    plan_type = PlanType(payload.get("plan_type"))
+    items = payload["assignments" if plan_type is PlanType.FRAGMENT_SCREENING else "selections"]
+    if not isinstance(items, list) or not items:
+        raise ValueError("snapshot contains no selected wells")
+    grouped: dict[str, dict] = {}
+    for item in items:
+        image_key = str(item["image_key"])
+        targets = item["targets"] if plan_type is PlanType.FRAGMENT_SCREENING else [item["target"]]
+        entry = grouped.setdefault(
+            image_key,
+            {
+                "image_key": image_key,
+                "image_path": str(item.get("image_path") or ""),
+                "plate": str(item["plate"]),
+                "well": str(item["well"]),
+                "plate_format_id": str(item.get("plate_format_id") or ""),
+                "plate_format_version": int(item.get("plate_format_version") or 1),
+                "targets": [],
+            },
+        )
+        entry["targets"].extend(targets)
+
+    selection_id = str(uuid5(NAMESPACE_URL, f"xtalflow:{plan_id}:selection"))
+    wells: list[SelectedWell] = []
+    for well_order, entry in enumerate(grouped.values(), start=1):
+        well_id = str(uuid5(NAMESPACE_URL, f"xtalflow:{plan_id}:well:{entry['image_key']}"))
+        positions = tuple(
+            SoakingPosition(
+                str(uuid5(
+                    NAMESPACE_URL,
+                    f"xtalflow:{plan_id}:position:{target['id']}:{position_order}",
+                )),
+                well_id,
+                str(target["id"]),
+                position_order,
+                Decimal(str(target["x_mm"])),
+                Decimal(str(target["y_mm"])),
+                datetime.fromisoformat(str(target["selected_at"])),
+            )
+            for position_order, target in enumerate(entry["targets"], start=1)
+        )
+        if not positions:
+            raise ValueError(f"{entry['image_key']} contains no soaking positions")
+        wells.append(
+            SelectedWell(
+                id=well_id,
+                crystal_selection_id=selection_id,
+                image_key=entry["image_key"],
+                plate_code=entry["plate"],
+                well_address=entry["well"],
+                selection_order=well_order,
+                selected_at=min(position.selected_at for position in positions),
+                soaking_positions=positions,
+                image_path=entry["image_path"],
+                plate_format_id=entry["plate_format_id"],
+                plate_format_version=entry["plate_format_version"],
+            )
+        )
+    first_selected = min(well.selected_at for well in wells)
+    return CrystalSelection(
+        selection_id, plan_id, tuple(wells),
+        created_at or first_selected, updated_at or created_at or first_selected,
+    )
+
+
+def plan_from_snapshot(plan_id: str, snapshot_json: str) -> Plan:
+    """The exact plan a revision fixed, independent of editors and current rules.
+
+    Worksheets and MxLive records are built from this, so a revision finalized
+    under earlier volume rules is delivered exactly as it was finalized.
+    """
+    payload = json.loads(snapshot_json)
+    if not isinstance(payload, dict):
+        raise ValueError("snapshot root must be an object")
+    selection = selection_from_snapshot(plan_id, payload)
+    wells = {well.image_key: well for well in selection.wells}
+    order = AssignmentOrder(payload["assignment_order"])
+    if PlanType(payload["plan_type"]) is PlanType.RAW_CRYSTAL:
+        consumed: dict[str, int] = {}
+        selections = []
+        for item in payload["selections"]:
+            well = wells[str(item["image_key"])]
+            index = consumed.get(well.image_key, 0)
+            consumed[well.image_key] = index + 1
+            selections.append(RawCrystalSelection(well, well.soaking_positions[index]))
+        return RawCrystalPlan(tuple(selections), order)
+    assignments = []
+    fragments = []
+    for item in payload["assignments"]:
+        well = wells[str(item["image_key"])]
+        data = item["fragment"]
+        fragment = Fragment(
+            data["vendor"], data["library"], data["number"], data["compound_id"],
+            data["formula"], Decimal(data["molecular_weight"]), data["smiles"],
+            Decimal(data["concentration_mm"]), data["solvent"],
+            data["source_plate"], data["source_well"],
+        )
+        fragments.append(fragment)
+        transfers = tuple(
+            FragmentTransfer(position, Decimal(str(target["volume_nl"])))
+            for position, target in zip(well.soaking_positions, item["targets"])
+        )
+        assignments.append(FragmentAssignment(well, fragment, transfers))
+    return FragmentScreenPlan(
+        selection,
+        FragmentLibrary(str(payload["library_name"]), tuple(fragments)),
+        tuple(assignments),
+        Decimal(str(payload["volume_per_crystal_nl"])),
+        order,
+    )
 
 
 def saved_plan_status(

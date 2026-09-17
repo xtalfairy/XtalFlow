@@ -127,3 +127,71 @@ def test_selection_snapshot_is_stored_as_experiment_project(tmp_path: Path) -> N
     assert stored.plan.plan_type is PlanType.FRAGMENT_SCREENING
     assert stored.crystal_selection.wells[0].image_key == "image"
     store.close()
+
+
+def test_revision_snapshot_rebuilds_the_exact_plan_for_delivery() -> None:
+    from xtalflow.application.planning_service import plan_from_snapshot
+    from xtalflow.domain.worksheets import build_echo_worksheet, build_shifter_worksheet
+
+    fragments = tuple(
+        Fragment(
+            "Vendor", "Library", str(number), f"CMP-{number}", "C2H6O",
+            Decimal("46.07"), "CCO", Decimal("100"), "DMSO", "SRC-1", f"A0{number}",
+        )
+        for number in (1, 2)
+    )
+    crystals = (
+        SelectedCrystal(
+            "image-2", "1070", "B01d",
+            (CrystalTarget("t2", Decimal("0.2"), Decimal("0"), NOW),
+             CrystalTarget("t3", Decimal("-0.1"), Decimal("0.3"), NOW.replace(second=5))),
+            SWISSCI_MIDI_3_LENS.id, "/rmserver/b.jpg",
+        ),
+        *_crystals(),
+    )
+    plan = build_fragment_screen_plan(
+        FragmentLibrary("Library", fragments), crystals, Decimal("25")
+    )
+    snapshot = fragment_plan_snapshot(plan, "BRD4", "/chems/library.csv", "1-2")
+
+    rebuilt = plan_from_snapshot("plan", snapshot)
+
+    assert build_echo_worksheet(rebuilt) == build_echo_worksheet(plan)
+    assert build_shifter_worksheet(rebuilt) == build_shifter_worksheet(plan)
+    assert fragment_plan_snapshot(rebuilt, "BRD4", "/chems/library.csv", "1-2") == snapshot
+
+    raw_plan = build_raw_crystal_plan(crystals)
+    raw_snapshot = raw_crystal_plan_snapshot(raw_plan, "BRD4")
+    assert build_shifter_worksheet(plan_from_snapshot("raw", raw_snapshot)) == (
+        build_shifter_worksheet(raw_plan)
+    )
+
+
+def test_revision_finalized_with_unequal_volumes_is_still_delivered_as_fixed() -> None:
+    from xtalflow.application.planning_service import plan_from_snapshot
+    from xtalflow.domain.worksheets import build_echo_worksheet
+
+    target = lambda target_id, volume: {  # noqa: E731 - compact snapshot fixture
+        "id": target_id, "x_mm": "0.1", "y_mm": "0", "selected_at": NOW.isoformat(),
+        "volume_nl": volume,
+    }
+    snapshot = json.dumps({
+        "schema": 1, "plan_type": "fragment_screening", "protein": "BRD4",
+        "library_name": "Library", "library_id": None, "library_rows": "1",
+        "volume_per_crystal_nl": "20", "assignment_order": "selection",
+        "assignments": [{
+            "image_key": "image", "image_path": "", "plate": "1070", "well": "A01a",
+            "plate_format_id": SWISSCI_MIDI_3_LENS.id,
+            "fragment": {
+                "vendor": "V", "library": "L", "number": "1", "compound_id": "CMP-1",
+                "formula": "C", "molecular_weight": "46.07", "smiles": "CCO",
+                "concentration_mm": "100", "solvent": "DMSO",
+                "source_plate": "SRC-1", "source_well": "A01",
+            },
+            "targets": [target("t1", "5.0"), target("t2", "5.0"), target("t3", "10.0")],
+        }],
+    })
+
+    rows = build_echo_worksheet(plan_from_snapshot("legacy", snapshot))
+
+    assert [str(row.transfer_volume_nl) for row in rows] == ["5.0", "5.0", "10.0"]

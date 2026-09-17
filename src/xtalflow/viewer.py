@@ -2169,11 +2169,7 @@ class ViewerWindow(QMainWindow):
             WorkspaceEntry(project.id, project.name, project.is_hidden)
             for project in self.project_controller.projects
         )
-        target = self._target_workspace()
-        self.workspace_sidebar.show_workspaces(
-            entries, self._home_workspace_id,
-            target.name if target is not None else "", counts,
-        )
+        self.workspace_sidebar.show_workspaces(entries, self._home_workspace_id, counts)
         self.home_page.show_workspaces(entries, self._home_workspace_id)
         if self.current_editor is not None and self.pages.currentWidget() is self.experiment_page:
             self._refresh_experiment_status(self.current_editor)

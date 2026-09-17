@@ -2189,7 +2189,6 @@ def test_workspace_panel_creates_filters_renames_and_hides_workspaces(
     window.rename_workspace(second_id, "CypA campaign")
     assert home.title_label.text() == "CypA campaign"
     assert home.recent_empty_label.text() == "No experiments in this workspace yet."
-    assert sidebar.new_target_label.text() == "in CypA campaign"
 
     second = window.start_experiment(PlanType.RAW_CRYSTAL, "CypA harvest")
     second.protein_input.setText("CypA")

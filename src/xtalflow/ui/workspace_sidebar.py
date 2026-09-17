@@ -32,7 +32,6 @@ from xtalflow.ui.home_page import (
 SIDEBAR_STYLE = f"""
 QWidget#WorkspaceSidebar {{ background: {theme.SIDEBAR}; border-right: 1px solid {theme.BORDER}; }}
 QLabel#SidebarTitle {{ color: {theme.TEXT_MUTED}; font-weight: 600; }}
-QLabel#SidebarMuted {{ color: {theme.TEXT_MUTED}; }}
 QPushButton#NewExperiment {{ background: transparent; border: none; border-radius: 8px;
     text-align: left; padding: 7px 10px; color: {theme.TEXT}; font-weight: 500; }}
 QPushButton#NewExperiment:hover {{ background: {theme.SUBTLE}; }}
@@ -112,9 +111,6 @@ class WorkspaceSidebar(QWidget):
             button = self._new_experiment_button(choice)
             self.start_buttons[choice.plan_type] = button
             new_buttons.addWidget(button)
-        self.new_target_label = QLabel()
-        self.new_target_label.setObjectName("SidebarMuted")
-        self.new_target_label.setContentsMargins(10, 0, 0, 0)
         divider = QFrame()
         divider.setObjectName("SidebarDivider")
         divider.setFixedHeight(1)
@@ -152,7 +148,6 @@ class WorkspaceSidebar(QWidget):
         layout.addLayout(top)
         layout.addSpacing(theme.SPACING_L)
         layout.addLayout(new_buttons)
-        layout.addWidget(self.new_target_label)
         layout.addSpacing(theme.SPACING_L)
         layout.addWidget(divider)
         layout.addSpacing(theme.SPACING_L)
@@ -174,7 +169,7 @@ class WorkspaceSidebar(QWidget):
         )
         self.hidden_list.customContextMenuRequested.connect(self._show_hidden_menu)
         self._counts: dict[str | None, int] = {}
-        self.show_workspaces((), None, "", {})
+        self.show_workspaces((), None, {})
 
     def _new_experiment_button(self, choice: ExperimentChoice) -> QPushButton:
         button = QPushButton(choice.title)
@@ -194,17 +189,14 @@ class WorkspaceSidebar(QWidget):
         self,
         workspaces: tuple[WorkspaceEntry, ...],
         selected_id: str | None,
-        target_name: str,
         counts: dict[str | None, int],
     ) -> None:
-        """Folders, the highlighted one (None for all), where new work goes, and counts.
+        """Folders, the highlighted one (None for all), and experiment counts.
 
         ``counts`` maps workspace ids to experiment counts; the None key is the total.
         """
         self._workspaces = workspaces
         self._selected_workspace_id = selected_id
-        self.new_target_label.setText(f"in {target_name}" if target_name else "")
-        self.new_target_label.setToolTip(f"New experiments are created in {target_name}")
         self._refresh(counts)
 
     def edit_workspace_name(self, workspace_id: str | None) -> None:

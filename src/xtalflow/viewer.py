@@ -26,11 +26,11 @@ from PyQt5.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QComboBox,
-    QCheckBox,
     QCompleter,
     QDockWidget,
     QDialog,
     QFileDialog,
+    QFrame,
     QHeaderView,
     QHBoxLayout,
     QInputDialog,
@@ -49,6 +49,7 @@ from PyQt5.QtWidgets import (
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -119,7 +120,6 @@ from xtalflow.infrastructure import (
     OpenCVWellDetector,
     RockMakerImageRepository,
     SQLiteReviewStore,
-    latest_image_source,
 )
 from xtalflow.infrastructure.mxlive_client import labworks_endpoint
 from xtalflow.infrastructure.fragment_library_csv import (
@@ -149,7 +149,10 @@ from xtalflow.ui.review_widgets import (
     ImageSetListView,
 )
 from xtalflow.ui.plan_editors import FragmentScreeningEditor, RawCrystalEditor
-from xtalflow.ui.plate_source_dialog import PlateSourceDialog
+from xtalflow.ui import theme
+from xtalflow.ui.calibration_inspector import CalibrationInspector, calibration_status
+from xtalflow.ui.load_plates_dialog import LoadPlatesDialog, PlateSource
+from xtalflow.ui.plate_list import PlateCardDelegate
 
 
 # Image sets live on the RockMaker SMB share. A dropped share raises plain OSError
@@ -208,7 +211,6 @@ class ViewerWindow(QMainWindow):
         self.calibration_service: WellCalibrationService | None = None
         self.current_calibration: ImageCalibration | None = None
         self._manual_calibration_points: list[tuple[float, float]] | None = None
-        self._target_summary_window_expansion = 0
         self._planning_project_id: str | None = None
         self.error_log_path: Path | None = None
         self._mxlive_experiment_ids: set[str] = set()
@@ -216,46 +218,111 @@ class ViewerWindow(QMainWindow):
         self._planning_drafts: dict[
             str, list[tuple[str, FragmentScreeningEditor]]
         ] = {}
-        self.setWindowTitle("XtalFlow Viewer")
-        self.resize(1100, 850)
+        self.setStyleSheet(theme.APPLICATION_STYLE_SHEET)
+        self.setWindowTitle("XtalFlow")
+        self.resize(1440, 900)
+        self.setMinimumSize(1100, 700)
 
+        self._build_workspace_bar()
+        review_tab = self._build_image_review_tab()
+        planning_tab = self._build_planning_tab()
+
+        self.main_tabs = QTabWidget()
+        self.main_tabs.setDocumentMode(True)
+        self.image_review_tab_index = self.main_tabs.addTab(review_tab, "Image Review")
+        self.planning_tab_index = self.main_tabs.addTab(planning_tab, "Planning")
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(theme.SPACING_L, theme.SPACING_M, theme.SPACING_L, 0)
+        layout.setSpacing(theme.SPACING_M)
+        layout.addLayout(self.workspace_bar)
+        layout.addWidget(self.main_tabs, 1)
+        container = QWidget()
+        container.setLayout(layout)
+        self.setCentralWidget(container)
+
+        self._build_target_summary_dock()
+        self._build_status_bar()
+        self._connect_signals()
+        self._update_navigation()
+        self._initialize_projects()
+        self._show_planning_migration_status()
+
+    # -- Layout -----------------------------------------------------------------
+
+    def _build_workspace_bar(self) -> None:
         self.project_selector = QComboBox()
-        self.new_project_button = QPushButton("New Workspace")
-        self.rename_project_button = QPushButton("Rename")
-        self.plate_input = QLineEdit()
-        self.plate_input.setPlaceholderText("Plate codes (e.g. 1070, 1100, 2070)")
-        self.plate_format_input = QComboBox()
-        self.plate_format_input.setSizeAdjustPolicy(
-            QComboBox.AdjustToMinimumContentsLengthWithIcon
+        self.project_selector.setMinimumContentsLength(24)
+        self.project_selector.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.project_selector.setAccessibleName("Workspace")
+        self.workspace_menu_button = QToolButton()
+        self.workspace_menu_button.setText("⋯")
+        self.workspace_menu_button.setToolTip("Workspace actions")
+        self.workspace_menu_button.setAccessibleName("Workspace actions")
+        self.workspace_menu_button.setPopupMode(QToolButton.InstantPopup)
+        workspace_menu = QMenu(self.workspace_menu_button)
+        self.new_workspace_action = workspace_menu.addAction("New Workspace…")
+        self.rename_workspace_action = workspace_menu.addAction("Rename Workspace…")
+        self.workspace_menu_button.setMenu(workspace_menu)
+        self.workspace_bar = QHBoxLayout()
+        self.workspace_bar.setSpacing(theme.SPACING_M)
+        workspace_label = QLabel("Workspace")
+        workspace_label.setObjectName("Muted")
+        self.workspace_bar.addWidget(workspace_label)
+        self.workspace_bar.addWidget(self.project_selector)
+        self.workspace_bar.addWidget(self.workspace_menu_button)
+        self.workspace_bar.addStretch()
+
+    def _build_image_review_tab(self) -> QWidget:
+        # Plates: loaded a few times per session, so they sit to the side.
+        plates_title = QLabel("PLATES")
+        plates_title.setObjectName("SectionTitle")
+        self.add_plates_button = QToolButton()
+        self.add_plates_button.setText("+")
+        self.add_plates_button.setToolTip("Load Plates…")
+        self.add_plates_button.setAccessibleName("Load plates")
+        self.plate_filter_input = QLineEdit()
+        self.plate_filter_input.setPlaceholderText("Find plate…")
+        self.plate_filter_input.setClearButtonEnabled(True)
+        self.image_set_list = ImageSetListView()
+        self.image_set_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.image_set_model = ProjectImageSetListModel(self._target_count_for_image_set)
+        self.image_set_list.setModel(self.image_set_model)
+        self.image_set_list.setItemDelegate(PlateCardDelegate(self.image_set_list))
+        self.image_set_list.setToolTip(
+            "Click to open · ↑/↓ switch plates · right-click to reorder, "
+            "change format, or remove"
         )
-        self.plate_format_input.setMinimumContentsLength(12)
-        self.plate_format_input.addItem("Select plate format…", None)
-        for plate_format in PLATE_FORMATS:
-            self.plate_format_input.addItem(plate_format.display_name, plate_format)
-        self.load_button = QPushButton("Load")
-        self.previous_button = QPushButton("◀")
-        self.previous_button.setFixedWidth(36)
-        self.previous_button.setToolTip("Previous image (Left Arrow)")
-        self.previous_button.setAccessibleName("Previous image")
-        self.next_button = QPushButton("▶")
-        self.next_button.setFixedWidth(36)
-        self.next_button.setToolTip("Next image (Right Arrow)")
-        self.next_button.setAccessibleName("Next image")
-        self.zoom_label = QLabel("100%")
-        self.zoom_label.setMinimumWidth(48)
-        self.zoom_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.fit_button = QPushButton("Fit")
-        self.fit_button.setToolTip("Fit image to window (0)")
+        plates_header = QHBoxLayout()
+        plates_header.addWidget(plates_title)
+        plates_header.addStretch()
+        plates_header.addWidget(self.add_plates_button)
+        plates_layout = QVBoxLayout()
+        plates_layout.setContentsMargins(0, 0, 0, 0)
+        plates_layout.addLayout(plates_header)
+        plates_layout.addWidget(self.plate_filter_input)
+        plates_layout.addWidget(self.image_set_list, 1)
+        plates_panel = QWidget()
+        plates_panel.setMinimumWidth(200)
+        plates_panel.setLayout(plates_layout)
+
+        # Navigation above the image: repeated hundreds of times per session.
+        self.navigation_label = QLabel("No image set loaded")
+        self.navigation_label.setObjectName("PrimaryHeading")
+        self.position_label = QLabel()
+        self.position_label.setObjectName("Muted")
         self.image_filter_input = QComboBox()
         self.image_filter_input.addItem("All images", ImageFilter.ALL)
         self.image_filter_input.addItem("With targets", ImageFilter.WITH_TARGETS)
         self.image_filter_input.addItem("Reviewed, no targets", ImageFilter.WITHOUT_TARGETS)
         self.image_filter_input.addItem("Unreviewed", ImageFilter.UNREVIEWED)
+        self.image_filter_input.setAccessibleName("Image filter")
         self.well_input = QLineEdit()
-        self.well_input.setMinimumWidth(90)
+        self.well_input.setMaximumWidth(90)
         self.well_input.setPlaceholderText("A01a")
+        self.well_input.setAccessibleName("Well address")
         self.well_input.setToolTip(
-            "Enter a visible subwell address and press Enter. Esc restores the current address."
+            "Enter a subwell address and press Enter · Esc restores the current well"
         )
         self.well_completion_model = QStringListModel(self)
         self.well_completer = QCompleter(self.well_completion_model, self)
@@ -268,132 +335,152 @@ class ViewerWindow(QMainWindow):
         self._well_destinations: dict[str, tuple[str, int]] = {}
         self._current_well_address = ""
         self._refreshing_target_summary = False
+        self.previous_button = QPushButton("◀")
+        self.previous_button.setFixedWidth(36)
+        self.previous_button.setToolTip("Previous image (←)")
+        self.previous_button.setAccessibleName("Previous image")
+        self.next_button = QPushButton("▶")
+        self.next_button.setFixedWidth(36)
+        self.next_button.setToolTip("Next image (→)")
+        self.next_button.setAccessibleName("Next image")
+        navigation = QHBoxLayout()
+        navigation.setSpacing(theme.SPACING_M)
+        navigation.addWidget(self.navigation_label)
+        navigation.addWidget(self.position_label)
+        navigation.addStretch()
+        navigation.addWidget(self.image_filter_input)
+        well_label = QLabel("Well")
+        well_label.setObjectName("Muted")
+        navigation.addWidget(well_label)
+        navigation.addWidget(self.well_input)
+        navigation.addWidget(self.previous_button)
+        navigation.addWidget(self.next_button)
+
+        self.image_canvas = ImageCanvas()
+        self.empty_state = QWidget()
+        empty_title = QLabel("No plates loaded")
+        empty_title.setObjectName("PrimaryHeading")
+        empty_hint = QLabel("Load crystallization images to begin.")
+        empty_hint.setObjectName("Muted")
+        self.empty_load_plates_button = QPushButton("Load Plates…")
+        self.empty_load_plates_button.setObjectName("Primary")
+        empty_layout = QVBoxLayout()
+        empty_layout.addStretch()
+        for widget in (empty_title, empty_hint, self.empty_load_plates_button):
+            empty_layout.addWidget(widget, 0, Qt.AlignHCenter)
+        empty_layout.addStretch()
+        self.empty_state.setLayout(empty_layout)
+        self.image_stack = QStackedWidget()
+        self.image_stack.addWidget(self.empty_state)
+        self.image_stack.addWidget(self.image_canvas)
+
+        # Below the image: display and well-boundary adjustments.
+        self.zoom_out_button = QToolButton()
+        self.zoom_out_button.setText("−")
+        self.zoom_out_button.setToolTip("Zoom out (−)")
+        self.zoom_label = QLabel("100%")
+        self.zoom_label.setMinimumWidth(44)
+        self.zoom_label.setAlignment(Qt.AlignCenter)
+        self.zoom_in_button = QToolButton()
+        self.zoom_in_button.setText("+")
+        self.zoom_in_button.setToolTip("Zoom in (+)")
+        self.fit_button = QPushButton("Fit")
+        self.fit_button.setToolTip("Fit image to window (0)")
+        self.calibration_label = QLabel("Well boundary: not loaded")
+        self.calibration_label.setAccessibleName("Well calibration status")
+        self.calibration_accept_inline_button = QPushButton("Accept")
+        self.calibration_accept_inline_button.setToolTip("Accept the detected well boundary")
+        self.calibration_accept_inline_button.hide()
+        self.calibration_adjust_button = QPushButton("Adjust…")
+        self.calibration_adjust_button.setToolTip("Well calibration details and actions")
+        self.calibration_inspector = CalibrationInspector(self)
+        self.auto_calibration_button = self.calibration_inspector.detect_button
+        self.manual_calibration_button = self.calibration_inspector.manual_button
+        self.accept_calibration_button = self.calibration_inspector.accept_button
+        self.auto_confirm_plate_checkbox = self.calibration_inspector.auto_accept_checkbox
+        self.auto_confirm_confidence_input = self.calibration_inspector.minimum_score_input
+        self.auto_confirm_confidence_input.setValue(
+            self.user_preferences.auto_confirm_confidence_percent
+        )
+        self.auto_confirm_confidence_input.setToolTip(
+            f"Saved per user in {self.preferences_store.path}"
+        )
+        display_row = QHBoxLayout()
+        display_row.setSpacing(theme.SPACING_S)
+        display_row.addWidget(self.zoom_out_button)
+        display_row.addWidget(self.zoom_label)
+        display_row.addWidget(self.zoom_in_button)
+        display_row.addWidget(self.fit_button)
+        display_row.addStretch()
+        display_row.addWidget(self.calibration_label)
+        display_row.addWidget(self.calibration_accept_inline_button)
+        display_row.addWidget(self.calibration_adjust_button)
+
         self.auto_advance_input = QSpinBox()
         self.auto_advance_input.setRange(1, 100)
         self.auto_advance_input.setValue(self._global_auto_advance_target_count)
         self.auto_advance_input.setPrefix("Targets/img: ")
         self.auto_advance_input.setToolTip(
-            "Automatically move to the next image after selecting this many targets. "
-            "This is not a required target count."
+            "Move to the next image after this many positions. You can always move "
+            "on with fewer; this is not a required count."
         )
-        self.image_canvas = ImageCanvas()
-        self.navigation_label = QLabel("No plate loaded")
         self.review_summary_label = QLabel(
-            "Click image to focus · Left add · Right remove · ←/→ navigate"
+            "Left-click adds a soaking position · right-click removes · ←/→ images"
         )
-        self.save_status_label = QLabel("Not loaded")
-        self.image_set_list = ImageSetListView()
-        self.image_set_list.setMinimumWidth(220)
-        self.image_set_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.image_set_model = ProjectImageSetListModel(self._target_count_for_image_set)
-        self.image_set_list.setModel(self.image_set_model)
-        self.move_image_set_up_button = QPushButton("Up")
-        self.move_image_set_down_button = QPushButton("Down")
-        self.archive_image_set_button = QPushButton("Remove")
-        self.restore_image_set_button = QPushButton("Restore")
-        self.project_progress_label = QLabel("Workspace: no images")
-        self.target_summary_button = QPushButton("View Target Summary")
-        self.calibration_label = QLabel("Well calibration: not loaded")
-        self.auto_calibration_button = QPushButton("Auto Well")
-        self.accept_calibration_button = QPushButton("Accept Well")
-        self.accept_calibration_button.setEnabled(False)
-        self.manual_calibration_button = QPushButton("Set Well (3 points)")
-        self.auto_confirm_plate_checkbox = QCheckBox("Auto-confirm this plate")
-        self.auto_confirm_plate_checkbox.setToolTip(
-            "Automatically confirm detected wells on this plate when confidence "
-            "meets the selected threshold. Plate trust lasts for this session."
-        )
-        self.auto_confirm_confidence_input = QSpinBox()
-        self.auto_confirm_confidence_input.setRange(0, 100)
-        # Lowering the threshold confirms calibrations permanently, so apply only
-        # the finished value rather than intermediate digits such as 8 of 85.
-        self.auto_confirm_confidence_input.setKeyboardTracking(False)
-        self.auto_confirm_confidence_input.setValue(
-            self.user_preferences.auto_confirm_confidence_percent
-        )
-        self.auto_confirm_confidence_input.setPrefix("≥ ")
-        self.auto_confirm_confidence_input.setSuffix("%")
-        self.auto_confirm_confidence_input.setToolTip(
-            f"Saved per user in {self.preferences_store.path}"
-        )
-        self.status_message_label = StatusMessageLabel()
-        self.image_path_status = ImagePathStatusLabel()
-
-        project_controls = QHBoxLayout()
-        project_controls.addWidget(QLabel("Workspace:"))
-        project_controls.addWidget(self.project_selector, 1)
-        project_controls.addWidget(self.new_project_button)
-        project_controls.addWidget(self.rename_project_button)
-
-        controls = QHBoxLayout()
-        controls.setSpacing(12)
-        controls.addWidget(self.auto_advance_input)
-        controls.addWidget(self.image_filter_input)
-        controls.addStretch()
-        navigation_controls = QHBoxLayout()
-        navigation_controls.setSpacing(6)
-        navigation_controls.addWidget(QLabel("Well:"))
-        navigation_controls.addWidget(self.well_input)
-        navigation_controls.addWidget(self.previous_button)
-        navigation_controls.addWidget(self.next_button)
-        controls.addLayout(navigation_controls)
+        self.review_summary_label.setObjectName("Muted")
+        targets_row = QHBoxLayout()
+        targets_row.addWidget(self.auto_advance_input)
+        targets_row.addWidget(self.review_summary_label, 1)
 
         viewer_layout = QVBoxLayout()
-        viewer_layout.addLayout(controls)
-        viewer_layout.addWidget(self.image_canvas, 1)
-        image_info_controls = QHBoxLayout()
-        image_info_controls.addWidget(self.navigation_label, 1)
-        image_info_controls.addWidget(self.zoom_label)
-        image_info_controls.addWidget(self.fit_button)
-        viewer_layout.addLayout(image_info_controls)
-        viewer_layout.addWidget(self.review_summary_label)
-        viewer_layout.addWidget(self.calibration_label)
-        calibration_actions = QHBoxLayout()
-        calibration_actions.addWidget(self.auto_confirm_plate_checkbox)
-        calibration_actions.addWidget(self.auto_confirm_confidence_input)
-        calibration_actions.addStretch()
-        calibration_actions.addWidget(self.auto_calibration_button)
-        calibration_actions.addWidget(self.accept_calibration_button)
-        calibration_actions.addWidget(self.manual_calibration_button)
-        viewer_layout.addLayout(calibration_actions)
+        viewer_layout.setContentsMargins(0, 0, 0, 0)
+        viewer_layout.setSpacing(theme.SPACING_M)
+        viewer_layout.addLayout(navigation)
+        viewer_layout.addWidget(self.image_stack, 1)
+        viewer_layout.addLayout(display_row)
+        viewer_layout.addLayout(targets_row)
         viewer_panel = QWidget()
         viewer_panel.setLayout(viewer_layout)
 
-        sidebar_layout = QVBoxLayout()
-        plate_type_row = QHBoxLayout()
-        plate_type_row.addWidget(QLabel("Plate type"))
-        plate_type_row.addWidget(self.plate_format_input, 1)
-        sidebar_layout.addLayout(plate_type_row)
-        plate_load_row = QHBoxLayout()
-        plate_load_row.addWidget(QLabel("Plate codes"))
-        plate_load_row.addWidget(self.plate_input, 1)
-        plate_load_row.addWidget(self.load_button)
-        sidebar_layout.addLayout(plate_load_row)
-        sidebar_layout.addWidget(self.target_summary_button)
-        sidebar_layout.addWidget(self.image_set_list, 1)
-        sidebar_layout.addWidget(self.project_progress_label)
-        image_set_actions = QHBoxLayout()
-        image_set_actions.addWidget(self.move_image_set_up_button)
-        image_set_actions.addWidget(self.move_image_set_down_button)
-        image_set_actions.addWidget(self.archive_image_set_button)
-        image_set_actions.addWidget(self.restore_image_set_button)
-        sidebar_layout.addLayout(image_set_actions)
-        sidebar = QWidget()
-        sidebar.setMinimumWidth(230)
-        sidebar.setLayout(sidebar_layout)
+        self.review_splitter = QSplitter(Qt.Horizontal)
+        self.review_splitter.addWidget(plates_panel)
+        self.review_splitter.addWidget(viewer_panel)
+        self.review_splitter.setCollapsible(0, True)
+        self.review_splitter.setCollapsible(1, False)
+        self.review_splitter.setStretchFactor(1, 1)
+        self.review_splitter.setSizes([240, 1100])
 
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(sidebar)
-        splitter.addWidget(viewer_panel)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([250, 850])
+        # Selection bar: connects the review result to Planning.
+        self.selection_label = QLabel("Selection: no wells")
+        self.selection_label.setObjectName("PrimaryHeading")
+        self.project_progress_label = QLabel("Workspace: no images")
+        self.project_progress_label.setObjectName("Muted")
+        self.target_summary_button = QPushButton("Target Summary")
+        self.target_summary_button.setCheckable(True)
+        self.target_summary_button.setToolTip("Show or hide the selection table (Ctrl+Shift+T)")
+        self.new_project_from_selection_button = QPushButton("New Project…")
+        self.new_project_from_selection_button.setObjectName("Primary")
+        selection_layout = QHBoxLayout()
+        selection_layout.setContentsMargins(theme.SPACING_L, theme.SPACING_S, theme.SPACING_S, theme.SPACING_S)
+        selection_layout.addWidget(self.selection_label)
+        selection_layout.addWidget(self.project_progress_label)
+        selection_layout.addStretch()
+        selection_layout.addWidget(self.target_summary_button)
+        selection_layout.addWidget(self.new_project_from_selection_button)
+        self.selection_bar = QFrame()
+        self.selection_bar.setObjectName("SelectionBar")
+        self.selection_bar.setLayout(selection_layout)
 
+        review_layout = QVBoxLayout()
+        review_layout.setContentsMargins(0, theme.SPACING_M, 0, theme.SPACING_M)
+        review_layout.setSpacing(theme.SPACING_M)
+        review_layout.addWidget(self.review_splitter, 1)
+        review_layout.addWidget(self.selection_bar)
         review_tab = QWidget()
-        review_tab_layout = QVBoxLayout()
-        review_tab_layout.setContentsMargins(0, 0, 0, 0)
-        review_tab_layout.addWidget(splitter)
-        review_tab.setLayout(review_tab_layout)
+        review_tab.setLayout(review_layout)
+        return review_tab
 
+    def _build_planning_tab(self) -> QWidget:
         self.plan_list = QListWidget()
         self.plan_list.setMinimumWidth(210)
         self.plan_list.setToolTip(
@@ -405,7 +492,7 @@ class ViewerWindow(QMainWindow):
             "No experiment projects yet.\nCreate one from the current selection."
         )
         self.plan_list_empty_label.setAlignment(Qt.AlignCenter)
-        self.plan_list_empty_label.setStyleSheet("color: #666")
+        self.plan_list_empty_label.setObjectName("Muted")
         plan_sidebar_layout = QVBoxLayout()
         plan_sidebar_layout.addWidget(QLabel("Experiment Projects"))
         plan_sidebar_layout.addWidget(self.new_plan_button)
@@ -430,32 +517,12 @@ class ViewerWindow(QMainWindow):
         planning_tab_layout.setContentsMargins(0, 0, 0, 0)
         planning_tab_layout.addWidget(planning_splitter)
         planning_tab.setLayout(planning_tab_layout)
+        return planning_tab
 
-        self.main_tabs = QTabWidget()
-        self.image_review_tab_index = self.main_tabs.addTab(
-            review_tab, "Image Review"
-        )
-        self.planning_tab_index = self.main_tabs.addTab(planning_tab, "Planning")
-
-        layout = QVBoxLayout()
-        layout.addLayout(project_controls)
-        layout.addWidget(self.main_tabs, 1)
-
-        container = QWidget()
-        container.setLayout(layout)
-        self.setCentralWidget(container)
-
+    def _build_target_summary_dock(self) -> None:
         self.target_summary_table = QTableWidget(0, 7)
         self.target_summary_table.setHorizontalHeaderLabels(
-            (
-                "Plate",
-                "Well",
-                "Target",
-                "X (mm)",
-                "Y (mm)",
-                "Calibration",
-                "Status",
-            )
+            ("Plate", "Well", "Target", "X (mm)", "Y (mm)", "Calibration", "Status")
         )
         self.target_summary_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.target_summary_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -474,9 +541,7 @@ class ViewerWindow(QMainWindow):
         target_summary_controls.addWidget(self.target_summary_status_label, 1)
         target_summary_controls.addWidget(self.target_summary_filter)
         self.remove_targets_button = QPushButton("Remove Selected")
-        self.accept_valid_auto_wells_button = QPushButton(
-            "Accept Valid Auto Wells"
-        )
+        self.accept_valid_auto_wells_button = QPushButton("Accept Valid Auto Wells")
         target_summary_layout = QVBoxLayout()
         target_summary_layout.setContentsMargins(0, 0, 0, 0)
         target_summary_layout.addLayout(target_summary_controls)
@@ -494,22 +559,29 @@ class ViewerWindow(QMainWindow):
         self.view_menu = self.menuBar().addMenu("View")
         self.target_summary_action = self.target_summary_dock.toggleViewAction()
         self.target_summary_action.setText("Target Summary")
+        self.target_summary_action.setShortcut(QKeySequence("Ctrl+Shift+T"))
         self.view_menu.addAction(self.target_summary_action)
 
+    def _build_status_bar(self) -> None:
+        self.status_message_label = StatusMessageLabel()
+        self.save_status_label = QLabel("Not loaded")
+        self.image_path_status = ImagePathStatusLabel()
+        self.statusBar().addWidget(self.save_status_label)
         self.statusBar().addWidget(self.status_message_label)
-        self.statusBar().addPermanentWidget(self.save_status_label)
         self.statusBar().addPermanentWidget(self.image_path_status, 1)
         self.statusBar().show()
 
-        self.load_button.clicked.connect(self.load_entered_plate)
-        self.target_summary_button.clicked.connect(self.target_summary_dock.show)
+    def _connect_signals(self) -> None:
+        self.add_plates_button.clicked.connect(self.open_load_plates_dialog)
+        self.empty_load_plates_button.clicked.connect(self.open_load_plates_dialog)
+        self.plate_filter_input.textChanged.connect(self._filter_plate_list)
+        self.target_summary_button.toggled.connect(self.target_summary_dock.setVisible)
+        self.new_project_from_selection_button.clicked.connect(
+            self._show_new_project_menu_from_selection
+        )
         self.new_plan_button.clicked.connect(self._show_new_plan_menu)
-        self.plan_list.currentRowChanged.connect(
-            self._planning_row_changed
-        )
-        self.plan_list.customContextMenuRequested.connect(
-            self._show_plan_context_menu
-        )
+        self.plan_list.currentRowChanged.connect(self._planning_row_changed)
+        self.plan_list.customContextMenuRequested.connect(self._show_plan_context_menu)
         self.main_tabs.currentChanged.connect(self._main_tab_changed)
         self.target_summary_dock.visibilityChanged.connect(
             self._target_summary_visibility_changed
@@ -521,64 +593,40 @@ class ViewerWindow(QMainWindow):
             self._show_target_summary_context_menu
         )
         self.remove_targets_button.clicked.connect(self._remove_selected_targets)
-        self.accept_valid_auto_wells_button.clicked.connect(
-            self._accept_valid_auto_wells
-        )
-        self.target_summary_filter.currentIndexChanged.connect(
-            self._refresh_target_summary
-        )
-        self._delete_targets_shortcut = QShortcut(
-            QKeySequence("Delete"), self.target_summary_table
-        )
-        self._delete_targets_shortcut.setContext(Qt.WidgetShortcut)
-        self._delete_targets_shortcut.activated.connect(self._remove_selected_targets)
-        self._backspace_targets_shortcut = QShortcut(
-            QKeySequence("Backspace"), self.target_summary_table
-        )
-        self._backspace_targets_shortcut.setContext(Qt.WidgetShortcut)
-        self._backspace_targets_shortcut.activated.connect(
-            self._remove_selected_targets
-        )
-        self.new_project_button.clicked.connect(self.create_project_interactively)
-        self.rename_project_button.clicked.connect(self.rename_project_interactively)
+        self.accept_valid_auto_wells_button.clicked.connect(self._accept_valid_auto_wells)
+        self.target_summary_filter.currentIndexChanged.connect(self._refresh_target_summary)
+        for key in ("Delete", "Backspace"):
+            shortcut = QShortcut(QKeySequence(key), self.target_summary_table)
+            shortcut.setContext(Qt.WidgetShortcut)
+            shortcut.activated.connect(self._remove_selected_targets)
+        self.new_workspace_action.triggered.connect(self.create_project_interactively)
+        self.rename_workspace_action.triggered.connect(self.rename_project_interactively)
         self.project_selector.currentIndexChanged.connect(self._project_selected)
         self.image_set_list.clicked.connect(self._image_set_selected)
         self.image_set_list.customContextMenuRequested.connect(
             self._show_image_set_context_menu
         )
-        self.move_image_set_up_button.clicked.connect(
-            lambda: self._move_selected_image_set(-1)
-        )
-        self.move_image_set_down_button.clicked.connect(
-            lambda: self._move_selected_image_set(1)
-        )
-        self.archive_image_set_button.clicked.connect(self._archive_selected_image_set)
-        self.restore_image_set_button.clicked.connect(self._restore_archived_image_set)
-        self.plate_input.returnPressed.connect(self.load_entered_plate)
         self.previous_button.clicked.connect(self.show_previous)
         self.next_button.clicked.connect(self.show_next)
         self.fit_button.clicked.connect(self.image_canvas.fit_image)
+        self.zoom_in_button.clicked.connect(self.image_canvas.zoom_in)
+        self.zoom_out_button.clicked.connect(self.image_canvas.zoom_out)
         self.image_canvas.zoom_changed.connect(self._update_zoom_label)
         self.image_canvas.image_clicked.connect(self._handle_image_click)
         self.image_canvas.previous_requested.connect(self.show_previous)
         self.image_canvas.next_requested.connect(self.show_next)
-        self.image_canvas.previous_plate_requested.connect(
-            lambda: self._switch_active_image_set(-1)
-        )
-        self.image_canvas.next_plate_requested.connect(
-            lambda: self._switch_active_image_set(1)
-        )
-        self.image_set_list.previous_plate_requested.connect(
-            lambda: self._switch_active_image_set(-1)
-        )
-        self.image_set_list.next_plate_requested.connect(
-            lambda: self._switch_active_image_set(1)
-        )
+        for source in (self.image_canvas, self.image_set_list):
+            source.previous_plate_requested.connect(
+                lambda: self._switch_active_image_set(-1)
+            )
+            source.next_plate_requested.connect(lambda: self._switch_active_image_set(1))
         self.auto_advance_input.valueChanged.connect(self._change_auto_advance_target_count)
-        self.auto_calibration_button.clicked.connect(self._auto_detect_calibration)
-        self.accept_calibration_button.clicked.connect(
+        self.calibration_adjust_button.clicked.connect(self._open_calibration_inspector)
+        self.calibration_accept_inline_button.clicked.connect(
             self._accept_current_calibration
         )
+        self.auto_calibration_button.clicked.connect(self._auto_detect_calibration)
+        self.accept_calibration_button.clicked.connect(self._accept_current_calibration)
         self.manual_calibration_button.clicked.connect(self._start_manual_calibration)
         self.auto_confirm_plate_checkbox.toggled.connect(
             self._toggle_auto_confirm_for_active_plate
@@ -589,9 +637,14 @@ class ViewerWindow(QMainWindow):
         self.image_filter_input.currentIndexChanged.connect(self._change_image_filter)
         self.well_input.returnPressed.connect(self._go_to_entered_well)
         self.well_input.editingFinished.connect(self._go_to_entered_well)
-        self._update_navigation()
-        self._initialize_projects()
-        self._show_planning_migration_status()
+        focus_well = QShortcut(QKeySequence("Ctrl+L"), self)
+        focus_well.activated.connect(self._focus_well_input)
+
+    def _focus_well_input(self) -> None:
+        self.main_tabs.setCurrentIndex(self.image_review_tab_index)
+        self.well_input.setFocus(Qt.ShortcutFocusReason)
+        self.well_input.selectAll()
+
 
     def _show_planning_migration_status(self) -> None:
         if self.review_store is None:
@@ -688,6 +741,10 @@ class ViewerWindow(QMainWindow):
                 return None
         return crystals
 
+    def _show_new_project_menu_from_selection(self) -> None:
+        self.main_tabs.setCurrentIndex(self.planning_tab_index)
+        self._show_new_plan_menu()
+
     def _show_new_plan_menu(self) -> None:
         menu = QMenu(self.new_plan_button)
         raw_action = menu.addAction("Raw Crystal Plan")
@@ -768,6 +825,7 @@ class ViewerWindow(QMainWindow):
         drafts.pop(row)
         self.plan_list.takeItem(row)
         self.plan_stack.removeWidget(editor)
+        self._update_planning_tab_title()
         editor.deleteLater()
         if self.plan_list.count() == 0:
             self.plan_list_empty_label.show()
@@ -928,6 +986,7 @@ class ViewerWindow(QMainWindow):
         self.plan_list.addItem(name)
         self.plan_list_empty_label.hide()
         self.plan_list.setCurrentRow(self.plan_list.count() - 1)
+        self._update_planning_tab_title()
         if restored is None:
             self.main_tabs.setCurrentIndex(self.planning_tab_index)
             self._save_selection_snapshot(editor, editor.selection)
@@ -1700,7 +1759,7 @@ class ViewerWindow(QMainWindow):
                 # Start without images so the user can retry or switch workspace.
                 unavailable = error
         else:
-            self.project_controller.create_project("Untitled Project")
+            self.project_controller.create_project("Untitled Workspace")
         self._adopt_active_review()
         self._sync_project_widgets()
         if unavailable is not None:
@@ -1714,40 +1773,12 @@ class ViewerWindow(QMainWindow):
         self.status_message_label.show_message(f"Images unavailable: {error}")
 
     def _target_summary_visibility_changed(self, visible: bool) -> None:
+        # The dock takes space from the image instead of resizing the window.
+        self.target_summary_button.blockSignals(True)
+        self.target_summary_button.setChecked(visible)
+        self.target_summary_button.blockSignals(False)
         if visible:
             self._refresh_target_summary()
-        if (
-            not self.isVisible()
-            or self.isMaximized()
-            or self.isFullScreen()
-            or self.target_summary_dock.isFloating()
-        ):
-            return
-        if visible and self._target_summary_window_expansion == 0:
-            self._target_summary_window_expansion = max(
-                self.target_summary_dock.width(),
-                self.target_summary_dock.sizeHint().width(),
-            )
-        elif not visible and self._target_summary_window_expansion:
-            contraction = self._target_summary_window_expansion
-            self._target_summary_window_expansion = 0
-            QTimer.singleShot(
-                0, lambda amount=contraction: self._shrink_after_summary_close(amount)
-            )
-
-    def _shrink_after_summary_close(self, contraction: int) -> None:
-        if (
-            not self.isVisible()
-            or self.target_summary_dock.isVisible()
-            or self.isMaximized()
-            or self.isFullScreen()
-        ):
-            return
-        target_width = max(
-            self.minimumWidth(),
-            self.width() - contraction,
-        )
-        self.resize(target_width, self.height())
 
     def create_project_interactively(self) -> None:
         name, accepted = QInputDialog.getText(
@@ -1911,9 +1942,16 @@ class ViewerWindow(QMainWindow):
             self._well_destinations.clear()
             self.well_completion_model.setStringList([])
             self.navigation_label.setText("No image set loaded")
+            self.position_label.setText("")
             self.review_summary_label.setText("Add a plate to the active workspace")
             self.project_progress_label.setText("Workspace: no images")
+            self.selection_label.setText("Selection: no wells")
+            self.calibration_label.setText("")
+            self.calibration_accept_inline_button.hide()
+            self.calibration_adjust_button.setEnabled(False)
+            self.image_stack.setCurrentWidget(self.empty_state)
             self.save_status_label.setText("Not loaded")
+            self.save_status_label.setStyleSheet(theme.status_style("muted"))
             self.image_path_status.set_image_path(None)
             self.status_message_label.clear()
             self.accept_calibration_button.setEnabled(False)
@@ -1922,6 +1960,8 @@ class ViewerWindow(QMainWindow):
             self._update_navigation()
             return
         self.calibration_service = None
+        self.image_stack.setCurrentWidget(self.image_canvas)
+        self.calibration_adjust_button.setEnabled(True)
         active_image_set = self.project_controller.active_image_set
         if (
             active_image_set is not None
@@ -1979,11 +2019,17 @@ class ViewerWindow(QMainWindow):
             for row, image_set in enumerate(self.image_set_model.image_sets):
                 if image_set.id == active.active_image_set_id:
                     self.image_set_list.setCurrentIndex(self.image_set_model.index(row, 0))
-                    plate_format = plate_format_by_id(image_set.plate_format_id)
-                    format_index = self.plate_format_input.findData(plate_format)
-                    self.plate_format_input.setCurrentIndex(max(format_index, 0))
                     break
+        self._filter_plate_list(self.plate_filter_input.text())
+        self._update_planning_tab_title()
+        self._update_review_summary()
         self._refresh_target_summary()
+
+    def _update_planning_tab_title(self) -> None:
+        count = self.plan_list.count()
+        self.main_tabs.setTabText(
+            self.planning_tab_index, f"Planning · {count}" if count else "Planning"
+        )
 
     def _target_count_for_image_set(self, image_set_id: str) -> int:
         if (
@@ -1996,51 +2042,31 @@ class ViewerWindow(QMainWindow):
             return self.review_store.workspace.target_count_for_image_set(image_set_id)
         return 0
 
-    def load_entered_plate(self) -> None:
-        try:
-            plate_format = self._selected_plate_format()
-            plate_codes = tuple(
-                dict.fromkeys(
-                    plate_code.strip()
-                    for plate_code in self.plate_input.text().split(",")
-                    if plate_code.strip()
-                )
-            )
-            if not plate_codes:
-                raise ValueError("enter at least one plate code")
-            load_latest_for_all = False
-            for plate_code in plate_codes:
-                if load_latest_for_all:
-                    self._add_latest_plate(plate_code, plate_format)
-                    continue
-                accepted, load_latest_for_all = self._choose_and_add_plate(
-                    plate_code, plate_format
-                )
-                if not accepted:
-                    return
-            self._adopt_active_review()
-            self._sync_project_widgets()
-        except IMAGE_SOURCE_ERRORS as error:
-            QMessageBox.warning(self, "Cannot load plate", str(error))
-
-    def _choose_and_add_plate(
-        self, plate_code: str, plate_format: PlateFormat
-    ) -> tuple[bool, bool]:
-        dialog = PlateSourceDialog(self.repository, plate_code, self)
+    def open_load_plates_dialog(self) -> None:
+        dialog = LoadPlatesDialog(
+            self.repository, PLATE_FORMATS, self._active_plate_format(), self
+        )
         if dialog.exec_() != QDialog.Accepted:
-            return False, False
-        self.project_controller.add_pinned_image_set(
-            plate_code, dialog.batch_id, dialog.profile, plate_format
-        )
-        return True, dialog.load_latest_for_all.isChecked()
+            return
+        try:
+            sources = dialog.plate_sources()
+        except IMAGE_SOURCE_ERRORS as error:
+            QMessageBox.warning(self, "Cannot load plates", str(error))
+            return
+        self.load_plates(dialog.plate_format, sources)
 
-    def _add_latest_plate(
-        self, plate_code: str, plate_format: PlateFormat
+    def load_plates(
+        self, plate_format: PlateFormat, sources: tuple[PlateSource, ...]
     ) -> None:
-        batch_id, profile = latest_image_source(self.repository, plate_code)
-        self.project_controller.add_pinned_image_set(
-            plate_code, batch_id, profile, plate_format
-        )
+        try:
+            for source in sources:
+                self.project_controller.add_pinned_image_set(
+                    source.plate_code, source.batch_id, source.profile, plate_format
+                )
+        except IMAGE_SOURCE_ERRORS as error:
+            QMessageBox.warning(self, "Cannot load plates", str(error))
+        self._adopt_active_review()
+        self._sync_project_widgets()
 
     def load_plate(
         self, plate_code: str, plate_format: PlateFormat, profile: str = "profileID_1"
@@ -2054,6 +2080,13 @@ class ViewerWindow(QMainWindow):
         if plate_format is None:
             raise ValueError("select the plate format before adding a plate")
         return plate_format
+
+    def _filter_plate_list(self, text: str) -> None:
+        query = text.strip().casefold()
+        for row, image_set in enumerate(self.image_set_model.image_sets):
+            self.image_set_list.setRowHidden(
+                row, bool(query) and query not in image_set.plate_code.casefold()
+            )
 
     def _active_plate_format(self) -> PlateFormat | None:
         image_set = self.project_controller.active_image_set
@@ -2080,6 +2113,12 @@ class ViewerWindow(QMainWindow):
             raise ValueError("no project is open")
         image_set = next(item for item in project.image_sets if item.id == image_set_id)
         menu = QMenu(self.image_set_list)
+        menu.addAction("Move Up").triggered.connect(
+            lambda: self._move_selected_image_set(-1)
+        )
+        menu.addAction("Move Down").triggered.connect(
+            lambda: self._move_selected_image_set(1)
+        )
         format_menu = menu.addMenu("Set format")
         for plate_format in PLATE_FORMATS:
             action = format_menu.addAction(plate_format.display_name)
@@ -2091,6 +2130,13 @@ class ViewerWindow(QMainWindow):
                     image_set_id, selected
                 )
             )
+        menu.addSeparator()
+        menu.addAction("Remove from Workspace…").triggered.connect(
+            self._archive_selected_image_set
+        )
+        restore = menu.addAction("Restore Removed Plate…")
+        restore.setEnabled(any(item.is_archived for item in project.image_sets))
+        restore.triggered.connect(self._restore_archived_image_set)
         return menu
 
     def _change_image_set_format(
@@ -2434,8 +2480,7 @@ class ViewerWindow(QMainWindow):
             self.calibration_service = None
             self.current_calibration = None
             self.image_canvas.set_calibration(None)
-            self.calibration_label.setText("Well calibration unavailable: unsupported format")
-            self.accept_calibration_button.setEnabled(False)
+            self._show_calibration_status(None, "unsupported plate format")
             image_label = image.navigation_label
         else:
             lens = plate_format.lens_for(image.drop_number)
@@ -2448,18 +2493,19 @@ class ViewerWindow(QMainWindow):
             address = str(
                 plate_format.address_for(image.well_number, image.drop_number)
             )
-            image_label = (
-                f"Plate {image.plate_code} · Well {address} "
-                f"(RM {image.well_number}/d{image.drop_number})"
-            )
+            image_label = f"Plate {image.plate_code} · {address}"
         if plate_format is not None:
             self._current_well_address = str(
                 plate_format.address_for(image.well_number, image.drop_number)
             )
             self.well_input.setText(self._current_well_address)
-        self.navigation_label.setText(
-            f"{image_label} · Batch {image.batch_id} · "
-            f"{self.controller.image_index + 1}/{len(self.controller.plate.images)}"
+        self.navigation_label.setText(image_label)
+        self.navigation_label.setToolTip(
+            f"RockMaker well {image.well_number}, drop {image.drop_number}"
+        )
+        self.position_label.setText(
+            f"{self.controller.image_index + 1} / {len(self.controller.plate.images)} · "
+            f"Batch {image.batch_id}"
         )
         self._update_review_summary()
         self._update_navigation()
@@ -2519,8 +2565,7 @@ class ViewerWindow(QMainWindow):
         except (CalibrationDetectionError, ReviewPersistenceError) as error:
             self.current_calibration = None
             self.image_canvas.set_calibration(None)
-            self.calibration_label.setText(f"Well calibration unavailable: {error}")
-            self.accept_calibration_button.setEnabled(False)
+            self._show_calibration_status(None, str(error))
             return
         active_image_set = self.project_controller.active_image_set
         should_auto_confirm = (
@@ -2538,22 +2583,29 @@ class ViewerWindow(QMainWindow):
                 self._show_persistence_error(error)
         self.current_calibration = calibration
         self.image_canvas.set_calibration(calibration)
-        scale_um = calibration.physical_diameter_mm * 1000 / (
-            calibration.radius_x_px + calibration.radius_y_px
-        )
-        method = (
-            "Manual"
-            if calibration.method is CalibrationMethod.MANUAL_THREE_POINT
-            else "Auto"
-        )
-        confirmation = "Confirmed" if calibration.confirmed else "Unconfirmed"
-        self.calibration_label.setText(
-            f"Well: {method} · {confirmation} · confidence {calibration.confidence:.0%} · "
-            f"center ({calibration.center_x_px:.1f}, {calibration.center_y_px:.1f}) px · "
-            f"{scale_um:.3f} µm/px"
-        )
-        self.accept_calibration_button.setEnabled(not calibration.confirmed)
+        self._show_calibration_status(calibration)
         self._refresh_target_summary()
+
+    def _show_calibration_status(
+        self, calibration: ImageCalibration | None, unavailable_reason: str = ""
+    ) -> None:
+        text, kind = calibration_status(calibration, unavailable_reason)
+        self.calibration_label.setText(text)
+        self.calibration_label.setToolTip(unavailable_reason or text)
+        self.calibration_label.setStyleSheet(theme.status_style(kind))
+        self.calibration_accept_inline_button.setVisible(
+            calibration is not None and not calibration.confirmed
+        )
+        plate_format = self._active_plate_format()
+        lens_diameter = None
+        if plate_format is not None and self.controller is not None:
+            lens_diameter = plate_format.lens_for(
+                self.controller.current_image.drop_number
+            ).physical_diameter_mm
+        self.calibration_inspector.show_calibration(calibration, lens_diameter)
+
+    def _open_calibration_inspector(self) -> None:
+        self.calibration_inspector.open_below(self.calibration_adjust_button)
 
     def _toggle_auto_confirm_for_active_plate(self, enabled: bool) -> None:
         image_set = self.project_controller.active_image_set
@@ -2643,10 +2695,13 @@ class ViewerWindow(QMainWindow):
         if self.controller is None:
             return
         self._manual_calibration_points = []
+        self.calibration_inspector.hide()
         self.image_canvas.set_calibration_points(())
         self.calibration_label.setText(
-            "Click three separated points on the outer well boundary · right-click cancels"
+            "Click three points on the outer well edge · right-click cancels"
         )
+        self.calibration_label.setStyleSheet(theme.status_style("attention"))
+        self.calibration_accept_inline_button.hide()
         self.image_canvas.setFocus(Qt.OtherFocusReason)
 
     def _finish_manual_calibration(self) -> None:
@@ -2775,33 +2830,42 @@ class ViewerWindow(QMainWindow):
         self.well_input.setStyleSheet("")
 
     def _update_review_summary(self) -> None:
-        if self.controller is None:
-            return
-        image_count = len(self.controller.current_targets)
-        auto_advance_count = self.controller.preferences.auto_advance_target_count
-        reviewed = self.controller.session.reviewed_count
-        total = len(self.controller.plate.images)
-        filtered = len(self.controller.filtered_indices)
-        review_state = (
-            "Reviewed"
-            if self.controller.session.is_reviewed(self.controller.current_image)
-            else "Unreviewed"
-        )
-        self.review_summary_label.setText(
-            f"Selected: {image_count} · Targets/img: {auto_advance_count} · Session total: "
-            f"{self.controller.session.target_count} · {review_state} · Reviewed: {reviewed}/{total} "
-            f"· Plate matches: {filtered}"
-        )
-        try:
-            statistics = self.project_controller.project_review_statistics()
-            self.project_progress_label.setText(
-                f"Reviewed {statistics.reviewed_images}/{statistics.total_images} · "
-                f"Target images {statistics.target_images} · "
-                f"No-target {statistics.reviewed_without_targets} · "
-                f"Pending {statistics.unreviewed_images} · Points {statistics.target_points}"
+        if self.controller is not None:
+            positions = len(self.controller.current_targets)
+            review_state = (
+                "reviewed"
+                if self.controller.session.is_reviewed(self.controller.current_image)
+                else "not reviewed yet"
             )
+            filtered = len(self.controller.filtered_indices)
+            total = len(self.controller.plate.images)
+            matches = "" if filtered == total else f" · {filtered} images match filter"
+            self.review_summary_label.setText(
+                f"This well: {positions} position{'s' if positions != 1 else ''} · "
+                f"{review_state}{matches}"
+            )
+        if self.project_controller.active_project is None:
+            return
+        try:
+            per_image_set = self.project_controller.image_set_review_statistics()
         except IMAGE_SOURCE_ERRORS:
-            self.project_progress_label.setText("Project totals unavailable")
+            self.project_progress_label.setText("· Workspace totals unavailable")
+            self._update_navigation()
+            return
+        self.image_set_model.set_statistics(per_image_set)
+        wells = sum(item.target_images for item in per_image_set.values())
+        positions = sum(item.target_points for item in per_image_set.values())
+        seen = sum(item.reviewed_images for item in per_image_set.values())
+        images = sum(item.total_images for item in per_image_set.values())
+        self.selection_label.setText(
+            f"Selection: {wells} well{'s' if wells != 1 else ''} · "
+            f"{positions} position{'s' if positions != 1 else ''}"
+            if wells else "Selection: no wells"
+        )
+        self.project_progress_label.setText(
+            f"· Workspace {seen}/{images} images seen" if images else "Workspace: no images"
+        )
+        self.new_project_from_selection_button.setEnabled(wells > 0)
         self._update_navigation()
 
     def _update_navigation(self) -> None:
@@ -2941,13 +3005,13 @@ class ViewerWindow(QMainWindow):
 
     def _set_save_status(self, state: str) -> None:
         styles = {
-            "saved": ("Saved", "#2e7d32"),
-            "unsaved": ("Unsaved changes", "#ad6800"),
-            "failed": ("Save failed", "#c62828"),
+            "saved": (f"{theme.SYMBOL_OK} Saved locally", "ok"),
+            "unsaved": (f"{theme.SYMBOL_UNSAVED} Unsaved changes", "attention"),
+            "failed": (f"{theme.SYMBOL_ERROR} Save failed", "error"),
         }
-        text, color = styles[state]
+        text, kind = styles[state]
         self.save_status_label.setText(text)
-        self.save_status_label.setStyleSheet(f"font-weight: 600; color: {color};")
+        self.save_status_label.setStyleSheet(theme.status_style(kind))
 
     def _update_zoom_label(self, zoom: float) -> None:
         self.zoom_label.setText(f"{zoom * 100:.0f}%")
@@ -3075,10 +3139,6 @@ def main(argv: list[str] | None = None) -> int:
             window.close()
             return 2
         plate_format = plate_format_by_id(args.plate_format)
-        window.plate_input.setText(args.plate)
-        window.plate_format_input.setCurrentIndex(
-            window.plate_format_input.findData(plate_format)
-        )
         try:
             window.load_plate(args.plate, plate_format)
         except IMAGE_SOURCE_ERRORS as error:

@@ -30,7 +30,7 @@ from xtalflow.domain.fragment_screening import (
 from xtalflow.application import ReviewPersistenceError
 from xtalflow.infrastructure import RockMakerImageRepository, SQLiteReviewStore
 from xtalflow.ui.plan_editors import FragmentScreeningDialog
-from xtalflow.ui.plate_source_dialog import PlateSourceDialog
+from xtalflow.ui.load_plates_dialog import LoadPlatesDialog
 from xtalflow.viewer import ViewerWindow
 from xtalflow.viewer import main
 from xtalflow.settings import DEFAULT_SETTINGS, standard_instruments
@@ -129,10 +129,10 @@ def test_viewer_loads_and_navigates_images() -> None:
 
     window.load_plate("2070", SWISSCI_MRC_2_WELL)
     first_text = window.navigation_label.text()
+    first_position = window.position_label.text()
     first_well = window.well_input.text()
     assert window.auto_advance_input.prefix() == "Targets/img: "
-    assert window.load_button.text() == "Load"
-    assert window.target_summary_button.text() == "View Target Summary"
+    assert window.target_summary_button.text() == "Target Summary"
     assert window.previous_button.text() == "◀"
     assert window.next_button.text() == "▶"
     assert window.save_status_label.parent() is window.statusBar()
@@ -141,7 +141,7 @@ def test_viewer_loads_and_navigates_images() -> None:
     window.show_next()
 
     assert "Plate 2070" in first_text
-    assert "Batch 14122" in first_text
+    assert "Batch 14122" in first_position
     assert first_well == "A01a"
     assert window.well_input.text() == "A01b"
     assert window.controller.image_index == 1
@@ -295,7 +295,7 @@ def test_main_window_separates_image_review_and_planning_tabs(
     assert window.main_tabs.currentIndex() == window.image_review_tab_index
     assert window.plan_list.count() == 0
     assert window.new_plan_button.text() == "+ New Project"
-    assert window.new_project_button.text() == "New Workspace"
+    assert window.new_workspace_action.text() == "New Workspace…"
 
     window.close()
     app.processEvents()
@@ -1095,14 +1095,13 @@ def test_target_summary_uses_hidden_right_dock_and_jumps_to_image(
     window.target_summary_button.click()
     app.processEvents()
     assert window.target_summary_dock.isVisible()
+    assert window.target_summary_button.isChecked()
     assert window.dockWidgetArea(window.target_summary_dock) == Qt.RightDockWidgetArea
-    expansion = window._target_summary_window_expansion
-    assert expansion > 0
-    summary_width = window.width()
+    assert window.width() == review_only_width
     window.target_summary_dock.hide()
     app.processEvents()
-    assert window.width() == max(window.minimumWidth(), summary_width - expansion)
-    assert window.width() < summary_width
+    assert not window.target_summary_button.isChecked()
+    assert window.width() == review_only_width
     window.target_summary_dock.show()
     app.processEvents()
 
@@ -1207,7 +1206,7 @@ def test_trusted_plate_auto_confirms_well_above_user_threshold(
     assert window.current_calibration is not None
     assert window.auto_confirm_plate_checkbox.isChecked()
     assert window.current_calibration.confirmed
-    assert "Confirmed" in window.calibration_label.text()
+    assert "Well aligned" in window.calibration_label.text()
     window.close()
     app.processEvents()
 
@@ -1342,9 +1341,9 @@ def test_target_selection_survives_image_navigation() -> None:
     window._handle_image_click(100, 120, Qt.LeftButton)
     assert len(window.controller.session.targets_for(first_image)) == 1
     window.show_next()
-    assert "Selected: 0 · Targets/img: 2" in window.review_summary_label.text()
+    assert "This well: 0 positions" in window.review_summary_label.text()
     window.show_previous()
-    assert "Selected: 1 · Targets/img: 2" in window.review_summary_label.text()
+    assert "This well: 1 position " in window.review_summary_label.text()
 
     window._handle_image_click(100, 120, Qt.RightButton)
     assert window.controller.session.targets_for(first_image) == ()
@@ -1482,10 +1481,10 @@ def test_arrow_keys_navigate_only_when_image_has_focus() -> None:
     window = ViewerWindow(RockMakerImageRepository(FIXTURE_ROOT))
     window.load_plate("1070", SWISSCI_MIDI_3_LENS)
     window.show()
-    window.plate_input.setFocus()
+    window.plate_filter_input.setFocus()
     app.processEvents()
 
-    QTest.keyClick(window.plate_input, Qt.Key_Right)
+    QTest.keyClick(window.plate_filter_input, Qt.Key_Right)
     app.processEvents()
     assert window.controller.image_index == 0
 
@@ -1516,8 +1515,8 @@ def test_up_down_switch_plates_only_from_image_or_plate_list_focus(tmp_path: Pat
     window.auto_advance_input.setValue(6)
     window.show()
 
-    window.plate_input.setFocus()
-    QTest.keyClick(window.plate_input, Qt.Key_Up)
+    window.plate_filter_input.setFocus()
+    QTest.keyClick(window.plate_filter_input, Qt.Key_Up)
     app.processEvents()
     assert window.controller.plate.plate_code == "1100"
 
@@ -1552,13 +1551,13 @@ def test_save_status_tracks_working_changes_and_checkpoint(tmp_path: Path) -> No
         auto_advance_target_count=2,
     )
     window.load_plate("1070", SWISSCI_MIDI_3_LENS)
-    assert window.save_status_label.text() == "Saved"
+    assert window.save_status_label.text() == "✓ Saved locally"
 
     window._handle_image_click(100, 120, Qt.LeftButton)
-    assert window.save_status_label.text() == "Unsaved changes"
+    assert window.save_status_label.text() == "● Unsaved changes"
 
     window.show_next()
-    assert window.save_status_label.text() == "Saved"
+    assert window.save_status_label.text() == "✓ Saved locally"
     window.close()
     app.processEvents()
 
@@ -1586,7 +1585,7 @@ def test_failed_checkpoint_does_not_move_and_shows_failed_state(
     window.show_next()
 
     assert window.controller.image_index == 0
-    assert window.save_status_label.text() == "Save failed"
+    assert window.save_status_label.text() == "! Save failed"
     monkeypatch.setattr(window.controller.store, "save_checkpoint", original_checkpoint)
     window.close()
     app.processEvents()
@@ -1621,7 +1620,7 @@ def test_cancel_close_after_save_failure_keeps_window_and_store_open(
 
     assert event.ignored
     assert not window.review_store._closed
-    assert window.save_status_label.text() == "Save failed"
+    assert window.save_status_label.text() == "! Save failed"
     monkeypatch.setattr(window.controller.store, "save_checkpoint", original_checkpoint)
     window.close()
     app.processEvents()
@@ -1647,11 +1646,20 @@ def test_project_sidebar_manages_multiple_image_sets(tmp_path: Path) -> None:
     assert "Plate 1070" in first_index.data()
     image_set_id = first_index.data(window.image_set_model.ImageSetIdRole)
     menu = window._build_image_set_context_menu(image_set_id)
-    assert menu.actions()[0].text() == "Set format"
-    assert [action.text() for action in menu.actions()[0].menu().actions()] == [
+    actions = {action.text(): action for action in menu.actions()}
+    assert [text for text in actions if text] == [
+        "Move Up", "Move Down", "Set format", "Remove from Workspace…",
+        "Restore Removed Plate…",
+    ]
+    assert [action.text() for action in actions["Set format"].menu().actions()] == [
         plate_format.display_name for plate_format in PLATE_FORMATS
     ]
-    assert not hasattr(window, "set_plate_format_button")
+    assert not actions["Restore Removed Plate…"].isEnabled()
+    window.plate_filter_input.setText("11")
+    assert window.image_set_list.isRowHidden(0)
+    assert not window.image_set_list.isRowHidden(1)
+    window.plate_filter_input.clear()
+    assert not window.image_set_list.isRowHidden(0)
     window.close()
     app.processEvents()
 
@@ -1676,54 +1684,53 @@ def test_project_filter_jumps_to_matching_image_on_another_plate(tmp_path: Path)
 
     assert window.controller.plate.plate_code == "1100"
     assert window.controller.current_image.image_key == target_key
-    assert "Target images 1" in window.project_progress_label.text()
+    assert window.selection_label.text() == "Selection: 1 well · 1 position"
     window.close()
     app.processEvents()
 
 
-def test_plate_source_dialog_defaults_to_latest_batch_and_profile() -> None:
+class _PlateRepository:
+    def available_batches(self, plate_code):
+        return (7, 12)
+
+    def available_profiles(self, plate_code, batch_id):
+        return ("profileID_1", "profileID_10") if batch_id == 7 else ()
+
+
+def test_load_plates_dialog_uses_latest_imaged_batch_for_all_codes() -> None:
     app = QApplication.instance() or QApplication([])
+    dialog = LoadPlatesDialog(_PlateRepository(), PLATE_FORMATS, SWISSCI_MRC_2_WELL)
 
-    class Repository:
-        def available_batches(self, plate_code):
-            return (7, 12)
+    assert dialog.plate_format is SWISSCI_MRC_2_WELL
+    assert not dialog.load_button.isEnabled()
+    dialog.plate_codes_input.setText("1070, 1100, 1070")
 
-        def available_profiles(self, plate_code, batch_id):
-            return ("profileID_2", "profileID_10")
-
-    dialog = PlateSourceDialog(Repository(), "1070")
-
-    assert dialog.batch_id == 12
-    assert dialog.profile == "profileID_10"
-    assert dialog.load_latest_for_all.isChecked()
-    assert not dialog.batch_input.isEnabled()
-    assert not dialog.profile_input.isEnabled()
-    dialog.load_latest_for_all.setChecked(False)
-    assert dialog.batch_input.isEnabled()
-    assert dialog.profile_input.isEnabled()
+    assert dialog.load_button.isEnabled()
+    assert dialog.sources_table.isHidden()
+    assert [
+        (source.plate_code, source.batch_id, source.profile)
+        for source in dialog.plate_sources()
+    ] == [("1070", 7, "profileID_10"), ("1100", 7, "profileID_10")]
     dialog.close()
     app.processEvents()
 
 
-def test_plate_source_dialog_skips_batch_that_is_not_imaged_yet() -> None:
+def test_load_plates_dialog_lets_each_plate_choose_batch_and_profile() -> None:
     app = QApplication.instance() or QApplication([])
+    dialog = LoadPlatesDialog(_PlateRepository(), PLATE_FORMATS)
+    dialog.plate_codes_input.setText("1070")
+    dialog.use_latest_checkbox.setChecked(False)
 
-    class Repository:
-        def available_batches(self, plate_code):
-            return (7, 12)
+    assert not dialog.sources_table.isHidden()
+    batch_input = dialog.sources_table.cellWidget(0, 1)
+    profile_input = dialog.sources_table.cellWidget(0, 2)
+    assert batch_input.currentData() == 7
+    profile_input.setCurrentIndex(profile_input.findData("profileID_1"))
+    assert dialog.plate_sources()[0].profile == "profileID_1"
 
-        def available_profiles(self, plate_code, batch_id):
-            return ("profileID_1",) if batch_id == 7 else ()
-
-    dialog = PlateSourceDialog(Repository(), "1070")
-    ok_button = dialog.buttons.button(dialog.buttons.Ok)
-
-    assert dialog.batch_id == 7
-    assert ok_button.isEnabled()
-    dialog.load_latest_for_all.setChecked(False)
-    dialog.batch_input.setCurrentIndex(dialog.batch_input.findData(12))
-    assert dialog.profile_input.currentText() == "No images yet"
-    assert not ok_button.isEnabled()
+    batch_input.setCurrentIndex(batch_input.findData(12))
+    assert profile_input.currentText() == "No images yet"
+    assert not dialog.load_button.isEnabled()
     dialog.close()
     app.processEvents()
 
@@ -1862,24 +1869,23 @@ def test_comma_separated_plate_codes_add_multiple_image_sets(
 
     shown_dialogs = []
 
-    def choose_latest_for_all(dialog):
-        shown_dialogs.append(dialog.plate_code)
-        dialog.load_latest_for_all.setChecked(True)
+    def enter_codes(dialog):
+        shown_dialogs.append(dialog.windowTitle())
+        dialog.plate_format_input.setCurrentIndex(
+            dialog.plate_format_input.findData(SWISSCI_MIDI_3_LENS)
+        )
+        dialog.plate_codes_input.setText("1070, 1100, 1070")
         return dialog.Accepted
 
-    monkeypatch.setattr(PlateSourceDialog, "exec_", choose_latest_for_all)
-    window.plate_input.setText("1070, 1100, 1070")
-    window.plate_format_input.setCurrentIndex(
-        window.plate_format_input.findData(SWISSCI_MIDI_3_LENS)
-    )
-    window.load_entered_plate()
+    monkeypatch.setattr(LoadPlatesDialog, "exec_", enter_codes)
+    window.add_plates_button.click()
 
     assert [item.plate_code for item in window.image_set_model.image_sets] == [
         "1070",
         "1100",
     ]
     assert window.controller.plate.plate_code == "1100"
-    assert shown_dialogs == ["1070"]
+    assert shown_dialogs == ["Load Plates"]
     window.close()
     app.processEvents()
 

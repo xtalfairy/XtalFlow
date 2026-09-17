@@ -274,11 +274,18 @@ class ProjectController:
         return current > 0 if direction < 0 else current < len(ids) - 1
 
     def project_review_statistics(self) -> ProjectReviewStatistics:
+        per_image_set = self.image_set_review_statistics().values()
+        return ProjectReviewStatistics(
+            *(sum(getattr(item, field) for item in per_image_set)
+              for field in ProjectReviewStatistics.__dataclass_fields__)
+        )
+
+    def image_set_review_statistics(self) -> dict[str, ProjectReviewStatistics]:
+        """Review progress of each active image set, keyed by image set ID."""
         project = self._require_active_project()
-        total = reviewed = target_images = target_points = reviewed_without = 0
+        statistics: dict[str, ProjectReviewStatistics] = {}
         for image_set in project.active_image_sets:
             plate = self._load_image_set_plate(image_set)
-            total += len(plate.images)
             if (
                 project.active_image_set_id == image_set.id
                 and self.review_controller is not None
@@ -286,7 +293,7 @@ class ProjectController:
                 session = self.review_controller.session
             else:
                 session, _, _, _ = self._load_review_material(image_set, plate)
-            reviewed += session.reviewed_count
+            target_images = target_points = reviewed_without = 0
             for image in plate.images:
                 count = session.target_count_for(image)
                 if count:
@@ -294,14 +301,13 @@ class ProjectController:
                     target_points += count
                 elif session.is_reviewed(image):
                     reviewed_without += 1
-        return ProjectReviewStatistics(
-            total,
-            reviewed,
-            target_images,
-            target_points,
-            reviewed_without,
-            total - reviewed,
-        )
+            total = len(plate.images)
+            reviewed = session.reviewed_count
+            statistics[image_set.id] = ProjectReviewStatistics(
+                total, reviewed, target_images, target_points, reviewed_without,
+                total - reviewed,
+            )
+        return statistics
 
     def project_target_summaries(self) -> tuple[ProjectTargetSummary, ...]:
         project = self._require_active_project()

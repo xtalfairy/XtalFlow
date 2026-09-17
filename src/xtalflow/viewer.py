@@ -154,6 +154,7 @@ from xtalflow.ui.calibration_inspector import CalibrationInspector, calibration_
 from xtalflow.ui.load_plates_dialog import LoadPlatesDialog, PlateSource
 from xtalflow.ui.new_project_dialog import NewProjectDialog
 from xtalflow.ui.plate_list import PlateCardDelegate
+from xtalflow.ui.shortcuts_dialog import ShortcutsDialog
 
 
 # Image sets live on the RockMaker SMB share. A dropped share raises plain OSError
@@ -362,6 +363,22 @@ class ViewerWindow(QMainWindow):
         navigation.addWidget(self.next_button)
 
         self.image_canvas = ImageCanvas()
+        self.image_canvas.setAccessibleName("Crystal image")
+        self.review_hint = QLabel(
+            "Click to place a soaking position · right-click to remove\n"
+            "← → images   ↑ ↓ plates   ? all shortcuts",
+            self.image_canvas,
+        )
+        self.review_hint.setStyleSheet(
+            "background: rgba(23, 28, 34, 215); color: white; border-radius: 6px; "
+            "padding: 8px 12px;"
+        )
+        self.review_hint.move(theme.SPACING_L, theme.SPACING_L)
+        self.review_hint.hide()
+        self._review_hint_timer = QTimer(self)
+        self._review_hint_timer.setSingleShot(True)
+        self._review_hint_timer.setInterval(12000)
+        self._review_hint_timer.timeout.connect(self.review_hint.hide)
         self.empty_state = QWidget()
         empty_title = QLabel("No plates loaded")
         empty_title.setObjectName("PrimaryHeading")
@@ -383,14 +400,17 @@ class ViewerWindow(QMainWindow):
         self.zoom_out_button = QToolButton()
         self.zoom_out_button.setText("−")
         self.zoom_out_button.setToolTip("Zoom out (−)")
+        self.zoom_out_button.setAccessibleName("Zoom out")
         self.zoom_label = QLabel("100%")
         self.zoom_label.setMinimumWidth(44)
         self.zoom_label.setAlignment(Qt.AlignCenter)
         self.zoom_in_button = QToolButton()
         self.zoom_in_button.setText("+")
         self.zoom_in_button.setToolTip("Zoom in (+)")
+        self.zoom_in_button.setAccessibleName("Zoom in")
         self.fit_button = QPushButton("Fit")
         self.fit_button.setToolTip("Fit image to window (0)")
+        self.fit_button.setAccessibleName("Fit image")
         self.calibration_label = QLabel("Well boundary: not loaded")
         self.calibration_label.setAccessibleName("Well calibration status")
         self.calibration_accept_inline_button = QPushButton("Accept")
@@ -591,6 +611,16 @@ class ViewerWindow(QMainWindow):
         self.target_summary_action.setText("Target Summary")
         self.target_summary_action.setShortcut(QKeySequence("Ctrl+Shift+T"))
         self.view_menu.addAction(self.target_summary_action)
+        # Small screens can give the plate list's width to the image.
+        self.plates_panel_action = self.view_menu.addAction("Plate List")
+        self.plates_panel_action.setCheckable(True)
+        self.plates_panel_action.setChecked(True)
+        self.plates_panel_action.setShortcut(QKeySequence("Ctrl+Shift+P"))
+        self.plates_panel_action.toggled.connect(self.review_splitter.widget(0).setVisible)
+        self.help_menu = self.menuBar().addMenu("Help")
+        self.shortcuts_action = self.help_menu.addAction("Keyboard Shortcuts")
+        self.shortcuts_action.setShortcut(QKeySequence("?"))
+        self.shortcuts_action.triggered.connect(self.show_shortcuts)
 
     def _build_status_bar(self) -> None:
         self.status_message_label = StatusMessageLabel()
@@ -673,6 +703,31 @@ class ViewerWindow(QMainWindow):
         self.well_input.editingFinished.connect(self._go_to_entered_well)
         focus_well = QShortcut(QKeySequence("Ctrl+L"), self)
         focus_well.activated.connect(self._focus_well_input)
+        self.image_canvas.cancel_requested.connect(
+            self._cancel_manual_calibration_from_keyboard
+        )
+
+    def show_shortcuts(self) -> None:
+        ShortcutsDialog(self).exec_()
+
+    def _cancel_manual_calibration_from_keyboard(self) -> None:
+        if self._manual_calibration_points is not None:
+            self._cancel_manual_calibration()
+            self.status_message_label.show_message("Well calibration cancelled", 3000)
+
+    def _show_review_hint_once(self) -> None:
+        if self.user_preferences.review_hint_shown:
+            return
+        self.review_hint.adjustSize()
+        self.review_hint.show()
+        self.review_hint.raise_()
+        self._review_hint_timer.start()
+        preferences = replace(self.user_preferences, review_hint_shown=True)
+        try:
+            self.preferences_store.save(preferences)
+        except OSError:
+            return
+        self.user_preferences = preferences
 
     def _focus_well_input(self) -> None:
         self.main_tabs.setCurrentIndex(self.image_review_tab_index)
@@ -2146,6 +2201,7 @@ class ViewerWindow(QMainWindow):
         self._show_current_image()
         self._set_save_status("saved")
         self.image_canvas.setFocus(Qt.OtherFocusReason)
+        self._show_review_hint_once()
 
     def _sync_project_widgets(self) -> None:
         active = self.project_controller.active_project
@@ -2675,6 +2731,7 @@ class ViewerWindow(QMainWindow):
         self._update_navigation()
 
     def _handle_image_click(self, x_px: float, y_px: float, button: int) -> None:
+        self.review_hint.hide()
         if self.controller is None:
             return
         if self._manual_calibration_points is not None:
@@ -2862,7 +2919,7 @@ class ViewerWindow(QMainWindow):
         self.calibration_inspector.hide()
         self.image_canvas.set_calibration_points(())
         self.calibration_label.setText(
-            "Click three points on the outer well edge · right-click cancels"
+            "Click three points on the outer well edge · right-click or Esc cancels"
         )
         self.calibration_label.setStyleSheet(theme.status_style("attention"))
         self.calibration_accept_inline_button.hide()

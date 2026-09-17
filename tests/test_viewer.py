@@ -1421,6 +1421,37 @@ def test_live_selection_summary_highlights_counts_and_stays_in_image_review(
 
 @pytest.mark.requires_rmserver_fixture
 @pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_review_hint_is_shown_once_per_user_and_escape_cancels_calibration(
+    tmp_path: Path,
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    preferences = JsonUserPreferencesStore(tmp_path / "preferences.json")
+    window = ViewerWindow(RockMakerImageRepository(FIXTURE_ROOT), preferences_store=preferences)
+    window.show()
+    window.load_plate("1070", SWISSCI_MIDI_3_LENS)
+    assert window.review_hint.isVisible()
+
+    window._start_manual_calibration()
+    QTest.keyClick(window.image_canvas, Qt.Key_Escape)
+    assert window._manual_calibration_points is None
+    window._handle_image_click(10, 10, Qt.RightButton)
+    assert not window.review_hint.isVisible()
+
+    window.plates_panel_action.setChecked(False)
+    assert window.review_splitter.widget(0).isHidden()
+    window.close()
+    app.processEvents()
+
+    reopened = ViewerWindow(RockMakerImageRepository(FIXTURE_ROOT), preferences_store=preferences)
+    reopened.show()
+    reopened.load_plate("1070", SWISSCI_MIDI_3_LENS)
+    assert not reopened.review_hint.isVisible()
+    reopened.close()
+    app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
 def test_manual_calibration_clicks_do_not_create_targets(tmp_path: Path) -> None:
     app = QApplication.instance() or QApplication([])
     window = ViewerWindow(

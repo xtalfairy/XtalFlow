@@ -10,6 +10,7 @@ from pathlib import Path
 class UserPreferences:
     auto_confirm_confidence_percent: int = 90
     auto_advance_target_count: int | None = None
+    review_hint_shown: bool = False
 
     def __post_init__(self) -> None:
         if not 0 <= self.auto_confirm_confidence_percent <= 100:
@@ -42,6 +43,7 @@ class JsonUserPreferencesStore:
             return UserPreferences(
                 int(data["auto_confirm_confidence_percent"]),
                 int(count) if count is not None else None,
+                bool(data.get("review_hint_shown", False)),
             )
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
             return UserPreferences()
@@ -56,6 +58,7 @@ class JsonUserPreferencesStore:
                         preferences.auto_confirm_confidence_percent,
                     "auto_advance_target_count":
                         preferences.auto_advance_target_count,
+                    "review_hint_shown": preferences.review_hint_shown,
                 },
                 indent=2,
             ) + "\n",

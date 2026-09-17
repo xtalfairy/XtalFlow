@@ -27,6 +27,7 @@ class ImageCanvas(QWidget):
     previous_plate_requested = pyqtSignal()
     next_plate_requested = pyqtSignal()
     zoom_changed = pyqtSignal(float)
+    cancel_requested = pyqtSignal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -277,6 +278,10 @@ class ImageCanvas(QWidget):
         event.accept()
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt API
+        if event.key() == Qt.Key_Escape:
+            self.cancel_requested.emit()
+            event.accept()
+            return
         if event.key() == Qt.Key_Space and not event.isAutoRepeat():
             self._space_pressed = True
             self.setCursor(Qt.OpenHandCursor)

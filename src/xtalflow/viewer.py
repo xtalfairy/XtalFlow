@@ -1326,6 +1326,7 @@ class ViewerWindow(QMainWindow):
         self._target_summary_window_expansion = 0
         self._planning_project_id: str | None = None
         self.error_log_path: Path | None = None
+        self._mxlive_experiment_ids: set[str] = set()
         self._handling_unexpected_error = False
         self._planning_drafts: dict[
             str, list[tuple[str, FragmentScreeningEditor]]
@@ -2262,6 +2263,11 @@ class ViewerWindow(QMainWindow):
         self._persist_raw_crystal_draft(editor)
         if snapshot == editor.last_revision_snapshot:
             return editor.last_revision
+        if (
+            editor.assigned_experiment_id is None
+            and not self._check_new_experiment_id_against_mxlive()
+        ):
+            return None
         try:
             experiment_id = (
                 editor.assigned_experiment_id
@@ -2382,6 +2388,11 @@ class ViewerWindow(QMainWindow):
         self._persist_planning_draft(editor)
         if editor.last_revision_snapshot == snapshot:
             return editor.last_revision
+        if (
+            editor.assigned_experiment_id is None
+            and not self._check_new_experiment_id_against_mxlive()
+        ):
+            return None
         try:
             experiment_id = (
                 editor.assigned_experiment_id
@@ -2652,12 +2663,7 @@ class ViewerWindow(QMainWindow):
             )
             return
         try:
-            reader = LegacyMxLiveReadClient(
-                account.base_url, account.beamline, account.username,
-                account.key_path, ca_bundle=account.ca_bundle,
-                timeout_seconds=self.settings.mxlive_timeout_seconds,
-            )
-            labworks = reader.labworks(experiment_id)
+            labworks = self._mxlive_reader().labworks(experiment_id)
         except (MxLiveReadError, ValueError) as error:
             QMessageBox.warning(self, "Could not verify upload", str(error))
             return
@@ -2726,9 +2732,39 @@ class ViewerWindow(QMainWindow):
         return WorksheetExporter(self.settings, getpass.getuser())
 
     def _reserved_experiment_ids(self) -> set[str]:
-        if self.review_store is None:
-            return set()
-        return self.review_store.reserved_experiment_ids()
+        local = set() if self.review_store is None else (
+            self.review_store.reserved_experiment_ids()
+        )
+        return local | self._mxlive_experiment_ids
+
+    def _mxlive_reader(self) -> LegacyMxLiveReadClient:
+        account = self.mxlive_account
+        return LegacyMxLiveReadClient(
+            account.base_url, account.beamline, account.username,
+            account.key_path, ca_bundle=account.ca_bundle,
+            timeout_seconds=self.settings.mxlive_timeout_seconds,
+        )
+
+    def _check_new_experiment_id_against_mxlive(self) -> bool:
+        """Load IDs other users already uploaded; False cancels finalization."""
+        account = self.mxlive_account
+        if account is None or not account.upload_ready:
+            return True
+        try:
+            remote = self._mxlive_reader().experiment_ids(datetime.now().year)
+        except (MxLiveReadError, ValueError) as error:
+            answer = QMessageBox.question(
+                self,
+                "Experiment ID not checked",
+                f"Existing experiment IDs could not be read from MxLive:\n{error}\n\n"
+                "Finalize with an ID checked only against this computer? It may "
+                "match another researcher's experiment.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            return answer == QMessageBox.Yes
+        self._mxlive_experiment_ids.update(remote)
+        return True
 
     def _suggest_fragment_experiment_id(self, protein: str) -> str:
         return suggest_experiment_id(

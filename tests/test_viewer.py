@@ -39,6 +39,22 @@ from xtalflow.domain.plan_lifecycle import PlanningDraft
 FIXTURE_ROOT = DEFAULT_SETTINGS.rmserver_root
 
 
+class _FakeMxLiveReader:
+    experiment_ids_by_year: dict[int, tuple[str, ...]] = {}
+    error: Exception | None = None
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def experiment_ids(self, year):
+        if self.error is not None:
+            raise self.error
+        return self.experiment_ids_by_year.get(year, ())
+
+    def labworks(self, experiment_id):
+        return ()
+
+
 def _fragment(number: int) -> Fragment:
     return Fragment(
         "Vendor",
@@ -534,6 +550,7 @@ def test_only_finalized_raw_revision_can_be_uploaded_and_is_audited(
     )
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
     window = ViewerWindow(RockMakerImageRepository(tmp_path), store, settings=settings)
+    monkeypatch.setattr("xtalflow.viewer.LegacyMxLiveReadClient", _FakeMxLiveReader)
     crystal = SelectedCrystal(
         "image-key", "1070", "A01a",
         (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
@@ -594,6 +611,7 @@ def _finalized_raw_upload_window(tmp_path: Path, monkeypatch):
     )
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
     window = ViewerWindow(RockMakerImageRepository(tmp_path), store, settings=settings)
+    monkeypatch.setattr("xtalflow.viewer.LegacyMxLiveReadClient", _FakeMxLiveReader)
     crystal = SelectedCrystal(
         "image-key", "1070", "A01a",
         (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
@@ -724,6 +742,72 @@ def test_later_revision_with_uploaded_experiment_id_is_not_uploaded_again(
     window._upload_raw_labworks(editor)
     assert len(Writer.posted) == 1
     assert dialogs[-1][0] == "information"
+    window.close()
+    app.processEvents()
+
+
+def test_new_experiment_id_skips_ids_already_used_on_mxlive(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    month = datetime.now()
+    taken = f"RawCrystal-{month:%Y%m}-BRD4-01"
+
+    monkeypatch.setattr(
+        _FakeMxLiveReader, "experiment_ids_by_year", {month.year: (taken,)}
+    )
+    window, store, editor, revision, dialogs = _finalized_raw_upload_window(
+        tmp_path, monkeypatch
+    )
+
+    assert revision.experiment_id == f"RawCrystal-{month:%Y%m}-BRD4-02"
+    window.close()
+    app.processEvents()
+
+
+def test_unchecked_experiment_id_requires_confirmation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    key = tmp_path / "keys.dsa"
+    key.write_bytes(b"test-key-presence")
+    settings = replace(
+        DEFAULT_SETTINGS, mxlive_base_url="https://mxlive.example",
+        mxlive_key_path=key, mxlive_ca_bundle=None, mxlive_config_path=None,
+    )
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store, settings=settings)
+
+    from xtalflow.domain.mxlive import MxLiveReadError
+
+    class OfflineReader(_FakeMxLiveReader):
+        error = MxLiveReadError("MxLive request failed (ConnectionError)")
+
+    monkeypatch.setattr("xtalflow.viewer.LegacyMxLiveReadClient", OfflineReader)
+    crystal = SelectedCrystal(
+        "image-key", "1070", "A01a",
+        (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
+        SWISSCI_MIDI_3_LENS.id,
+    )
+    window._add_raw_crystal_plan((crystal,))
+    editor = window.plan_stack.currentWidget()
+    editor.set_crystals((crystal,))
+    editor.protein_input.setText("BRD4")
+    questions = []
+
+    def answer(response):
+        def question(*args, **kwargs):
+            questions.append(args[1])
+            return response
+        return question
+
+    monkeypatch.setattr(QMessageBox, "question", answer(QMessageBox.No))
+    assert window._finalize_raw_crystal_plan(editor) is None
+    assert store.list_plan_revisions(editor.plan_id) == ()
+
+    monkeypatch.setattr(QMessageBox, "question", answer(QMessageBox.Yes))
+    assert window._finalize_raw_crystal_plan(editor) is not None
+    assert questions == ["Experiment ID not checked"] * 2
     window.close()
     app.processEvents()
 

@@ -1122,11 +1122,11 @@ def test_target_summary_uses_hidden_right_dock_and_jumps_to_image(
     window.target_summary_table.setCurrentCell(0, 0)
     assert window.controller.current_image.image_key == target_image_key
     assert window.target_summary_table.hasFocus()
-    assert "Unconfirmed calibration" in window.target_summary_table.item(0, 6).text()
+    assert "Unconfirmed well boundary" in window.target_summary_table.item(0, 5).text()
     assert window.accept_calibration_button.isEnabled()
     window.accept_calibration_button.click()
     assert window.current_calibration.confirmed
-    assert window.target_summary_table.item(0, 6).text() == "Ready"
+    assert window.target_summary_table.item(0, 5).text() == "✓ Ready"
     assert not window.accept_calibration_button.isEnabled()
     QTest.keyClick(window.target_summary_table, Qt.Key_Down)
     assert window.target_summary_table.currentRow() == 1
@@ -1135,7 +1135,7 @@ def test_target_summary_uses_hidden_right_dock_and_jumps_to_image(
         window.target_summary_filter.findData("warnings")
     )
     assert window.target_summary_table.rowCount() == 1
-    assert "Unconfirmed calibration" in window.target_summary_table.item(0, 6).text()
+    assert "Unconfirmed well boundary" in window.target_summary_table.item(0, 5).text()
     window.target_summary_filter.setCurrentIndex(
         window.target_summary_filter.findData("all")
     )
@@ -1302,6 +1302,49 @@ def test_auto_well_asks_before_replacing_confirmed_calibration(
     assert questions == ["Replace well calibration"]
     assert window.current_calibration.method is CalibrationMethod.MANUAL_THREE_POINT
     assert window.current_calibration.confirmed
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_live_selection_summary_highlights_counts_and_stays_in_image_review(
+    tmp_path: Path,
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        auto_advance_target_count=5,
+        preferences_store=JsonUserPreferencesStore(tmp_path / "preferences.json"),
+    )
+    window.load_plate("2070", SWISSCI_MRC_2_WELL)
+    window.auto_confirm_plate_checkbox.setChecked(False)
+    window._auto_detect_calibration()
+    window._handle_image_click(600, 500, Qt.LeftButton)
+    window._handle_image_click(640, 520, Qt.LeftButton)
+    window.show()
+    window.target_summary_button.click()
+    app.processEvents()
+
+    assert window.target_summary_dock.windowTitle() == "Selection · Live"
+    assert window.target_summary_filter.itemText(0) == "All positions (2)"
+    assert window.target_summary_filter.itemText(1) == "Warnings (2)"
+    assert "2 need attention" in window.target_summary_status_label.text()
+    assert not window.remove_targets_button.isEnabled()
+
+    window.target_summary_table.setCurrentCell(1, 0)
+    second_target = window.target_summary_table.item(1, 0).data(Qt.UserRole + 2)
+    assert window.image_canvas._highlighted_target_id == second_target
+    window.target_summary_table.selectAll()
+    assert window.remove_targets_button.text() == "Delete Selected (2)"
+
+    window.main_tabs.setCurrentIndex(window.planning_tab_index)
+    app.processEvents()
+    assert not window.target_summary_dock.isVisible()
+    window.main_tabs.setCurrentIndex(window.image_review_tab_index)
+    app.processEvents()
+    assert window.target_summary_dock.isVisible()
     window.close()
     app.processEvents()
 

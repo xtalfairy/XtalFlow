@@ -161,6 +161,10 @@ IMAGE_SOURCE_ERRORS = (ValueError, OSError, ReviewPersistenceError)
 
 T = TypeVar("T")
 
+
+def _count(value: int, noun: str) -> str:
+    return f"{value} {noun}{'' if value == 1 else 's'}"
+
 class ViewerWindow(QMainWindow):
     def __init__(
         self,
@@ -520,10 +524,11 @@ class ViewerWindow(QMainWindow):
         return planning_tab
 
     def _build_target_summary_dock(self) -> None:
-        self.target_summary_table = QTableWidget(0, 7)
+        self.target_summary_table = QTableWidget(0, 6)
         self.target_summary_table.setHorizontalHeaderLabels(
-            ("Plate", "Well", "Target", "X (mm)", "Y (mm)", "Calibration", "Status")
+            ("Plate", "Well", "Pos", "X (mm)", "Y (mm)", "Status")
         )
+        self.target_summary_table.setAccessibleName("Selected soaking positions")
         self.target_summary_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.target_summary_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.target_summary_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -533,24 +538,33 @@ class ViewerWindow(QMainWindow):
             QHeaderView.ResizeToContents
         )
         self.target_summary_table.horizontalHeader().setStretchLastSection(True)
-        self.target_summary_status_label = QLabel("Ready 0 · Warnings 0")
+        self.target_summary_status_label = QLabel("No positions selected")
+        self.target_summary_status_label.setObjectName("Muted")
         self.target_summary_filter = QComboBox()
-        self.target_summary_filter.addItem("All targets", "all")
-        self.target_summary_filter.addItem("Warnings only", "warnings")
+        self.target_summary_filter.addItem("All positions", "all")
+        self.target_summary_filter.addItem("Warnings", "warnings")
+        self.target_summary_filter.setAccessibleName("Summary filter")
         target_summary_controls = QHBoxLayout()
         target_summary_controls.addWidget(self.target_summary_status_label, 1)
         target_summary_controls.addWidget(self.target_summary_filter)
-        self.remove_targets_button = QPushButton("Remove Selected")
+        self.remove_targets_button = QPushButton("Delete Selected")
+        self.remove_targets_button.setToolTip("Delete the selected positions (Delete)")
+        self.remove_targets_button.setEnabled(False)
         self.accept_valid_auto_wells_button = QPushButton("Accept Valid Auto Wells")
         target_summary_layout = QVBoxLayout()
         target_summary_layout.setContentsMargins(0, 0, 0, 0)
         target_summary_layout.addLayout(target_summary_controls)
         target_summary_layout.addWidget(self.target_summary_table, 1)
-        target_summary_layout.addWidget(self.accept_valid_auto_wells_button)
-        target_summary_layout.addWidget(self.remove_targets_button)
+        target_summary_actions = QHBoxLayout()
+        target_summary_actions.addWidget(self.accept_valid_auto_wells_button)
+        target_summary_actions.addWidget(self.remove_targets_button)
+        target_summary_layout.addLayout(target_summary_actions)
         target_summary_panel = QWidget()
         target_summary_panel.setLayout(target_summary_layout)
-        self.target_summary_dock = QDockWidget("Target Summary", self)
+        # Image Review shows the live workspace selection; each project in
+        # Planning shows its own fixed snapshot in its Summary tab.
+        self.target_summary_dock = QDockWidget("Selection · Live", self)
+        self._target_summary_visible_in_review = False
         self.target_summary_dock.setObjectName("target_summary_dock")
         self.target_summary_dock.setAllowedAreas(Qt.RightDockWidgetArea | Qt.LeftDockWidgetArea)
         self.target_summary_dock.setWidget(target_summary_panel)
@@ -595,6 +609,9 @@ class ViewerWindow(QMainWindow):
         self.remove_targets_button.clicked.connect(self._remove_selected_targets)
         self.accept_valid_auto_wells_button.clicked.connect(self._accept_valid_auto_wells)
         self.target_summary_filter.currentIndexChanged.connect(self._refresh_target_summary)
+        self.target_summary_table.itemSelectionChanged.connect(
+            self._update_delete_selected_button
+        )
         for key in ("Delete", "Backspace"):
             shortcut = QShortcut(QKeySequence(key), self.target_summary_table)
             shortcut.setContext(Qt.WidgetShortcut)
@@ -1627,6 +1644,12 @@ class ViewerWindow(QMainWindow):
         return None
 
     def _main_tab_changed(self, index: int) -> None:
+        # The live selection dock belongs to Image Review.
+        if index == self.planning_tab_index:
+            self._target_summary_visible_in_review = self.target_summary_dock.isVisible()
+            self.target_summary_dock.hide()
+        elif self._target_summary_visible_in_review:
+            self.target_summary_dock.show()
         if index != self.planning_tab_index:
             return
         editor = self.plan_stack.currentWidget()
@@ -2185,9 +2208,17 @@ class ViewerWindow(QMainWindow):
             return
         ready_count = sum(summary.is_ready for summary in all_summaries)
         warning_count = len(all_summaries) - ready_count
+        well_count = len({summary.image.image_key for summary in all_summaries})
         self.target_summary_status_label.setText(
-            f"Ready {ready_count} · Warnings {warning_count}"
+            f"{_count(len(all_summaries), 'position')} in {_count(well_count, 'well')} · "
+            + (f"{warning_count} need attention" if warning_count else "all ready")
+            if all_summaries else "No positions selected"
         )
+        self.target_summary_status_label.setStyleSheet(
+            theme.status_style("attention" if warning_count else "muted")
+        )
+        self.target_summary_filter.setItemText(0, f"All positions ({len(all_summaries)})")
+        self.target_summary_filter.setItemText(1, f"Warnings ({warning_count})")
         try:
             acceptable_count = (
                 self.project_controller
@@ -2228,7 +2259,7 @@ class ViewerWindow(QMainWindow):
                 )
                 if summary.calibration is None:
                     x_mm = y_mm = "—"
-                    calibration_status = "Missing"
+                    calibration_status = "No well boundary"
                 else:
                     x_value, y_value = summary.calibration.pixel_to_mm(
                         summary.target.x_px, summary.target.y_px
@@ -2250,16 +2281,16 @@ class ViewerWindow(QMainWindow):
                         f"{confirmation}"
                     )
                 issue_labels = {
-                    TargetValidationIssue.CALIBRATION_MISSING: "Calibration missing",
-                    TargetValidationIssue.CALIBRATION_UNCONFIRMED: "Unconfirmed calibration",
+                    TargetValidationIssue.CALIBRATION_MISSING: "No well boundary",
+                    TargetValidationIssue.CALIBRATION_UNCONFIRMED: "Unconfirmed well boundary",
                     TargetValidationIssue.OUTSIDE_WELL: "Outside well",
                 }
                 validation_status = (
-                    " · ".join(
-                        issue_labels[issue]
-                        for issue in summary.validation_issues
+                    f"{theme.SYMBOL_OK} Ready"
+                    if summary.is_ready
+                    else f"{theme.SYMBOL_ATTENTION} " + " · ".join(
+                        issue_labels[issue] for issue in summary.validation_issues
                     )
-                    or "Ready"
                 )
                 values = (
                     summary.image.plate_code,
@@ -2267,19 +2298,21 @@ class ViewerWindow(QMainWindow):
                     str(summary.target_number),
                     x_mm,
                     y_mm,
-                    calibration_status,
                     validation_status,
                 )
                 tooltip = (
+                    f"Well boundary: {calibration_status}\n"
                     f"Pixel: ({summary.target.x_px:.1f}, {summary.target.y_px:.1f})\n"
                     f"{summary.image.path.resolve()}"
                 )
                 for column, value in enumerate(values):
                     item = QTableWidgetItem(value)
                     item.setToolTip(tooltip)
-                    if column == 6:
+                    if column in (3, 4):
+                        item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    if column == 5:
                         item.setForeground(
-                            QColor("#2e7d32" if summary.is_ready else "#c62828")
+                            QColor(theme.OK if summary.is_ready else theme.ATTENTION)
                         )
                     if column == 0:
                         item.setData(Qt.UserRole, summary.image_set_id)
@@ -2292,6 +2325,14 @@ class ViewerWindow(QMainWindow):
                 self.target_summary_table.setCurrentCell(restored_row, 0)
         finally:
             self._refreshing_target_summary = False
+        self._update_delete_selected_button()
+
+    def _update_delete_selected_button(self) -> None:
+        count = len(self.target_summary_table.selectionModel().selectedRows())
+        self.remove_targets_button.setText(
+            f"Delete Selected ({count})" if count else "Delete Selected"
+        )
+        self.remove_targets_button.setEnabled(count > 0)
 
     def _accept_valid_auto_wells(self) -> None:
         try:
@@ -2343,7 +2384,7 @@ class ViewerWindow(QMainWindow):
         if index.row() not in selected_rows:
             self.target_summary_table.selectRow(index.row())
         menu = QMenu(self.target_summary_table)
-        remove_action = menu.addAction("Remove selected targets")
+        remove_action = menu.addAction("Delete selected positions")
         remove_action.triggered.connect(self._remove_selected_targets)
         menu.exec_(self.target_summary_table.viewport().mapToGlobal(position))
 
@@ -2399,6 +2440,7 @@ class ViewerWindow(QMainWindow):
             return
         image_set_id = identity_item.data(Qt.UserRole)
         image_key = identity_item.data(Qt.UserRole + 1)
+        target_id = identity_item.data(Qt.UserRole + 2)
         try:
             self.project_controller.activate_image_set(image_set_id)
             self._adopt_active_review()
@@ -2412,6 +2454,7 @@ class ViewerWindow(QMainWindow):
                 self._show_current_image()
                 self._set_save_status("saved")
             self._sync_project_widgets()
+            self.image_canvas.set_highlighted_target(target_id)
             self.target_summary_table.setFocus(Qt.OtherFocusReason)
         except (StopIteration, *IMAGE_SOURCE_ERRORS) as error:
             QMessageBox.warning(self, "Cannot open target", str(error))
@@ -2841,8 +2884,7 @@ class ViewerWindow(QMainWindow):
             total = len(self.controller.plate.images)
             matches = "" if filtered == total else f" · {filtered} images match filter"
             self.review_summary_label.setText(
-                f"This well: {positions} position{'s' if positions != 1 else ''} · "
-                f"{review_state}{matches}"
+                f"This well: {_count(positions, 'position')} · {review_state}{matches}"
             )
         if self.project_controller.active_project is None:
             return
@@ -2858,8 +2900,7 @@ class ViewerWindow(QMainWindow):
         seen = sum(item.reviewed_images for item in per_image_set.values())
         images = sum(item.total_images for item in per_image_set.values())
         self.selection_label.setText(
-            f"Selection: {wells} well{'s' if wells != 1 else ''} · "
-            f"{positions} position{'s' if positions != 1 else ''}"
+            f"Selection: {_count(wells, 'well')} · {_count(positions, 'position')}"
             if wells else "Selection: no wells"
         )
         self.project_progress_label.setText(

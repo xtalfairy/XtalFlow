@@ -34,6 +34,7 @@ class ImageCanvas(QWidget):
         self._targets: tuple[TargetPoint, ...] = ()
         self._calibration: ImageCalibration | None = None
         self._calibration_points: tuple[tuple[float, float], ...] = ()
+        self._highlighted_target_id: str | None = None
         self._zoom = 1.0
         self._pan_x = 0.0
         self._pan_y = 0.0
@@ -68,6 +69,7 @@ class ImageCanvas(QWidget):
     def set_image(self, pixmap: QPixmap, targets: tuple[TargetPoint, ...]) -> None:
         self._pixmap = pixmap
         self._targets = targets
+        self._highlighted_target_id = None
         self.fit_image()
         self.update()
 
@@ -83,6 +85,11 @@ class ImageCanvas(QWidget):
 
     def set_targets(self, targets: tuple[TargetPoint, ...]) -> None:
         self._targets = targets
+        self.update()
+
+    def set_highlighted_target(self, target_id: str | None) -> None:
+        """Emphasise the position selected in the Target Summary."""
+        self._highlighted_target_id = target_id
         self.update()
 
     def set_calibration(self, calibration: ImageCalibration | None) -> None:
@@ -174,7 +181,7 @@ class ImageCanvas(QWidget):
         transform = self.transform()
         if transform is None:
             painter.setPen(QColor("#d8dee9"))
-            painter.drawText(self.rect(), Qt.AlignCenter, "Enter a plate code")
+            painter.drawText(self.rect(), Qt.AlignCenter, "No image")
             return
 
         target_rect = self.rect()
@@ -192,7 +199,11 @@ class ImageCanvas(QWidget):
             radius_x = calibration.radius_x_px * transform.scale
             radius_y = calibration.radius_y_px * transform.scale
             painter.setRenderHint(QPainter.Antialiasing)
-            painter.setPen(QPen(QColor("#36d17c"), 2))
+            # Detected boundaries are dashed until accepted, then solid.
+            boundary = QPen(QColor("#36d17c" if calibration.confirmed else "#ffb020"), 2)
+            if not calibration.confirmed:
+                boundary.setStyle(Qt.DashLine)
+            painter.setPen(boundary)
             painter.drawEllipse(
                 QRectF(
                     center_x - radius_x,
@@ -216,6 +227,10 @@ class ImageCanvas(QWidget):
             painter.drawEllipse(round(x) - 7, round(y) - 7, 14, 14)
             painter.drawLine(round(x) - 11, round(y), round(x) + 11, round(y))
             painter.drawLine(round(x), round(y) - 11, round(x), round(y) + 11)
+            if target.id == self._highlighted_target_id:
+                painter.setPen(QPen(QColor("#4da3ff"), 3))
+                painter.drawEllipse(round(x) - 16, round(y) - 16, 32, 32)
+                painter.setPen(QPen(QColor("#ff4057"), 2))
 
         if self.hasFocus():
             painter.setPen(QPen(QColor("#4da3ff"), 3))

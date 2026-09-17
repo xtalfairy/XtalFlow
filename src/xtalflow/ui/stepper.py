@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PyQt5.QtCore import pyqtSignal
-from PyQt5.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
+from PyQt5.QtWidgets import QHBoxLayout, QPushButton, QWidget
 
 from xtalflow.application.experiment_workflow import (
     STEP_LABELS,
@@ -36,26 +36,27 @@ class Stepper(QWidget):
     ) -> None:
         if tuple(self.buttons) != tuple(status.step for status in statuses):
             self._rebuild(tuple(status.step for status in statuses))
-        for number, status in enumerate(statuses, start=1):
+        for status in statuses:
             button = self.buttons[status.step]
-            symbol = STATE_SYMBOLS[status.state]
             label = STEP_LABELS[status.step]
             if compact:
-                label = label.split()[0]
-            button.setText(f"{number} {label}" + (f" {symbol}" if symbol else ""))
+                label = label.split()[-1].capitalize()
+            symbol = STATE_SYMBOLS[status.state]
+            button.setText(f"{label} {symbol}" if symbol else label)
             button.setToolTip(status.message)
-            button.setAccessibleName(f"Step {number}: {STEP_LABELS[status.step]}, {status.message}")
+            button.setAccessibleName(f"{STEP_LABELS[status.step]}: {status.message}")
             is_current = status.step is current
             button.setChecked(is_current)
+            # Only a real problem is coloured; done and not-yet steps stay quiet.
             color = {
-                StepState.COMPLETE: theme.OK,
+                StepState.COMPLETE: theme.TEXT,
                 StepState.ATTENTION: theme.ATTENTION,
                 StepState.INCOMPLETE: theme.TEXT_MUTED,
             }[status.state]
             button.setStyleSheet(
-                f"QPushButton {{ border: none; border-bottom: 3px solid "
-                f"{theme.FOCUS if is_current else 'transparent'}; padding: 6px 10px; "
-                f"color: {theme.TEXT if is_current else color}; "
+                f"QPushButton {{ border: none; border-bottom: 2px solid "
+                f"{theme.FOCUS if is_current else 'transparent'}; padding: 6px 10px 4px; "
+                f"color: {theme.FOCUS if is_current else color}; "
                 f"font-weight: {'600' if is_current else '400'}; background: transparent; }}"
             )
 
@@ -68,10 +69,6 @@ class Stepper(QWidget):
                 item.widget().deleteLater()
         self.buttons = {}
         for index, step in enumerate(steps):
-            if index:
-                connector = QLabel("—")
-                connector.setObjectName("Muted")
-                self._layout.addWidget(connector)
             button = QPushButton(STEP_LABELS[step])
             button.setCheckable(True)
             button.setFlat(True)

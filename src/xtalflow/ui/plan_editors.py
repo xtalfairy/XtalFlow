@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import getpass
+import math
 import json
 from collections.abc import Callable
 from decimal import Decimal
@@ -34,7 +35,9 @@ from xtalflow.domain import (
     SelectedWellUsage,
     crystal_selection_from_selected_crystals,
 )
+from xtalflow.domain.crystal_selection import order_selected_wells
 from xtalflow.domain.fragment_screening import (
+    TRANSFER_INCREMENT_NL,
     AssignmentOrder,
     FragmentLibrary,
     FragmentScreenPlan,
@@ -56,6 +59,7 @@ from xtalflow.domain.worksheets import (
 )
 from xtalflow.infrastructure.mxlive_config import MxLiveAccount
 from xtalflow.ui import theme
+from xtalflow.ui.help_button import HelpButton
 
 
 def _preview_table(headers: tuple[str, ...], stretch_last: bool = False) -> QTableWidget:
@@ -307,7 +311,7 @@ class FragmentScreeningEditor(PlanEditorBase):
         self.library_label = QLabel("No library imported")
         self.library_label.setObjectName("Muted")
         self.rows_input = QLineEdit()
-        self.rows_input.setPlaceholderText("e.g. 1-96, 101, 105-120")
+        self.rows_input.setPlaceholderText("1-96")
         self.rows_input.setToolTip(
             "One-based CSV data rows. The header and the CSV No column are not counted."
         )
@@ -328,10 +332,15 @@ class FragmentScreeningEditor(PlanEditorBase):
         self.choose_rows_radio = QRadioButton("Choose rows")
         self.all_rows_radio.setChecked(True)
         self.rows_input.setEnabled(False)
-        self.conditions_error_label = QLabel()
-        self.conditions_error_label.setWordWrap(True)
-        self.conditions_error_label.setStyleSheet(theme.status_style("attention"))
-        self.conditions_error_label.hide()
+        # Problems appear under the input that causes them.
+        self.library_error_label = _field_error_label()
+        self.rows_error_label = _field_error_label()
+        self.volume_error_label = _field_error_label()
+        self.assignment_table = _preview_table(
+            ("Well", "Positions", "Fragment", "Per position", "Check"), stretch_last=True
+        )
+        self.assignment_empty_label = QLabel("Select wells to see the assignments.")
+        self.assignment_empty_label.setObjectName("Muted")
         # Changing the order after seeing assignments shows what moves first.
         self.reassignment_label = QLabel()
         self.reassignment_label.setWordWrap(True)
@@ -375,41 +384,69 @@ class FragmentScreeningEditor(PlanEditorBase):
         return build_fragment_labworks
 
     def conditions_widget(self) -> QWidget:
+        """Inputs on the left; what they assign to each well on the right."""
+        self.library_input.setMaximumWidth(320)
+        self.rows_input.setMaximumWidth(140)
+        self.volume_input.setMaximumWidth(150)
         library_row = QHBoxLayout()
         library_row.addWidget(self.library_input, 1)
         library_row.addWidget(self.refresh_libraries_button)
-        library_row.addStretch()
-        rows_hint = QLabel("Data rows start at 1; the header is not counted.")
-        rows_hint.setObjectName("Muted")
-        volume_hint = QLabel(
-            "Shared equally between the positions in each well, in 2.5 nL steps."
-        )
-        volume_hint.setObjectName("Muted")
-        self.library_input.setMaximumWidth(480)
-        self.rows_input.setMaximumWidth(320)
-        self.volume_input.setMaximumWidth(200)
-        form = QFormLayout()
-        form.setFieldGrowthPolicy(QFormLayout.FieldsStayAtSizeHint)
         rows_row = QHBoxLayout()
         rows_row.addWidget(self.all_rows_radio)
         rows_row.addWidget(self.choose_rows_radio)
         rows_row.addWidget(self.rows_input)
+        rows_row.addWidget(
+            HelpButton(
+                "Data rows of the library CSV, counted from 1 below the header, "
+                "e.g. 1-96, 101, 105-120. Fragments are used in this order."
+            )
+        )
         rows_row.addStretch()
-        form.addRow("Library *", library_row)
-        form.addRow("", self.library_label)
-        form.addRow("Fragments", rows_row)
-        form.addRow("", rows_hint)
-        form.addRow("Total volume/well *", self.volume_input)
-        form.addRow("", volume_hint)
-        form.addRow("Assignment order", self.order_input)
+        volume_row = QHBoxLayout()
+        volume_row.addWidget(self.volume_input)
+        volume_row.addWidget(
+            HelpButton(
+                "Total volume dispensed into one well. It is shared equally between "
+                "the soaking positions in that well, in 2.5 nL steps."
+            )
+        )
+        volume_row.addStretch()
+        form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.FieldsStayAtSizeHint)
+        form.setVerticalSpacing(theme.SPACING_M)
+        form.addRow("Library", _field(library_row, self.library_label, self.library_error_label))
+        form.addRow("Fragments", _field(rows_row, self.rows_error_label))
+        form.addRow("Volume per well", _field(volume_row, self.volume_error_label))
+        form.addRow("Order", self.order_input)
+        inputs = QWidget()
+        inputs.setFixedWidth(440)
+        inputs_layout = QVBoxLayout()
+        inputs_layout.setContentsMargins(0, 0, 0, 0)
+        inputs_layout.addLayout(form)
+        inputs_layout.addStretch()
+        inputs.setLayout(inputs_layout)
+
+        results_heading = QHBoxLayout()
+        assignments_title = QLabel("Assignments")
+        assignments_title.setObjectName("PrimaryHeading")
+        results_heading.addWidget(assignments_title)
+        results_heading.addWidget(self.count_label, 1)
+        results = QVBoxLayout()
+        results.setContentsMargins(0, 0, 0, 0)
+        results.addLayout(results_heading)
+        results.addWidget(self.reassignment_panel)
+        results.addWidget(self.assignment_empty_label)
+        results.addWidget(self.assignment_table, 1)
+        self._results_stretch = QWidget()
+        self.library_label.setVisible(bool(self.library_label.text()))
+        results.addWidget(self._results_stretch, 1)
+
         widget = QWidget()
-        layout = QVBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addLayout(form)
-        layout.addWidget(self.count_label)
-        layout.addWidget(self.conditions_error_label)
-        layout.addWidget(self.reassignment_panel)
-        layout.addStretch()
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, theme.SPACING_S, 0, 0)
+        layout.setSpacing(theme.SPACING_XL)
+        layout.addWidget(inputs)
+        layout.addLayout(results, 1)
         widget.setLayout(layout)
         return widget
 
@@ -537,34 +574,32 @@ class FragmentScreeningEditor(PlanEditorBase):
 
     def _update_library_label(self) -> None:
         if self.library is not None:
-            self.library_label.setText(
-                f"{self.library.name} · {len(self.library.fragments)} imported data rows"
-            )
+            self.library_label.setText("")
         elif self.library_id:
             self.library_label.setText(f"Library unavailable: {self.library_id}")
         else:
-            self.library_label.setText("No library selected")
+            # "Choose a fragment library." already appears under the field.
+            self.library_label.setText("")
+        self.library_label.setVisible(bool(self.library_label.text()))
 
     def refresh_plan(self) -> None:
+        volume = Decimal(str(self.volume_input.value()))
+        selected_library = None
         try:
             if self.library is None:
                 raise ValueError("Choose a fragment library.")
-            selection = self._require_selection()
             selected_library = self.library.select_rows(self.rows_input.text())
+            selection = self._require_selection()
             self._show_counts(len(selected_library.fragments), len(selection.wells))
             plan = build_fragment_screen_plan(
-                selected_library,
-                selection,
-                Decimal(str(self.volume_input.value())),
-                self.order_input.currentData(),
+                selected_library, selection, volume, self.order_input.currentData(),
             )
         except ValueError as error:
-            if self.selection is None or self.library is None:
+            if self.selection is None or selected_library is None:
                 self.count_label.setText("")
-            # Without wells there is nothing to check the conditions against yet.
-            conditions_error = "" if self.selection is None and self.library else str(error)
-            self.conditions_error_label.setText(conditions_error)
-            self.conditions_error_label.setVisible(bool(conditions_error))
+            error = self._short_volume_error(error, volume)
+            self._show_field_error(str(error))
+            self._refresh_assignments(None, selected_library, volume)
             self.table.setRowCount(0)
             self.echo_table.setRowCount(0)
             self.shifter_table.setRowCount(0)
@@ -573,7 +608,8 @@ class FragmentScreeningEditor(PlanEditorBase):
         self.current_plan = plan
         self.error_label.setText("")
         self.error_label.hide()
-        self.conditions_error_label.hide()
+        self._show_field_error("")
+        self._refresh_assignments(plan, selected_library, volume)
         self.table.setRowCount(len(plan.assignments))
         for row, assignment in enumerate(plan.assignments):
             selected_well = assignment.selected_well
@@ -627,24 +663,131 @@ class FragmentScreeningEditor(PlanEditorBase):
             )
         return lines
 
+    def _short_volume_error(self, error: ValueError, volume: Decimal) -> ValueError:
+        """Name how many wells cannot share the volume and the nearest volumes that work.
+
+        The table marks each of those wells, so the field note stays one line.
+        """
+        if self.selection is None or "split equally" not in str(error):
+            return error
+        counts = [len(well.soaking_positions) for well in self.selection.wells]
+        units = volume / TRANSFER_INCREMENT_NL
+        failing = sum(1 for count in counts if not count or units % count)
+        step = 1
+        for count in counts:
+            if count:
+                step = step * count // math.gcd(step, count)
+        lower = (units // step) * step
+        suggestions = [
+            f"{TRANSFER_INCREMENT_NL * value} nL" for value in (lower, lower + step) if value > 0
+        ]
+        return ValueError(
+            f"Cannot be split equally in {_plural(failing, 'well')}. "
+            f"Try {' or '.join(suggestions)}."
+        )
+
+    def _show_field_error(self, message: str) -> None:
+        lowered = message.casefold()
+        if not message or "select at least one well" in lowered or "enough fragments" in lowered:
+            # No wells yet is not an input mistake; a fragment shortfall is in the count.
+            target = None
+        elif "library" in lowered:
+            target = self.library_error_label
+        elif "nl" in lowered or "volume" in lowered or "split" in lowered:
+            target = self.volume_error_label
+        else:
+            target = self.rows_error_label
+        for label in (self.library_error_label, self.rows_error_label, self.volume_error_label):
+            label.setText(message if label is target else "")
+            label.setVisible(label is target)
+
+    def _refresh_assignments(
+        self, plan: FragmentScreenPlan | None, library: FragmentLibrary | None, volume: Decimal
+    ) -> None:
+        """Every selected well with its fragment, or what keeps it from getting one."""
+        table = self.assignment_table
+        if self.selection is None:
+            table.setRowCount(0)
+            table.hide()
+            self.assignment_empty_label.show()
+            if hasattr(self, "_results_stretch"):
+                self._results_stretch.show()
+            return
+        table.show()
+        self.assignment_empty_label.hide()
+        if hasattr(self, "_results_stretch"):
+            self._results_stretch.hide()
+        if plan is not None:
+            rows = [
+                (
+                    assignment.selected_well, assignment.fragment.compound_id,
+                    f"{assignment.transfers[0].volume_nl} nL × {len(assignment.transfers)}",
+                    "",
+                )
+                for assignment in plan.assignments
+            ]
+        else:
+            fragments = library.fragments if library is not None else ()
+            units = volume / TRANSFER_INCREMENT_NL
+            rows = []
+            for index, well in enumerate(
+                order_selected_wells(self.selection, self.order_input.currentData())
+            ):
+                count = len(well.soaking_positions)
+                issues = []
+                fragment = fragments[index].compound_id if index < len(fragments) else "—"
+                if library is not None and index >= len(fragments):
+                    issues.append("no fragment left in the chosen rows")
+                if count and units % count == 0:
+                    per_position = f"{TRANSFER_INCREMENT_NL * (units // count)} nL × {count}"
+                else:
+                    per_position = "—"
+                    issues.append(f"{volume} nL cannot be split equally into {count}")
+                rows.append((well, fragment, per_position, " · ".join(issues)))
+        table.setRowCount(len(rows))
+        for row, (well, fragment, per_position, issue) in enumerate(rows):
+            usages = self.well_usage.get(well.image_key, ())
+            _, usage_tooltip = _well_usage_display(usages)
+            check = f"{theme.SYMBOL_ATTENTION} {issue}" if issue else (
+                "Used in another experiment" if usages else ""
+            )
+            values = (
+                f"{well.plate_code} {well.well_address}",
+                str(len(well.soaking_positions)),
+                fragment,
+                per_position,
+                check,
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column == 4:
+                    item.setToolTip(issue or usage_tooltip)
+                    if issue:
+                        item.setForeground(QColor(theme.ATTENTION))
+                    elif usages:
+                        item.setForeground(QColor(theme.TEXT_MUTED))
+                table.setItem(row, column, item)
+
     def _show_counts(self, fragments: int, wells: int) -> None:
         if fragments < wells:
             text = (
                 f"{theme.SYMBOL_ATTENTION} {wells} wells, {fragments} fragments — choose "
-                f"{wells - fragments} more fragments or edit the selected wells."
+                f"{wells - fragments} more rows or use fewer wells"
             )
             kind = "attention"
         elif fragments > wells:
             text = (
-                f"{theme.SYMBOL_OK} {fragments} fragments → {wells} wells · the last "
+                f"{wells} wells · {fragments} fragments · the last "
                 f"{fragments - wells} are not used"
             )
-            kind = "ok"
+            kind = "muted"
         else:
-            text = f"{theme.SYMBOL_OK} {fragments} fragments → {wells} wells · counts match"
-            kind = "ok"
+            text = f"{wells} wells · {fragments} fragments"
+            kind = "muted"
         self.count_label.setText(text)
-        self.count_label.setStyleSheet(theme.status_style(kind))
+        self.count_label.setStyleSheet(
+            theme.status_style(kind) if kind == "attention" else f"color: {theme.TEXT_MUTED};"
+        )
 
     def restore_draft(self, draft: PlanningDraft) -> None:
         widgets = (self.library_input, self.rows_input, self.protein_input,
@@ -754,6 +897,27 @@ class RawCrystalEditor(PlanEditorBase):
         self._refresh_facts()
         self._refresh_experiment_id()
         self.draft_changed.emit()
+
+
+def _field_error_label() -> QLabel:
+    label = QLabel()
+    label.setWordWrap(True)
+    label.setStyleSheet(theme.status_style("attention"))
+    label.hide()
+    return label
+
+
+def _field(row: QHBoxLayout, *below: QLabel) -> QWidget:
+    """An input row with its note and error directly underneath."""
+    widget = QWidget()
+    layout = QVBoxLayout()
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(2)
+    layout.addLayout(row)
+    for label in below:
+        layout.addWidget(label)
+    widget.setLayout(layout)
+    return widget
 
 
 def _plural(value: int, noun: str) -> str:

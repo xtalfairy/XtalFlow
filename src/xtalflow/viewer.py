@@ -30,7 +30,6 @@ from PyQt5.QtWidgets import (
     QDockWidget,
     QDialog,
     QFileDialog,
-    QFrame,
     QHeaderView,
     QHBoxLayout,
     QInputDialog,
@@ -160,6 +159,7 @@ from xtalflow.ui.review_widgets import (
 )
 from xtalflow.ui.plan_editors import FragmentScreeningEditor, RawCrystalEditor
 from xtalflow.ui.examples_panel import ExamplesPanel
+from xtalflow.ui.help_button import HelpButton
 from xtalflow.ui.experiment_page import ExperimentPage
 from xtalflow.ui.experiment_steps import SetupStep, WorksheetsStep
 from xtalflow.ui.home_page import EXPERIMENT_CHOICES, HomePage, RecentExperiment
@@ -178,30 +178,12 @@ T = TypeVar("T")
 
 PLAN_TYPE_LABELS = {choice.plan_type: choice.title for choice in EXPERIMENT_CHOICES}
 
-STEP_TITLES = {
-    WorkflowStep.SETUP: (
-        "Setup",
-        "Name the protein and the experiment. The experiment ID is made from the "
-        "protein when you finalize.",
-    ),
-    WorkflowStep.SELECT_WELLS: (
-        "Select wells",
-        "Load plates, then click each crystal to place a position. Positions belong "
-        "to this experiment only.",
-    ),
-    WorkflowStep.CONDITIONS: (
-        "Conditions",
-        "Choose the fragments and the volume each well receives.",
-    ),
-    WorkflowStep.REVIEW: (
-        "Review",
-        "Check what goes where. Finalizing fixes this revision and its experiment ID; "
-        "it does not start the experiment.",
-    ),
-    WorkflowStep.WORKSHEETS: (
-        "Worksheets",
-        "Save the worksheets to every instrument folder at once.",
-    ),
+STEP_HINTS = {
+    WorkflowStep.SETUP: "",
+    WorkflowStep.SELECT_WELLS: "",
+    WorkflowStep.CONDITIONS: "",
+    WorkflowStep.REVIEW: "Finalizing fixes this revision for the worksheets; nothing runs yet.",
+    WorkflowStep.WORKSHEETS: "",
 }
 
 
@@ -317,7 +299,7 @@ class ViewerWindow(QMainWindow):
         self.new_workspace_action = workspace_menu.addAction("New Workspace…")
         self.rename_workspace_action = workspace_menu.addAction("Rename Workspace…")
         self.workspace_menu_button.setMenu(workspace_menu)
-        workspace_label = QLabel("New experiments use workspace")
+        workspace_label = QLabel("Workspace")
         workspace_label.setObjectName("Muted")
         workspace_label.setToolTip(
             "A workspace groups plates. Experiments in it share plate images and "
@@ -327,12 +309,11 @@ class ViewerWindow(QMainWindow):
         self.workspace_bar.addWidget(workspace_label)
         self.workspace_bar.addWidget(self.project_selector)
         self.workspace_bar.addWidget(self.workspace_menu_button)
-        self.workspace_bar.addStretch()
 
     def _build_image_review_tab(self) -> QWidget:
         # Plates: loaded a few times per session, so they sit to the side.
-        plates_title = QLabel("PLATES")
-        plates_title.setObjectName("SectionTitle")
+        plates_title = QLabel("Plates")
+        plates_title.setObjectName("PrimaryHeading")
         self.add_plates_button = QToolButton()
         self.add_plates_button.setText("+")
         self.add_plates_button.setToolTip("Load Plates…")
@@ -411,6 +392,13 @@ class ViewerWindow(QMainWindow):
         navigation.addWidget(self.well_input)
         navigation.addWidget(self.previous_button)
         navigation.addWidget(self.next_button)
+        navigation.addSpacing(theme.SPACING_L)
+        self.target_summary_button = QPushButton("Selected wells")
+        self.target_summary_button.setCheckable(True)
+        self.target_summary_button.setToolTip(
+            "Show or hide this experiment's selected wells and their warnings (Ctrl+Shift+T)"
+        )
+        navigation.addWidget(self.target_summary_button)
 
         self.image_canvas = ImageCanvas()
         self.image_canvas.setAccessibleName("Crystal image")
@@ -432,15 +420,10 @@ class ViewerWindow(QMainWindow):
         self.empty_state = QWidget()
         empty_title = QLabel("Load plates")
         empty_title.setObjectName("PrimaryHeading")
-        empty_hint = QLabel(
-            "Enter the RockMaker plate codes. Add more plates later with + above the plate list."
-        )
-        empty_hint.setObjectName("Muted")
         self.load_plates_form = LoadPlatesForm(self.repository, PLATE_FORMATS)
         empty_layout = QVBoxLayout()
         empty_layout.addStretch()
         empty_layout.addWidget(empty_title, 0, Qt.AlignHCenter)
-        empty_layout.addWidget(empty_hint, 0, Qt.AlignHCenter)
         empty_layout.addWidget(self.load_plates_form, 0, Qt.AlignHCenter)
         empty_layout.addWidget(self.load_plates_form.load_button, 0, Qt.AlignHCenter)
         empty_layout.addStretch()
@@ -497,7 +480,13 @@ class ViewerWindow(QMainWindow):
         self.auto_advance_input = QSpinBox()
         self.auto_advance_input.setRange(1, 100)
         self.auto_advance_input.setValue(self._global_auto_advance_target_count)
-        self.auto_advance_input.setPrefix("Targets/img: ")
+        self.auto_advance_input.setPrefix("Next well after ")
+        self.auto_advance_input.setSuffix(" position")
+        self.auto_advance_input.valueChanged.connect(
+            lambda count: self.auto_advance_input.setSuffix(
+                " position" if count == 1 else " positions"
+            )
+        )
         self.auto_advance_input.setToolTip(
             "Move to the next image after this many positions. You can always move "
             "on with fewer; this is not a required count."
@@ -506,9 +495,18 @@ class ViewerWindow(QMainWindow):
             "Left-click adds a soaking position · right-click removes · ←/→ images"
         )
         self.review_summary_label.setObjectName("Muted")
+        self.examples_button = QToolButton()
+        self.examples_button.setText("Examples")
+        self.examples_button.setToolTip("Lab-approved examples of where to place positions")
+        self.shortcuts_button = HelpButton(
+            "Click a crystal to place a soaking position, right-click to remove it.\n"
+            "← → wells · ↑ ↓ plates · Space+drag pan · 0 fit · ? all shortcuts"
+        )
         targets_row = QHBoxLayout()
         targets_row.addWidget(self.auto_advance_input)
         targets_row.addWidget(self.review_summary_label, 1)
+        targets_row.addWidget(self.examples_button)
+        targets_row.addWidget(self.shortcuts_button)
 
         viewer_layout = QVBoxLayout()
         viewer_layout.setContentsMargins(0, 0, 0, 0)
@@ -528,33 +526,8 @@ class ViewerWindow(QMainWindow):
         self.review_splitter.setStretchFactor(1, 1)
         self.review_splitter.setSizes([240, 1100])
 
-        # Selection bar: this experiment's wells and the table to check them.
-        self.selection_label = QLabel("This experiment: no wells")
-        self.selection_label.setObjectName("PrimaryHeading")
-        self.project_progress_label = QLabel("Workspace: no images")
-        self.project_progress_label.setObjectName("Muted")
-        self.target_summary_button = QPushButton("Review selected wells")
-        self.target_summary_button.setCheckable(True)
-        self.target_summary_button.setToolTip(
-            "Show or hide the selected wells and their warnings (Ctrl+Shift+T)"
-        )
-        selection_layout = QHBoxLayout()
-        selection_layout.setContentsMargins(theme.SPACING_L, theme.SPACING_S, theme.SPACING_S, theme.SPACING_S)
-        selection_layout.addWidget(self.selection_label)
-        selection_layout.addWidget(self.project_progress_label)
-        selection_layout.addStretch()
-        self.examples_button = QPushButton("Show examples")
-        self.examples_button.setToolTip("Example images of where to place positions")
-        selection_layout.addWidget(self.examples_button)
-        selection_layout.addWidget(self.target_summary_button)
-        self.selection_bar = QFrame()
-        self.selection_bar.setObjectName("SelectionBar")
-        self.selection_bar.setLayout(selection_layout)
-
         review_layout = QVBoxLayout()
         review_layout.setContentsMargins(0, 0, 0, 0)
-        review_layout.setSpacing(theme.SPACING_M)
-        review_layout.addWidget(self.selection_bar)
         review_layout.addWidget(self.review_splitter, 1)
         review_tab = QWidget()
         review_tab.setLayout(review_layout)
@@ -1153,8 +1126,7 @@ class ViewerWindow(QMainWindow):
             self._sync_editor_selection(editor)
         self._current_step = step
         self._set_target_summary_available(step is WorkflowStep.SELECT_WELLS)
-        title, hint = STEP_TITLES[step]
-        self.experiment_page.show_step(step, title, hint)
+        self.experiment_page.show_step(step, STEP_HINTS[step])
         if step is WorkflowStep.WORKSHEETS:
             self._refresh_worksheets_step(editor)
         elif step is WorkflowStep.SELECT_WELLS:
@@ -1190,28 +1162,39 @@ class ViewerWindow(QMainWindow):
                 self.show_home()
             else:
                 self._save_plan_worksheets(editor)
+        elif step is WorkflowStep.SELECT_WELLS and editor.wells_needing_attention:
+            self._review_target_warnings()
         else:
             steps = steps_for(editor.plan_type)
             self.go_to_step(steps[steps.index(step) + 1])
 
-    def _primary_for(self, status: ExperimentStatus, step: WorkflowStep, steps) -> tuple[str, bool]:
+    def _primary_for(
+        self, editor, status: ExperimentStatus, step: WorkflowStep, steps
+    ) -> tuple[str, bool]:
+        """The next action, named for what it does, and whether it can run now."""
+        state = status.status_of(step).state
+        if step is WorkflowStep.SETUP:
+            return "Select wells", state is StepState.COMPLETE
+        if step is WorkflowStep.SELECT_WELLS:
+            if editor.wells_needing_attention:
+                return f"Check {_count(editor.wells_needing_attention, 'well')}", True
+            if editor.selected_well_count:
+                return f"Use {_count(editor.selected_well_count, 'well')}", True
+            return "Use wells", False
+        if step is WorkflowStep.CONDITIONS:
+            return "Review assignments", state is StepState.COMPLETE
         if step is WorkflowStep.REVIEW:
+            revision = editor.last_revision
+            next_revision = revision.revision + 1 if revision is not None else 1
             if status.ready_to_finalize:
-                return "Finalize and continue", True
-            complete = status.status_of(step).state is StepState.COMPLETE
-            return ("Continue to Worksheets", True) if complete else (
-                "Finalize and continue", False
-            )
-        if step is WorkflowStep.WORKSHEETS:
-            if status.status_of(step).state is StepState.COMPLETE:
-                return "Back to experiments", True
-            finalized = status.status_of(WorkflowStep.REVIEW).state is StepState.COMPLETE
-            return "Save all worksheets", finalized
-        next_step = steps[steps.index(step) + 1]
-        return (
-            f"Continue to {STEP_LABELS[next_step]}",
-            status.status_of(step).state is StepState.COMPLETE,
-        )
+                return f"Finalize r{next_revision}", True
+            if state is StepState.COMPLETE:
+                return "Prepare worksheets", True
+            return f"Finalize r{next_revision}", False
+        if state is StepState.COMPLETE:
+            return "Done", True
+        finalized = status.status_of(WorkflowStep.REVIEW).state is StepState.COMPLETE
+        return "Save worksheets", finalized
 
     def _finalize_and_continue(self, editor) -> PlanRevision | None:
         experiment_id = (
@@ -1307,8 +1290,12 @@ class ViewerWindow(QMainWindow):
             and steps.index(first) < steps.index(step)
         ):
             text += f" · {STEP_LABELS[first]}: {status.status_of(first).message}"
-        primary_text, primary_enabled = self._primary_for(status, step, steps)
-        notes = " · ".join(note for note in status.notes if note not in text)
+        primary_text, primary_enabled = self._primary_for(editor, status, step, steps)
+        # Notes such as unused fragments matter when deciding to finalize.
+        notes = (
+            " · ".join(note for note in status.notes if note not in text)
+            if step is WorkflowStep.REVIEW else ""
+        )
         page.show_footer(
             (text, kind), notes, primary_text, primary_enabled,
             step is not steps[0],
@@ -1365,6 +1352,14 @@ class ViewerWindow(QMainWindow):
             if selection is not None:
                 self._save_selection_snapshot(editor, selection)
             self._set_editor_well_usage(editor)
+        if hasattr(editor, "assignment_empty_label"):
+            editor.assignment_empty_label.setText(
+                f"{theme.SYMBOL_ATTENTION} Check "
+                f"{_count(editor.wells_needing_attention, 'well')} in Select wells "
+                "to see the assignments."
+                if editor.wells_needing_attention
+                else "Select wells to see the assignments."
+            )
         self._refresh_experiment_status(editor)
 
     def _sync_current_selection(self) -> None:
@@ -1375,7 +1370,9 @@ class ViewerWindow(QMainWindow):
             self._sync_editor_selection(self.current_editor)
 
     def _set_target_summary_available(self, available: bool) -> None:
-        """The selected-wells table belongs to the Select wells step."""
+        """The selected-wells table and image status belong to the Select wells step."""
+        self.save_status_label.setVisible(available)
+        self.image_path_status.setVisible(available)
         if available == self._target_summary_available:
             if not available:
                 self.target_summary_dock.hide()
@@ -1425,7 +1422,8 @@ class ViewerWindow(QMainWindow):
         elif latest.status == WORKSHEETS_SUCCEEDED:
             lines = [
                 f"{theme.SYMBOL_OK} Worksheets saved for r{revision.revision} · "
-                f"{latest.exported_at:%Y-%m-%d %H:%M} · {latest.username}"
+                f"{latest.exported_at:%Y-%m-%d %H:%M} · {latest.username} · "
+                "not yet run on the instruments"
             ]
             lines.extend(
                 f"{self._instrument_label(output)}: {output.path}"
@@ -2226,8 +2224,6 @@ class ViewerWindow(QMainWindow):
             self.navigation_label.setText("No image set loaded")
             self.position_label.setText("")
             self.review_summary_label.setText("Add a plate to the active workspace")
-            self.project_progress_label.setText("Workspace: no images")
-            self.selection_label.setText("This experiment: no wells")
             self.calibration_label.setText("")
             self.calibration_accept_inline_button.hide()
             self.calibration_adjust_button.setEnabled(False)
@@ -3147,30 +3143,21 @@ class ViewerWindow(QMainWindow):
             total = len(self.controller.plate.images)
             matches = "" if filtered == total else f" · {filtered} images match filter"
             others = self._other_experiments_using_current_image()
-            used = f" · also used in {', '.join(others)}" if others else ""
+            used = f" · △ also used in {', '.join(others)}" if others else ""
             self.review_summary_label.setText(
                 f"This well: {_count(positions, 'position')} · {review_state}{matches}{used}"
+            )
+            self.review_summary_label.setStyleSheet(
+                theme.status_style("attention") if others else ""
             )
         if self.project_controller.active_project is None:
             return
         try:
             per_image_set = self.project_controller.image_set_review_statistics()
         except IMAGE_SOURCE_ERRORS:
-            self.project_progress_label.setText("· Workspace totals unavailable")
             self._update_navigation()
             return
         self.image_set_model.set_statistics(per_image_set)
-        wells = sum(item.target_images for item in per_image_set.values())
-        positions = sum(item.target_points for item in per_image_set.values())
-        seen = sum(item.reviewed_images for item in per_image_set.values())
-        images = sum(item.total_images for item in per_image_set.values())
-        self.selection_label.setText(
-            f"This experiment: {_count(wells, 'well')} · {_count(positions, 'position')}"
-            if wells else "This experiment: no wells"
-        )
-        self.project_progress_label.setText(
-            f"· Workspace {seen}/{images} images seen" if images else "Workspace: no images"
-        )
         self._update_navigation()
         if (
             self.current_editor is not None

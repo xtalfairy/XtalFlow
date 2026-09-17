@@ -118,7 +118,8 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
     elif facts.wells_needing_attention:
         statuses[WorkflowStep.SELECT_WELLS] = StepStatus(
             WorkflowStep.SELECT_WELLS, StepState.ATTENTION,
-            f"{_count(facts.wells_needing_attention, 'well')} need attention · {selection}",
+            f"{_count(facts.wells_needing_attention, 'well')} "
+            f"{'needs' if facts.wells_needing_attention == 1 else 'need'} attention · {selection}",
         )
     else:
         statuses[WorkflowStep.SELECT_WELLS] = StepStatus(
@@ -131,6 +132,11 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
             statuses[WorkflowStep.CONDITIONS] = StepStatus(
                 WorkflowStep.CONDITIONS, StepState.ATTENTION, facts.conditions_error
             )
+        elif facts.wells_needing_attention:
+            statuses[WorkflowStep.CONDITIONS] = StepStatus(
+                WorkflowStep.CONDITIONS, StepState.INCOMPLETE,
+                "Check the selected wells before assigning fragments.",
+            )
         elif facts.well_count == 0:
             # Volumes and fragment counts can only be checked against selected wells.
             statuses[WorkflowStep.CONDITIONS] = StepStatus(
@@ -138,14 +144,12 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
                 "Select wells to check the fragment assignment.",
             )
         else:
-            message = "Fragments assigned"
+            message = f"Fragments assigned to {_count(facts.well_count, 'well')}"
             if facts.unused_fragment_count:
-                unused = (
+                notes.append(
                     f"The last {_count(facts.unused_fragment_count, 'fragment')} "
                     "in the chosen rows will not be used."
                 )
-                notes.append(unused)
-                message = f"{message} · {unused}"
             statuses[WorkflowStep.CONDITIONS] = StepStatus(
                 WorkflowStep.CONDITIONS, StepState.COMPLETE, message
             )

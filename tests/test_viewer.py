@@ -118,7 +118,9 @@ def test_fragment_editor_previews_and_reassigns_by_plate_well() -> None:
     assert [
         editor.preview_tabs.tabText(index) for index in range(editor.preview_tabs.count())
     ] == ["Assignments", "ECHO worksheet", "SHIFTER worksheet"]
-    assert editor.count_label.text() == "✓ 2 fragments → 2 wells · counts match"
+    assert editor.count_label.text() == "2 wells · 2 fragments"
+    assert editor.assignment_table.item(0, 0).text() == "20 A01a"
+    assert editor.assignment_table.item(0, 2).text() == "CMP-8"
     assert editor.echo_table.rowCount() == 2
     assert editor.shifter_table.rowCount() == 2
     assert editor.table.item(0, 8).text() == "25.0 nL × 1"
@@ -138,9 +140,10 @@ def test_fragment_editor_previews_and_reassigns_by_plate_well() -> None:
     editor.choose_rows_radio.setChecked(True)
     editor.rows_input.setText("2")
     assert editor.current_plan is None
-    assert not editor.conditions_error_label.isHidden()
     assert "enough fragments" in editor.error_label.text()
-    assert editor.count_label.text().startswith("△ 2 wells, 1 fragments — choose 1 more")
+    assert editor.count_label.text() == "△ 2 wells, 1 fragments — choose 1 more rows or use fewer wells"
+    assert editor.rows_error_label.isHidden()
+    assert editor.assignment_table.item(1, 4).text() == "△ no fragment left in the chosen rows"
     assert editor.echo_table.rowCount() == 0
     assert editor.shifter_table.rowCount() == 0
     editor.close()
@@ -163,13 +166,16 @@ def test_conditions_explain_a_volume_that_cannot_be_split_equally() -> None:
     editor.volume_input.setValue(25)
 
     assert editor.current_plan is None
-    assert editor.conditions_error_label.text() == (
-        "25 nL cannot be split equally between 3 positions in A01a in 2.5 nL steps. "
-        "Use 22.5 nL or 30 nL, or change the positions."
+    assert editor.volume_error_label.text() == (
+        "Cannot be split equally in 1 well. Try 22.5 nL or 30.0 nL."
+    )
+    assert editor.assignment_table.item(0, 4).text() == (
+        "△ 25.0 nL cannot be split equally into 3"
     )
     editor.volume_input.setValue(30)
     assert editor.current_plan is not None
-    assert editor.conditions_error_label.isHidden()
+    assert editor.volume_error_label.isHidden()
+    assert editor.assignment_table.item(0, 3).text() == "10.0 nL × 3"
     assert editor.table.item(0, 8).text() == "10.0 nL × 3"
     assert "30.0 nL per well" in editor.checklist_label.text()
     editor.close()
@@ -188,8 +194,8 @@ def test_viewer_loads_and_navigates_images() -> None:
     first_text = window.navigation_label.text()
     first_position = window.position_label.text()
     first_well = window.well_input.text()
-    assert window.auto_advance_input.prefix() == "Targets/img: "
-    assert window.target_summary_button.text() == "Review selected wells"
+    assert window.auto_advance_input.prefix() == "Next well after "
+    assert window.target_summary_button.text() == "Selected wells"
     assert window.previous_button.text() == "◀"
     assert window.next_button.text() == "▶"
     assert window.save_status_label.parent() is window.statusBar()
@@ -253,7 +259,6 @@ def test_empty_workspace_clears_image_from_previous_workspace(
     assert window.review_summary_label.text() == (
         "Add a plate to the active workspace"
     )
-    assert window.project_progress_label.text() == "Workspace: no images"
     assert not window.previous_button.isEnabled()
     assert not window.next_button.isEnabled()
     window.close()
@@ -367,7 +372,7 @@ def test_main_window_starts_on_home_and_guides_an_experiment(
     assert not page.primary_button.isEnabled()
     assert not page.back_button.isEnabled()
     editor.protein_input.setText("BRD4")
-    assert page.primary_button.text() == "Continue to Select wells"
+    assert page.primary_button.text() == "Select wells"
     page.primary_button.click()
 
     assert window._current_step is WorkflowStep.SELECT_WELLS
@@ -1012,7 +1017,7 @@ def test_fragment_worksheets_are_saved_and_audited(tmp_path: Path, monkeypatch) 
     monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
 
     window.go_to_step(WorkflowStep.REVIEW)
-    assert page.primary_button.text() == "Finalize and continue"
+    assert page.primary_button.text() == "Finalize r1"
     page.primary_button.click()
 
     assert window._current_step is WorkflowStep.WORKSHEETS
@@ -1021,7 +1026,7 @@ def test_fragment_worksheets_are_saved_and_audited(tmp_path: Path, monkeypatch) 
         "ECHO 650", "SHIFTER 1", "SHIFTER 2"
     ]
     assert table.item(0, 2).text() == "1"
-    assert page.primary_button.text() == "Save all worksheets"
+    assert page.primary_button.text() == "Save worksheets"
     page.primary_button.click()
 
     revision = editor.last_revision
@@ -1030,14 +1035,14 @@ def test_fragment_worksheets_are_saved_and_audited(tmp_path: Path, monkeypatch) 
     assert result.startswith("✓ Worksheets saved for r1")
     assert "SHIFTER 2: " in result
     assert editor.lifecycle_label.text() == "Finalized r1"
-    assert page.primary_button.text() == "Back to experiments"
+    assert page.primary_button.text() == "Done"
     assert all(
         status.state is StepState.COMPLETE for status in editor.experiment_status.steps
     )
     editor.protein_input.setText("BRD4-B")
     window._persist_draft(editor)
     assert editor.lifecycle_label.text() == "Draft changes after r1"
-    assert page.primary_button.text() == "Save all worksheets"
+    assert page.primary_button.text() == "Save worksheets"
     assert not page.primary_button.isEnabled()
     assert [event.status for event in exports] == ["succeeded"]
     assert Path(exports[0].path_for("echo650")).is_file()
@@ -1075,7 +1080,7 @@ def test_unavailable_instrument_share_can_use_alternate_root(
 
     assert step.result_label.text().startswith("! No worksheets were saved.")
     assert not step.retry_button.isHidden()
-    assert window.experiment_page.primary_button.text() == "Save all worksheets"
+    assert window.experiment_page.primary_button.text() == "Save worksheets"
     step.choose_location_button.click()
 
     exports = store.audit.list_worksheet_exports(editor.last_revision.id)
@@ -1157,7 +1162,7 @@ def test_raw_crystal_experiment_runs_from_setup_to_saved_worksheets(
     window._sync_current_selection()
 
     assert page.footer_status_label.text() == "✓ 1 well · 1 position"
-    assert window.selection_label.text() == "This experiment: 1 well · 1 position"
+    assert page.primary_button.text() == "Use 1 well"
     page.primary_button.click()
     assert window._current_step is WorkflowStep.REVIEW
     assert first.summary_table.rowCount() == 1
@@ -1169,7 +1174,7 @@ def test_raw_crystal_experiment_runs_from_setup_to_saved_worksheets(
     exports = store.audit.list_worksheet_exports(first.last_revision.id)
     assert [event.status for event in exports] == ["succeeded"]
     assert Path(exports[0].path_for("shifter1")).is_file()
-    assert page.primary_button.text() == "Back to experiments"
+    assert page.primary_button.text() == "Done"
     page.primary_button.click()
     assert window.home_page.recent_table.item(0, 2).text() == "Worksheets saved r1"
 
@@ -1364,7 +1369,7 @@ def test_trusted_plate_auto_confirms_well_above_user_threshold(
     assert window.current_calibration is not None
     assert window.auto_confirm_plate_checkbox.isChecked()
     assert window.current_calibration.confirmed
-    assert "Well aligned" in window.calibration_label.text()
+    assert "Well boundary confirmed · auto, outline fit" in window.calibration_label.text()
     window.close()
     app.processEvents()
 
@@ -1559,7 +1564,7 @@ def test_manual_calibration_clicks_do_not_create_targets(tmp_path: Path) -> None
 
     assert window.controller.session.target_count_for(image) == 0
     assert window.current_calibration.confirmed
-    assert "Manual" in window.calibration_label.text()
+    assert "confirmed · manual" in window.calibration_label.text()
     window.close()
     app.processEvents()
 
@@ -1921,7 +1926,6 @@ def test_project_filter_jumps_to_matching_image_on_another_plate(tmp_path: Path)
 
     assert window.controller.plate.plate_code == "1100"
     assert window.controller.current_image.image_key == target_key
-    assert window.selection_label.text() == "This experiment: 1 well · 1 position"
     window.close()
     app.processEvents()
 

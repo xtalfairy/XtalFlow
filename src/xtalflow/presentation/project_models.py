@@ -85,5 +85,6 @@ class ProjectImageSetListModel(QAbstractListModel):
             return f"{positions} positions"
         return (
             f"{statistics.reviewed_images}/{statistics.total_images} seen · "
-            f"{statistics.target_images} selected"
+            f"{statistics.target_images} "
+            f"well{'' if statistics.target_images == 1 else 's'} selected"
         )

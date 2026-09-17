@@ -18,6 +18,14 @@ from xtalflow.ui import theme
 from xtalflow.ui.stepper import Stepper
 
 
+PAGE_STYLE = f"""
+QFrame#StepNavigation {{ border: none; border-bottom: 1px solid {theme.BORDER}; }}
+QFrame#StepFooter {{ border: none; border-top: 1px solid {theme.BORDER}; }}
+QPushButton#HomeLink {{ border: none; color: {theme.FOCUS}; padding: 2px 4px; }}
+QPushButton#HomeLink:hover {{ text-decoration: underline; }}
+"""
+
+
 class ExperimentPage(QWidget):
     home_requested = pyqtSignal()
     back_requested = pyqtSignal()
@@ -25,22 +33,20 @@ class ExperimentPage(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setStyleSheet(PAGE_STYLE)
         self.home_button = QPushButton("‹ Experiments")
-        self.home_button.setFlat(True)
+        self.home_button.setObjectName("HomeLink")
         self.title_label = QLabel("Experiment")
         self.title_label.setObjectName("PrimaryHeading")
-        font = self.title_label.font()
-        font.setPointSizeF(font.pointSizeF() * 1.25)
-        self.title_label.setFont(font)
         self.type_label = QLabel()
         self.type_label.setObjectName("Muted")
         self.lifecycle_label = QLabel()
+        self.lifecycle_label.setObjectName("Muted")
         self.stepper = Stepper()
-        self.step_title_label = QLabel()
-        self.step_title_label.setObjectName("PrimaryHeading")
+        # One sentence at most; details live next to the controls they explain.
         self.step_hint_label = QLabel()
         self.step_hint_label.setObjectName("Muted")
-        self.step_hint_label.setWordWrap(True)
+        self.step_hint_label.hide()
         self.body = QStackedWidget()
         self._step_pages: dict[WorkflowStep, QWidget] = {}
         # Keeps another experiment's step bodies alive while they are not shown.
@@ -48,10 +54,8 @@ class ExperimentPage(QWidget):
         self._page_holder.hide()
 
         self.footer_status_label = QLabel()
-        self.footer_status_label.setWordWrap(True)
         self.footer_notes_label = QLabel()
         self.footer_notes_label.setObjectName("Muted")
-        self.footer_notes_label.setWordWrap(True)
         self.back_button = QPushButton("Back")
         self.primary_button = QPushButton("Continue")
         self.primary_button.setObjectName("Primary")
@@ -63,33 +67,32 @@ class ExperimentPage(QWidget):
         header.addWidget(self.type_label)
         header.addStretch()
         header.addWidget(self.lifecycle_label)
-        step_heading = QVBoxLayout()
-        step_heading.setSpacing(2)
-        step_heading.addWidget(self.step_title_label)
-        step_heading.addWidget(self.step_hint_label)
-        footer_text = QVBoxLayout()
-        footer_text.setSpacing(2)
+        navigation = QHBoxLayout()
+        navigation.setContentsMargins(0, 0, 0, 0)
+        navigation.addWidget(self.stepper)
+        navigation.addStretch()
+        navigation.addWidget(self.step_hint_label)
+        self.navigation = QFrame()
+        self.navigation.setObjectName("StepNavigation")
+        self.navigation.setLayout(navigation)
+        footer_text = QHBoxLayout()
+        footer_text.setSpacing(theme.SPACING_L)
         footer_text.addWidget(self.footer_status_label)
-        footer_text.addWidget(self.footer_notes_label)
+        footer_text.addWidget(self.footer_notes_label, 1)
         footer = QHBoxLayout()
-        footer.setContentsMargins(theme.SPACING_L, theme.SPACING_M, theme.SPACING_M, theme.SPACING_M)
+        footer.setContentsMargins(0, theme.SPACING_M, 0, theme.SPACING_S)
         footer.addLayout(footer_text, 1)
         footer.addWidget(self.back_button)
         footer.addWidget(self.primary_button)
         self.footer = QFrame()
-        self.footer.setObjectName("DeliveryBar")
+        self.footer.setObjectName("StepFooter")
         self.footer.setLayout(footer)
-        separator = QFrame()
-        separator.setFrameShape(QFrame.HLine)
-        separator.setObjectName("Muted")
 
         layout = QVBoxLayout()
-        layout.setContentsMargins(0, theme.SPACING_S, 0, theme.SPACING_S)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(theme.SPACING_M)
         layout.addLayout(header)
-        layout.addWidget(self.stepper)
-        layout.addWidget(separator)
-        layout.addLayout(step_heading)
+        layout.addWidget(self.navigation)
         layout.addWidget(self.body, 1)
         layout.addWidget(self.footer)
         self.setLayout(layout)
@@ -113,9 +116,8 @@ class ExperimentPage(QWidget):
     def page_for(self, step: WorkflowStep) -> QWidget | None:
         return self._step_pages.get(step)
 
-    def show_step(self, step: WorkflowStep, title: str, hint: str) -> None:
+    def show_step(self, step: WorkflowStep, hint: str = "") -> None:
         self.body.setCurrentWidget(self._step_pages[step])
-        self.step_title_label.setText(title)
         self.step_hint_label.setText(hint)
         self.step_hint_label.setVisible(bool(hint))
 
@@ -139,7 +141,11 @@ class ExperimentPage(QWidget):
     ) -> None:
         text, kind = status
         self.footer_status_label.setText(text)
-        self.footer_status_label.setStyleSheet(theme.status_style(kind))
+        # Colour and weight are for problems; progress reads as plain text.
+        self.footer_status_label.setStyleSheet(
+            theme.status_style(kind) if kind in ("attention", "error")
+            else f"color: {theme.TEXT_MUTED if kind == 'muted' else theme.TEXT};"
+        )
         self.footer_notes_label.setText(notes)
         self.footer_notes_label.setVisible(bool(notes))
         self.primary_button.setText(primary_text)

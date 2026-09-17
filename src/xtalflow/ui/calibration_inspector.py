@@ -28,13 +28,14 @@ def calibration_status(
     if calibration is None:
         reason = f" · {unavailable_reason}" if unavailable_reason else ""
         return f"{theme.SYMBOL_ERROR} Well boundary unavailable{reason}", "error"
+    # The fit score describes the detected well outline, not the crystal.
     if calibration.method is CalibrationMethod.MANUAL_THREE_POINT:
-        method = "Manual"
+        method = "manual"
     else:
-        method = f"Auto {calibration.confidence:.0%}"
+        method = f"auto, outline fit {calibration.confidence:.0%}"
     if calibration.confirmed:
-        return f"{theme.SYMBOL_OK} Well aligned · {method}", "ok"
-    return f"{theme.SYMBOL_ATTENTION} Check well boundary · {method}", "attention"
+        return f"{theme.SYMBOL_OK} Well boundary confirmed · {method}", "ok"
+    return f"{theme.SYMBOL_ATTENTION} Confirm well boundary · {method}", "attention"
 
 
 class CalibrationInspector(QFrame):

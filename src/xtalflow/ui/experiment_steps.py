@@ -30,7 +30,7 @@ class SetupStep(QWidget):
         self.workspace_label = QLabel()
         self.workspace_label.setObjectName("Muted")
         protein_hint = QLabel(
-            "Used for the experiment ID and MxLive records, e.g. BRD4 → FBS-BRD4-2026-001."
+            "Used in the experiment ID and MxLive records."
         )
         protein_hint.setObjectName("Muted")
         protein_hint.setWordWrap(True)

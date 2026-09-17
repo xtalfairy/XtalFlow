@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 
-LATEST_SCHEMA_VERSION = 17
+LATEST_SCHEMA_VERSION = 18
 IMPORTED_PROJECT_ID = "imported-standalone-reviews"
 LEGACY_PLATE_FORMAT_ID = "swissci-midi-3-lens-hr3-194"
 LEGACY_PLATE_FORMAT_VERSION = 1
@@ -129,6 +129,8 @@ def migrate_review_database(connection: sqlite3.Connection) -> None:
                 FROM image_set_target_point
                 """
             )
+        if starting_version < 18:
+            _copy_experiment_positions(connection)
         if starting_version < 7:
             connection.execute(
                 """
@@ -248,6 +250,9 @@ def _create_planning_schema(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE planning_draft ADD COLUMN experiment_id TEXT"
         )
+    if "workflow_step" not in draft_columns:
+        # Schema 18: the guided step to resume an experiment at.
+        connection.execute("ALTER TABLE planning_draft ADD COLUMN workflow_step TEXT")
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS plan_revision (
@@ -407,23 +412,27 @@ def _create_project_schema(connection: sqlite3.Connection) -> None:
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS image_set_review_state (
-            image_set_id TEXT PRIMARY KEY REFERENCES project_image_set(image_set_id),
+            image_set_id TEXT NOT NULL REFERENCES project_image_set(image_set_id),
             auto_advance_target_count INTEGER NOT NULL,
             current_image_key TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            experiment_id TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(experiment_id, image_set_id)
         )
         """
     )
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS image_set_target_point (
-            target_id TEXT PRIMARY KEY,
+            target_id TEXT NOT NULL,
             image_set_id TEXT NOT NULL REFERENCES project_image_set(image_set_id),
             image_key TEXT NOT NULL,
             x_px REAL NOT NULL,
             y_px REAL NOT NULL,
-            selected_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00'
+            selected_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00',
+            experiment_id TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(experiment_id, target_id)
         )
         """
     )
@@ -445,9 +454,15 @@ def _create_project_schema(connection: sqlite3.Connection) -> None:
             image_set_id TEXT NOT NULL REFERENCES project_image_set(image_set_id),
             image_key TEXT NOT NULL,
             reviewed_at TEXT NOT NULL,
-            PRIMARY KEY(image_set_id, image_key)
+            experiment_id TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(experiment_id, image_set_id, image_key)
         )
         """
+    )
+    _scope_review_tables_by_experiment(connection)
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS image_set_target_image "
+        "ON image_set_target_point(image_set_id, image_key)"
     )
     connection.execute(
         """
@@ -558,6 +573,102 @@ def _move_worksheet_paths_to_instrument_outputs(connection: sqlite3.Connection) 
     connection.execute("DROP TABLE worksheet_export_event_schema16")
 
 
+REVIEW_TABLE_LAYOUTS = {
+    "image_set_target_point": (
+        """
+        CREATE TABLE image_set_target_point (
+            target_id TEXT NOT NULL,
+            image_set_id TEXT NOT NULL REFERENCES project_image_set(image_set_id),
+            image_key TEXT NOT NULL,
+            x_px REAL NOT NULL,
+            y_px REAL NOT NULL,
+            selected_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00',
+            experiment_id TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(experiment_id, target_id)
+        )
+        """,
+        "target_id, image_set_id, image_key, x_px, y_px, selected_at",
+    ),
+    "image_set_image_review": (
+        """
+        CREATE TABLE image_set_image_review (
+            image_set_id TEXT NOT NULL REFERENCES project_image_set(image_set_id),
+            image_key TEXT NOT NULL,
+            reviewed_at TEXT NOT NULL,
+            experiment_id TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(experiment_id, image_set_id, image_key)
+        )
+        """,
+        "image_set_id, image_key, reviewed_at",
+    ),
+    "image_set_review_state": (
+        """
+        CREATE TABLE image_set_review_state (
+            image_set_id TEXT NOT NULL REFERENCES project_image_set(image_set_id),
+            auto_advance_target_count INTEGER NOT NULL,
+            current_image_key TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            experiment_id TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(experiment_id, image_set_id)
+        )
+        """,
+        "image_set_id, auto_advance_target_count, current_image_key, created_at, updated_at",
+    ),
+}
+
+
+def _scope_review_tables_by_experiment(connection: sqlite3.Connection) -> None:
+    """Schema 18: positions, review marks, and navigation belong to an experiment.
+
+    Rows from earlier schemas keep the empty experiment ID, which is the shared
+    workspace review. Well calibrations stay shared because they describe the
+    physical plate.
+    """
+    for table, (create_sql, columns) in REVIEW_TABLE_LAYOUTS.items():
+        existing = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+        if "experiment_id" in existing:
+            continue
+        connection.execute(f"ALTER TABLE {table} RENAME TO {table}_schema17")
+        connection.execute(create_sql)
+        connection.execute(
+            f"INSERT INTO {table}({columns}) SELECT {columns} FROM {table}_schema17"
+        )
+        connection.execute(f"DROP TABLE {table}_schema17")
+
+
+def _copy_experiment_positions(connection: sqlite3.Connection) -> None:
+    """Give each existing experiment its own copy of the positions it fixed."""
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO image_set_target_point(
+            target_id, image_set_id, image_key, x_px, y_px, selected_at, experiment_id
+        )
+        SELECT target.target_id, target.image_set_id, target.image_key,
+               target.x_px, target.y_px, target.selected_at, selection.project_id
+        FROM soaking_position AS position
+        JOIN selected_well AS well ON well.selected_well_id = position.selected_well_id
+        JOIN crystal_selection AS selection ON selection.selection_id = well.selection_id
+        JOIN image_set_target_point AS target
+          ON target.target_id = position.source_target_id AND target.experiment_id = ''
+        """
+    )
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO image_set_image_review(
+            image_set_id, image_key, reviewed_at, experiment_id
+        )
+        SELECT DISTINCT review.image_set_id, review.image_key, review.reviewed_at,
+               target.experiment_id
+        FROM image_set_target_point AS target
+        JOIN image_set_image_review AS review
+          ON review.image_set_id = target.image_set_id
+         AND review.image_key = target.image_key AND review.experiment_id = ''
+        WHERE target.experiment_id <> ''
+        """
+    )
+
+
 def _import_standalone_reviews(connection: sqlite3.Connection) -> None:
     state_rows = connection.execute(
         """
@@ -625,14 +736,17 @@ def _import_standalone_reviews(connection: sqlite3.Connection) -> None:
             ),
         )
         connection.execute(
-            "INSERT OR IGNORE INTO image_set_review_state VALUES (?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO image_set_review_state(image_set_id, "
+            "auto_advance_target_count, current_image_key, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
             (image_set_id, count, current, created, updated),
         )
         prefix = f"{plate_code}:{batch_id}:"
         for target_id, image_key, x_px, y_px, selected_at in target_rows:
             if image_key.startswith(prefix) and image_key.endswith(f":{profile}"):
                 connection.execute(
-                    "INSERT OR IGNORE INTO image_set_target_point "
+                    "INSERT OR IGNORE INTO image_set_target_point(target_id, "
+                    "image_set_id, image_key, x_px, y_px, selected_at) "
                     "VALUES (?, ?, ?, ?, ?, ?)",
                     (target_id, image_set_id, image_key, x_px, y_px, selected_at),
                 )

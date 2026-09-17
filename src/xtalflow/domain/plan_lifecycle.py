@@ -20,6 +20,7 @@ class PlanningDraft:
     created_at: datetime
     updated_at: datetime
     experiment_id: str | None = None
+    workflow_step: str | None = None
 
 
 @dataclass(frozen=True)

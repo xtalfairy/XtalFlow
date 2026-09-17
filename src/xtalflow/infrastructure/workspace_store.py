@@ -17,6 +17,15 @@ from xtalflow.domain import (
 )
 
 
+# Positions chosen before experiments owned their own selection.
+WORKSPACE_REVIEW = ""
+
+_NOT_TAKEN_BY_AN_EXPERIMENT = """NOT EXISTS (
+    SELECT 1 FROM image_set_target_point AS taken
+    WHERE taken.target_id = target.target_id AND taken.experiment_id <> ''
+)"""
+
+
 class SQLiteWorkspaceStore:
     """Review workspaces and the targets chosen on their images."""
 
@@ -123,19 +132,26 @@ class SQLiteWorkspaceStore:
             for row in project_rows
         )
 
-    def scoped_to(self, image_set_id: str) -> SQLiteImageSetReviewStore:
-        return SQLiteImageSetReviewStore(self, image_set_id)
+    def scoped_to(
+        self, image_set_id: str, experiment_id: str = WORKSPACE_REVIEW
+    ) -> SQLiteImageSetReviewStore:
+        return SQLiteImageSetReviewStore(self, image_set_id, experiment_id)
 
-    def target_count_for_image_set(self, image_set_id: str) -> int:
+    def target_count_for_image_set(
+        self, image_set_id: str, experiment_id: str = WORKSPACE_REVIEW
+    ) -> int:
         try:
             return self._connection.execute(
-                "SELECT COUNT(*) FROM image_set_target_point WHERE image_set_id = ?",
-                (image_set_id,),
+                "SELECT COUNT(*) FROM image_set_target_point "
+                "WHERE image_set_id = ? AND experiment_id = ?",
+                (image_set_id, experiment_id),
             ).fetchone()[0]
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not count image-set targets") from error
 
-    def delete_targets(self, target_ids: tuple[str, ...]) -> None:
+    def delete_targets(
+        self, target_ids: tuple[str, ...], experiment_id: str = WORKSPACE_REVIEW
+    ) -> None:
         if not target_ids:
             return
         placeholders = ",".join("?" for _ in target_ids)
@@ -143,17 +159,88 @@ class SQLiteWorkspaceStore:
             with self._connection:
                 self._connection.execute(
                     f"DELETE FROM image_set_target_point "
-                    f"WHERE target_id IN ({placeholders})",
-                    target_ids,
+                    f"WHERE experiment_id = ? AND target_id IN ({placeholders})",
+                    (experiment_id, *target_ids),
                 )
-                # Imported standalone rows must also be removed or migration would
-                # restore them the next time the database is opened.
-                self._connection.execute(
-                    f"DELETE FROM target_point WHERE target_id IN ({placeholders})",
-                    target_ids,
-                )
+                if experiment_id == WORKSPACE_REVIEW:
+                    # Imported standalone rows must also be removed or migration
+                    # would restore them the next time the database is opened.
+                    self._connection.execute(
+                        f"DELETE FROM target_point WHERE target_id IN ({placeholders})",
+                        target_ids,
+                    )
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not delete selected targets") from error
+
+    def unassigned_workspace_position_count(self, project_id: str) -> int:
+        """Positions from the shared workspace review that no experiment has taken."""
+        try:
+            return self._connection.execute(
+                f"""SELECT COUNT(*) FROM image_set_target_point AS target
+                    JOIN project_image_set AS image_set
+                      ON image_set.image_set_id = target.image_set_id
+                    WHERE image_set.project_id = ? AND image_set.archived_at IS NULL
+                      AND target.experiment_id = ''
+                      AND {_NOT_TAKEN_BY_AN_EXPERIMENT}""",
+                (project_id,),
+            ).fetchone()[0]
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError("could not count workspace positions") from error
+
+    def adopt_workspace_positions(self, project_id: str, experiment_id: str) -> int:
+        """Copy untaken shared-review positions and their review marks into an experiment."""
+        if experiment_id == WORKSPACE_REVIEW:
+            raise ValueError("choose an experiment to adopt positions into")
+        try:
+            with self._connection:
+                cursor = self._connection.execute(
+                    f"""INSERT OR IGNORE INTO image_set_target_point(
+                            target_id, image_set_id, image_key, x_px, y_px,
+                            selected_at, experiment_id
+                        )
+                        SELECT target.target_id, target.image_set_id, target.image_key,
+                               target.x_px, target.y_px, target.selected_at, ?
+                        FROM image_set_target_point AS target
+                        JOIN project_image_set AS image_set
+                          ON image_set.image_set_id = target.image_set_id
+                        WHERE image_set.project_id = ? AND image_set.archived_at IS NULL
+                          AND target.experiment_id = ''
+                          AND {_NOT_TAKEN_BY_AN_EXPERIMENT}""",
+                    (experiment_id, project_id),
+                )
+                self._connection.execute(
+                    """INSERT OR IGNORE INTO image_set_image_review(
+                           image_set_id, image_key, reviewed_at, experiment_id
+                       )
+                       SELECT review.image_set_id, review.image_key,
+                              review.reviewed_at, ?
+                       FROM image_set_image_review AS review
+                       JOIN project_image_set AS image_set
+                         ON image_set.image_set_id = review.image_set_id
+                       WHERE image_set.project_id = ? AND review.experiment_id = ''""",
+                    (experiment_id, project_id),
+                )
+                return cursor.rowcount
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError("could not adopt workspace positions") from error
+
+    def experiments_using_images(
+        self, image_set_id: str, exclude_experiment_id: str
+    ) -> dict[str, tuple[str, ...]]:
+        """Other experiments with positions on each image of an image set."""
+        try:
+            rows = self._connection.execute(
+                """SELECT DISTINCT image_key, experiment_id FROM image_set_target_point
+                   WHERE image_set_id = ? AND experiment_id NOT IN ('', ?)
+                   ORDER BY image_key, experiment_id""",
+                (image_set_id, exclude_experiment_id),
+            ).fetchall()
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError("could not load well usage") from error
+        usage: dict[str, list[str]] = {}
+        for image_key, experiment_id in rows:
+            usage.setdefault(image_key, []).append(experiment_id)
+        return {key: tuple(value) for key, value in usage.items()}
 
     def save_last_open_project(self, project_id: str) -> None:
         try:
@@ -312,11 +399,21 @@ class SQLiteWorkspaceStore:
 
 
 class SQLiteImageSetReviewStore:
-    """Review persistence scoped to one project membership."""
+    """Review persistence for one image set within one experiment.
 
-    def __init__(self, workspace: SQLiteWorkspaceStore, image_set_id: str) -> None:
+    Positions, review marks, and navigation are the experiment's own; well
+    calibrations are shared by every experiment using the image set.
+    """
+
+    def __init__(
+        self,
+        workspace: SQLiteWorkspaceStore,
+        image_set_id: str,
+        experiment_id: str = WORKSPACE_REVIEW,
+    ) -> None:
         self.workspace = workspace
         self.image_set_id = image_set_id
+        self.experiment_id = experiment_id
 
     @property
     def _connection(self) -> sqlite3.Connection:
@@ -345,11 +442,13 @@ class SQLiteImageSetReviewStore:
             with self._connection:
                 self._connection.execute(
                     "DELETE FROM image_set_target_point "
-                    "WHERE image_set_id = ? AND image_key = ?",
-                    (self.image_set_id, image_key),
+                    "WHERE image_set_id = ? AND image_key = ? AND experiment_id = ?",
+                    (self.image_set_id, image_key, self.experiment_id),
                 )
                 self._connection.executemany(
-                    "INSERT INTO image_set_target_point VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO image_set_target_point(target_id, image_set_id, "
+                    "image_key, x_px, y_px, selected_at, experiment_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
                         (
                             target.id,
@@ -358,6 +457,7 @@ class SQLiteImageSetReviewStore:
                             target.x_px,
                             target.y_px,
                             target.selected_at.isoformat(),
+                            self.experiment_id,
                         )
                         for target in targets
                     ),
@@ -368,16 +468,17 @@ class SQLiteImageSetReviewStore:
                     self._connection.execute(
                         """
                         INSERT OR IGNORE INTO image_set_image_review(
-                            image_set_id, image_key, reviewed_at
+                            image_set_id, image_key, reviewed_at, experiment_id
                         )
-                        VALUES (?, ?, ?)
+                        VALUES (?, ?, ?, ?)
                         """,
-                        (self.image_set_id, image_key, reviewed_at),
+                        (self.image_set_id, image_key, reviewed_at, self.experiment_id),
                     )
                     self._connection.execute(
                         """UPDATE image_set_image_review SET reviewed_at = ?
-                           WHERE image_set_id = ? AND image_key = ?""",
-                        (reviewed_at, self.image_set_id, image_key),
+                           WHERE image_set_id = ? AND image_key = ?
+                             AND experiment_id = ?""",
+                        (reviewed_at, self.image_set_id, image_key, self.experiment_id),
                     )
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not save image-set checkpoint") from error
@@ -393,9 +494,9 @@ class SQLiteImageSetReviewStore:
                        s.created_at, s.updated_at
                 FROM image_set_review_state s
                 JOIN project_image_set p ON p.image_set_id = s.image_set_id
-                WHERE s.image_set_id = ?
+                WHERE s.image_set_id = ? AND s.experiment_id = ?
                 """,
-                (self.image_set_id,),
+                (self.image_set_id, self.experiment_id),
             ).fetchone()
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not load image-set review state") from error
@@ -422,8 +523,9 @@ class SQLiteImageSetReviewStore:
             rows = self._connection.execute(
                 f"SELECT target_id, image_key, x_px, y_px, selected_at "
                 f"FROM image_set_target_point WHERE image_set_id = ? "
+                f"AND experiment_id = ? "
                 f"AND image_key IN ({placeholders}) ORDER BY selected_at, rowid",
-                (self.image_set_id, *image_keys),
+                (self.image_set_id, self.experiment_id, *image_keys),
             ).fetchall()
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not load image-set targets") from error
@@ -439,8 +541,9 @@ class SQLiteImageSetReviewStore:
         try:
             rows = self._connection.execute(
                 f"SELECT image_key FROM image_set_image_review "
-                f"WHERE image_set_id = ? AND image_key IN ({placeholders})",
-                (self.image_set_id, *image_keys),
+                f"WHERE image_set_id = ? AND experiment_id = ? "
+                f"AND image_key IN ({placeholders})",
+                (self.image_set_id, self.experiment_id, *image_keys),
             ).fetchall()
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not load reviewed images") from error
@@ -512,22 +615,22 @@ class SQLiteImageSetReviewStore:
         values = (
             self.image_set_id, preferences.auto_advance_target_count,
             progress.current_image_key, progress.created_at.isoformat(),
-            progress.updated_at.isoformat(),
+            progress.updated_at.isoformat(), self.experiment_id,
         )
         self._connection.execute(
             """
             INSERT OR IGNORE INTO image_set_review_state(
                 image_set_id, auto_advance_target_count, current_image_key,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?)
+                created_at, updated_at, experiment_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             values,
         )
         self._connection.execute(
             """UPDATE image_set_review_state
                SET auto_advance_target_count = ?, current_image_key = ?,
-                   updated_at = ? WHERE image_set_id = ?""",
-            (values[1], values[2], values[4], values[0]),
+                   updated_at = ? WHERE image_set_id = ? AND experiment_id = ?""",
+            (values[1], values[2], values[4], values[0], values[5]),
         )
         self._connection.execute(
             "UPDATE project_image_set SET active_image_key = ? WHERE image_set_id = ?",

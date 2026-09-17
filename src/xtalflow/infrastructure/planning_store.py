@@ -296,15 +296,15 @@ class SQLitePlanningStore:
                     draft.library_id, draft.library_rows, draft.protein,
                     draft.volume_nl, draft.assignment_order,
                     draft.created_at.isoformat(), draft.updated_at.isoformat(),
-                    draft.experiment_id,
+                    draft.experiment_id, draft.workflow_step,
                 )
                 self._connection.execute(
                     """
                     INSERT OR IGNORE INTO planning_draft(
                         plan_id, project_id, plan_type, name, library_id,
                         library_rows, protein, volume_nl, assignment_order,
-                        created_at, updated_at, experiment_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        created_at, updated_at, experiment_id, workflow_step
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     values,
                 )
@@ -312,9 +312,11 @@ class SQLitePlanningStore:
                     """UPDATE planning_draft
                        SET name = ?, library_id = ?, library_rows = ?,
                            protein = ?, volume_nl = ?, assignment_order = ?,
-                           updated_at = ?, experiment_id = ? WHERE plan_id = ?""",
+                           updated_at = ?, experiment_id = ?,
+                           workflow_step = COALESCE(?, workflow_step)
+                       WHERE plan_id = ?""",
                     (values[3], values[4], values[5], values[6], values[7],
-                     values[8], values[10], values[11], values[0]),
+                     values[8], values[10], values[11], values[12], values[0]),
                 )
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not save planning draft") from error
@@ -324,7 +326,7 @@ class SQLitePlanningStore:
             rows = self._connection.execute(
                 """SELECT plan_id, project_id, plan_type, name, library_id,
                           library_rows, protein, volume_nl, assignment_order,
-                          created_at, updated_at, experiment_id
+                          created_at, updated_at, experiment_id, workflow_step
                    FROM planning_draft WHERE project_id = ?
                    ORDER BY created_at, plan_id""",
                 (project_id,),
@@ -334,7 +336,7 @@ class SQLitePlanningStore:
         return tuple(
             PlanningDraft(
                 *row[:9], datetime.fromisoformat(row[9]),
-                datetime.fromisoformat(row[10]), row[11]
+                datetime.fromisoformat(row[10]), row[11], row[12]
             )
             for row in rows
         )

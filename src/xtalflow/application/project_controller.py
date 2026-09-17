@@ -111,6 +111,9 @@ class ProjectController:
         # The review filter belongs to the user's pass through the workspace,
         # not to one plate, so it survives switching image sets.
         self._image_filter = ImageFilter.ALL
+        # Review positions belong to the open experiment; "" is the shared
+        # workspace review used before experiments owned their selection.
+        self.experiment_id = ""
 
     def create_project(self, name: str) -> Project:
         self._checkpoint_active_review()
@@ -425,7 +428,9 @@ class ProjectController:
             confirmed = replace(
                 calibration, confirmed=True, updated_at=datetime.now(timezone.utc)
             )
-            self.workspace_store.scoped_to(image_set_id).save_calibration(confirmed)
+            self.workspace_store.scoped_to(
+                image_set_id, self.experiment_id
+            ).save_calibration(confirmed)
         return len(candidates)
 
     def _valid_unconfirmed_automatic_calibrations(
@@ -468,7 +473,7 @@ class ProjectController:
         if unknown:
             raise ValueError("one or more selected targets no longer exist")
         if self.workspace_store is not None:
-            self.workspace_store.delete_targets(unique_ids)
+            self.workspace_store.delete_targets(unique_ids, self.experiment_id)
         if self.review_controller is not None:
             for target_id in unique_ids:
                 self.review_controller.session.remove_target(target_id)
@@ -566,7 +571,7 @@ class ProjectController:
 
     def _load_review_material(self, image_set: ProjectImageSet, plate: PlateImages):
         scoped_store = (
-            self.workspace_store.scoped_to(image_set.id)
+            self.workspace_store.scoped_to(image_set.id, self.experiment_id)
             if self.workspace_store is not None
             else None
         )
@@ -604,6 +609,17 @@ class ProjectController:
         if not candidates:
             return None
         return candidates[0] if direction > 0 else candidates[-1]
+
+    def open_experiment(self, experiment_id: str) -> None:
+        """Review and select positions for one experiment in the active workspace."""
+        if experiment_id == self.experiment_id:
+            return
+        self._checkpoint_active_review()
+        self._release_review_controller()
+        self.experiment_id = experiment_id
+        project = self.active_project
+        if project is not None and project.active_image_set_id is not None:
+            self.activate_image_set(project.active_image_set_id)
 
     def _release_review_controller(self) -> None:
         if self.review_controller is not None:

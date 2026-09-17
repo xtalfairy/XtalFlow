@@ -38,14 +38,53 @@ def parse_minutes(text: str) -> int:
     hours = minutes = 0
     if "h" in value:
         head, _, value = value.partition("h")
-        hours = int(head) if head else 0
+        try:
+            hours = int(head) if head else 0
+        except ValueError:
+            raise ValueError(f"'{text.strip()}' is not a soaking duration") from None
     value = value.removesuffix("min").removesuffix("m")
-    if value:
-        minutes = int(value)
+    try:
+        if value:
+            minutes = int(value)
+    except ValueError:
+        raise ValueError(f"'{text.strip()}' is not a soaking duration") from None
     total = hours * 60 + minutes
     if total < 0:
         raise ValueError("soak time cannot be negative")
     return total
+
+
+def parse_percent(text: str) -> Decimal:
+    """A final concentration as typed: "10", "10 %", "7.5%"."""
+    value = text.strip().rstrip("%").strip()
+    try:
+        percent = Decimal(value)
+    except (ArithmeticError, ValueError):
+        raise ValueError(f"'{text.strip()}' is not a concentration") from None
+    if not percent.is_finite() or percent < 0 or percent >= HUNDRED:
+        raise ValueError(f"'{text.strip()}' must be from 0 to below 100 %")
+    return percent
+
+
+def parse_percent_list(text: str) -> tuple[Decimal, ...]:
+    values = tuple(parse_percent(item) for item in text.split(",") if item.strip())
+    if not values:
+        raise ValueError("enter at least one concentration")
+    return values
+
+
+def parse_minutes_list(text: str) -> tuple[int, ...]:
+    values = []
+    for item in text.split(","):
+        if not item.strip():
+            continue
+        try:
+            values.append(parse_minutes(item))
+        except ValueError:
+            raise ValueError(f"'{item.strip()}' is not a soaking duration") from None
+    if not values:
+        raise ValueError("enter at least one soaking duration")
+    return tuple(values)
 
 
 def _percent_text(value: Decimal) -> str:
@@ -145,6 +184,30 @@ class ConditionSeries:
         )
         return replace(self, percents=percents, times=times, cells=cells)
 
+    def with_percent_changed(self, old: Decimal, new: Decimal) -> ConditionSeries:
+        """Correct a column's concentration; its conditions keep their identity."""
+        if new != old and new in self.percents:
+            raise ValueError(f"{_percent_text(new)} % is already a column")
+        cells = tuple(
+            replace(cell, percent=new) if cell.percent == old else cell for cell in self.cells
+        )
+        return replace(
+            self, cells=cells,
+            percents=tuple(sorted(new if value == old else value for value in self.percents)),
+        )
+
+    def with_time_changed(self, old: int, new: int) -> ConditionSeries:
+        """Correct a row's soaking duration; its conditions keep their identity."""
+        if new != old and new in self.times:
+            raise ValueError(f"{format_minutes(new)} is already a row")
+        cells = tuple(
+            replace(cell, minutes=new) if cell.minutes == old else cell for cell in self.cells
+        )
+        return replace(
+            self, cells=cells,
+            times=tuple(sorted(new if value == old else value for value in self.times)),
+        )
+
     def with_cell(self, cell: MatrixCell) -> ConditionSeries:
         return replace(
             self, cells=tuple(cell if item.id == cell.id else item for item in self.cells)
@@ -173,6 +236,10 @@ class ConditionTestDesign:
     purpose: str = ""
     # Crystals the researcher can spend; None when they have not said.
     available_crystals: int | None = None
+    # Wells given to a condition when a concentration or duration is added.
+    default_replicates: int = 2
+    # "solvent" or "cryo": only how the additive is named on screen.
+    kind: str = "solvent"
 
     def additive(self, additive_id: str) -> Additive:
         found = next((item for item in self.additives if item.id == additive_id), None)
@@ -188,15 +255,23 @@ class ConditionTestDesign:
         return sum(condition.replicates for condition in self.conditions())
 
     def label(self, condition: Condition, compact: bool = False) -> str:
-        """"DMSO 10% · 1 h", or steps joined by → for combined treatments."""
+        """"DMSO 10% · 1 h", or steps joined by → for combined treatments.
+
+        0 % means nothing is dispensed at that step. That is not necessarily an
+        untreated control, so it is named for what happens: no solvent added, or
+        no additional solvent after an earlier treatment.
+        """
         parts = []
-        for treatment in condition.treatments:
+        for index, treatment in enumerate(condition.treatments):
             time = format_minutes(treatment.minutes, compact)
-            if treatment.final_percent == 0:
-                name = "Control"
-                parts.append(f"{name}-{time}" if compact else f"{name} · {time}")
-                continue
             name = self.additive(treatment.additive_id).name
+            if treatment.final_percent == 0:
+                if index:
+                    text = f"NoAdditional{name}" if compact else f"No additional {name}"
+                else:
+                    text = f"No{name}" if compact else f"No {name} added"
+                parts.append(f"{text}-{time}" if compact else f"{text} · {time}")
+                continue
             percent = _percent_text(treatment.final_percent)
             parts.append(
                 f"{name}{percent}%-{time}" if compact else f"{name} {percent}% · {time}"
@@ -204,8 +279,19 @@ class ConditionTestDesign:
         return ("+" if compact else " → ").join(parts)
 
     def to_json(self) -> str:
+        # Fields added after the first finalized tests are written only when not
+        # at their default, so those revisions' snapshots stay byte-identical.
+        later = {
+            key: value
+            for key, value, default in (
+                ("default_replicates", self.default_replicates, 2),
+                ("kind", self.kind, "solvent"),
+            )
+            if value != default
+        }
         return json.dumps(
             {
+                **later,
                 "schema": 1,
                 "drop_volume_nl": (
                     str(self.drop_volume_nl) if self.drop_volume_nl is not None else None
@@ -276,6 +362,8 @@ class ConditionTestDesign:
             Decimal(drop) if drop is not None else None,
             data.get("purpose", ""),
             data.get("available_crystals"),
+            int(data.get("default_replicates", 2)),
+            data.get("kind", "solvent"),
         )
 
 
@@ -316,6 +404,7 @@ def cryo_test_template() -> ConditionTestDesign:
     return ConditionTestDesign(
         (glycerol,),
         (new_series(glycerol.id, tuple(Decimal(v) for v in ("0", "10", "20", "25")), (0,)),),
+        kind="cryo",
     )
 
 
@@ -341,7 +430,7 @@ def compute_doses(design: ConditionTestDesign, condition: Condition) -> tuple[Do
     reached is reported. Earlier additions enlarge the drop for later ones.
     """
     if design.drop_volume_nl is None or design.drop_volume_nl <= 0:
-        raise ValueError("Enter the drop volume in Setup.")
+        raise ValueError("Enter the initial drop volume.")
     volume = design.drop_volume_nl
     pure: dict[str, Decimal] = {}
     start = 0

@@ -1250,6 +1250,12 @@ class ViewerWindow(QMainWindow):
                 self._save_plan_worksheets(editor)
         elif step is WorkflowStep.SELECT_WELLS and editor.wells_needing_attention:
             self._review_target_warnings()
+        elif (
+            step is WorkflowStep.CONDITIONS
+            and editor.plan_type is PlanType.CONDITION_TEST
+            and self._condition_wells_ready(editor)
+        ):
+            self.go_to_step(WorkflowStep.REVIEW)
         else:
             steps = steps_for(editor.plan_type)
             self.go_to_step(steps[steps.index(step) + 1])
@@ -1272,6 +1278,17 @@ class ViewerWindow(QMainWindow):
                 return f"Use {_count(editor.selected_well_count, 'well')}", True
             return "Use wells", False
         if step is WorkflowStep.CONDITIONS:
+            if editor.plan_type is PlanType.CONDITION_TEST:
+                required = editor.design.required_crystals
+                selected = editor.selected_well_count
+                if self._condition_wells_ready(editor):
+                    return "Review assignments", state is StepState.COMPLETE
+                if selected and selected < required:
+                    more = required - selected
+                    return f"Select {more} more well{'' if more == 1 else 's'}", (
+                        state is StepState.COMPLETE
+                    )
+                return f"Select {_count(required, 'well')}", state is StepState.COMPLETE
             if steps[steps.index(step) + 1] is WorkflowStep.SELECT_WELLS:
                 return "Select wells", state is StepState.COMPLETE
             return "Review assignments", state is StepState.COMPLETE
@@ -1287,6 +1304,31 @@ class ViewerWindow(QMainWindow):
             return "Done", True
         finalized = status.status_of(WorkflowStep.REVIEW).state is StepState.COMPLETE
         return "Save worksheets", finalized
+
+    @staticmethod
+    def _condition_wells_ready(editor) -> bool:
+        """Enough checked wells are already selected, so the next look is the assignments."""
+        required = editor.design.required_crystals
+        return bool(
+            required
+            and editor.selected_well_count >= required
+            and not editor.wells_needing_attention
+        )
+
+    @staticmethod
+    def _condition_well_note(editor) -> str:
+        """Selected wells against the required count; spare wells are named as unused."""
+        required = editor.design.required_crystals
+        selected = editor.selected_well_count
+        if not selected:
+            return "No wells selected yet"
+        text = f"Selected {_count(selected, 'well')}"
+        if selected > required:
+            spare = selected - required
+            return f"{text} · {spare} will remain unused"
+        if selected < required:
+            return f"{text} · {required - selected} more needed"
+        return f"{text} · all will be used"
 
     def _finalize_and_continue(self, editor) -> PlanRevision | None:
         experiment_id = (
@@ -1348,7 +1390,7 @@ class ViewerWindow(QMainWindow):
                 required_well_count=design.required_crystals,
                 conditions_summary=(
                     f"{_count(len(design.conditions()), 'condition')} · "
-                    f"{_count(design.required_crystals, 'crystal')}"
+                    f"{_count(design.required_crystals, 'well')} required"
                 ),
                 selection_error=None if shortage else editor.selection_error,
                 unused_well_count=(
@@ -1417,6 +1459,9 @@ class ViewerWindow(QMainWindow):
             " · ".join(note for note in status.notes if note not in text)
             if step is WorkflowStep.REVIEW else ""
         )
+        if step is WorkflowStep.CONDITIONS and editor.plan_type is PlanType.CONDITION_TEST:
+            # Required comes from the design; selected is what Select wells holds now.
+            notes = self._condition_well_note(editor)
         page.show_footer(
             (text, kind), notes, primary_text, primary_enabled,
             step is not steps[0],

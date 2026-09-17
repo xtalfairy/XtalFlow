@@ -158,3 +158,22 @@ T+1 h    ECHO round 2   Glycerol(복합 2단계)       PreTest-…-01_R2.csv
 | 저장 | 스키마 20: `planning_draft.details_json`, worksheet 출력 키를 순서 기준으로 변경(한 장비에 여러 파일) |
 
 다음 단계 후보: 결과 기록(결정 상태·해상도 heatmap), 조건 목록 보기, 템플릿 저장/불러오기, source well 용량 설정.
+
+## 12. Conditions 화면 2차 정리 (2026-09-17)
+
+| 항목 | 변경 |
+|---|---|
+| 상단 | 제목 `Compare solvent concentration and soaking time`(Cryo는 cryoprotectant), 한 줄 설명. Solvent · Stock concentration · Initial drop volume을 한 줄에. drop 부피는 Setup과 같은 값(`design.drop_volume_nl`) |
+| Dispensing source | 별도 작은 영역. 빈 plate/well 칸은 주황 테두리와 "Enter the source …; the ECHO worksheet needs it." |
+| 축 | 열 `Final concentration in drop (%)`, 행 `Soaking duration`을 쉼표 목록으로 입력. 읽을 수 없는 값은 그 칸 아래 빨간 문구로 알리고 설계를 바꾸지 않음(0으로 대체하지 않음) |
+| 셀 | `2 wells` / `Excluded`. 클릭·방향키는 선택만, Space·Enter 포함/제외, +/− well 수. 우클릭 메뉴는 보조 |
+| 선택 조건 패널 | 농도·시간 수정(조건 ID 유지: `with_percent_changed`, `with_time_changed`), Wells, Include, Requested / Transfer / well / Actual(`compute_doses` 결과 그대로), Planned harvest |
+| Wells per condition | `design.default_replicates`. 바꾸면 이전 기본값을 쓰던 조건만 따라가고 따로 정한 조건은 유지 |
+| 0 % 이름 | `No DMSO added`, 앞 처리가 있으면 `No additional Glycerol`. "Control"이라 부르지 않음(진짜 대조군 정의는 실험자 결정) |
+| 앞 처리·SMILES·추가 solvent | `Advanced` 접힘 영역으로 이동, 팝업(AdditiveDialog) 제거. 앞 처리 시간은 검증 후에만 적용 |
+| 하단 | 상태 `16 conditions · 32 wells required`, 옆에 실제 선택 `Selected 20 wells · 2 will remain unused` / `… more needed` / `No wells selected yet`. 버튼 `Select 32 wells`, `Select 5 more wells`, 충분하면 `Review assignments`(Review로 이동) |
+| 제거 | 미리보기 없이 모든 반복을 1로 바꾸던 "Use 1 crystal each" 버튼. Crystals on hand는 추정값으로만 표시 |
+| 일정 표현 | Review 탭 `Planned schedule`, Worksheets `Planned schedule · relative to the start of dispensing (T+0)`. Review의 순서 선택은 `Assign wells in`(재배정임을 도움말로 명시) |
+| JSON | `default_replicates`, `kind`는 기본값이 아닐 때만 기록해 기존 확정본 snapshot이 바이트 단위로 같게 유지 |
+
+미결정: 허용 오차/장비 최소 부피(현재 2.5 nL 단위 반올림만 있음), 진짜 대조군 정의, 0 min의 실행 의미와 템플릿의 0 min 행 유지 여부, soaking 시작 기준(현재 전체 첫 분주 시작 = T+0, well별 분주 시각은 반영하지 않음).

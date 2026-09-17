@@ -191,7 +191,10 @@ class WorksheetsStep(QWidget):
         self.copy_paths_button.setVisible(bool(copy_text))
 
     def show_schedule(self, lines: tuple[str, ...]) -> None:
-        self.schedule_label.setText("Schedule\n" + "\n".join(lines) if lines else "")
+        self.schedule_label.setText(
+            "Planned schedule · relative to the start of dispensing (T+0)\n" + "\n".join(lines)
+            if lines else ""
+        )
         self.schedule_label.setVisible(bool(lines))
 
     def _toggle_mxlive(self, visible: bool) -> None:

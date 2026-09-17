@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -123,7 +124,7 @@ def test_replicates_are_grouped_by_condition_and_extra_wells_are_reported() -> N
         for assignment in plan.assignments
     ]
     assert labels[:4] == [
-        ("Control · 0 min", 1), ("Control · 0 min", 2),
+        ("No DMSO added · 0 min", 1), ("No DMSO added · 0 min", 2),
         ("DMSO 10% · 0 min", 1), ("DMSO 10% · 0 min", 2),
     ]
     assert len(plan.unused_wells) == 1
@@ -151,6 +152,9 @@ def test_plan_refuses_too_few_wells_missing_sources_and_unequal_splits() -> None
 def test_design_round_trips_through_json_and_templates_are_ready_to_edit() -> None:
     design = _design(replicates=3)
     assert ConditionTestDesign.from_json(design.to_json()) == design
+    assert "default_replicates" not in design.to_json()
+    changed = replace(design, default_replicates=1, kind="cryo")
+    assert ConditionTestDesign.from_json(changed.to_json()) == changed
 
     solvent = solvent_test_template()
     cryo = cryo_test_template()
@@ -188,6 +192,7 @@ def test_condition_worksheets_and_labworks_follow_dispense_and_harvest_times() -
     assert payload["soak_id"] == "DMSO10%-0min-r1"
     assert payload["soak_smile"] == "CS(=O)C"
     assert records[0].to_payload()["soak_smile"] == "none"
+    assert records[0].to_payload()["soak_id"] == "NoDMSO-0min-r1"
 
 
 def test_finalized_condition_test_snapshot_rebuilds_the_same_plan() -> None:
@@ -207,3 +212,36 @@ def test_finalized_condition_test_snapshot_rebuilds_the_same_plan() -> None:
         item.condition.id for item in plan.assignments
     ]
     assert rebuilt.assignments[3].doses == plan.assignments[3].doses
+
+
+def test_zero_percent_is_named_for_what_is_dispensed_not_as_a_control() -> None:
+    dmso = Additive("dmso", "DMSO", Decimal("100"), "", "LDV-1", "A1")
+    glycerol = Additive("gly", "Glycerol", Decimal("50"), "", "LDV-1", "B1")
+    series = new_series(
+        glycerol.id, (Decimal("0"),), (30,), 1, before=(Treatment(dmso.id, Decimal("5"), 60),)
+    )
+    design = ConditionTestDesign((dmso, glycerol), (series,), Decimal("200"))
+    (condition,) = design.conditions()
+
+    assert design.label(condition) == "DMSO 5% · 1 h → No additional Glycerol · 30 min"
+    assert design.label(_design().conditions()[0]) == "No DMSO added · 0 min"
+
+
+def test_typed_lists_are_read_without_guessing_and_corrections_keep_condition_ids() -> None:
+    from xtalflow.domain.condition_test import parse_minutes_list, parse_percent_list
+
+    assert parse_percent_list("0, 5 %, 7.5") == (Decimal("0"), Decimal("5"), Decimal("7.5"))
+    assert parse_minutes_list("0, 30 min, 1 h 30 min") == (0, 30, 90)
+    for bad in ("1.5h", "soon", "1 hour"):
+        with pytest.raises(ValueError, match="is not a soaking duration"):
+            parse_minutes_list(f"0, {bad}")
+    with pytest.raises(ValueError, match="must be from 0 to below 100"):
+        parse_percent_list("5, 120")
+
+    series = _design(percents=("0", "10"), times=(0, 60)).series[0]
+    cell = series.cell(Decimal("10"), 60)
+    corrected = series.with_percent_changed(Decimal("10"), Decimal("12.5")).with_time_changed(60, 90)
+    assert corrected.cell(Decimal("12.5"), 90).id == cell.id
+    assert corrected.percents == (Decimal("0"), Decimal("12.5"))
+    with pytest.raises(ValueError, match="already a column"):
+        series.with_percent_changed(Decimal("10"), Decimal("0"))

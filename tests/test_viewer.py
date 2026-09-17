@@ -2364,21 +2364,29 @@ def test_solvent_test_runs_from_conditions_to_saved_worksheets_and_reopens(
     assert page.primary_button.text() == "Set conditions"
     page.primary_button.click()
     assert window._current_step is WorkflowStep.CONDITIONS
+    assert editor.title_label.text() == "Compare solvent concentration and soaking time"
+    assert editor.conditions_drop_input.value() == 100
     assert editor.design_error == "Enter the source plate and well for DMSO."
     assert "Enter the source plate" in page.footer_status_label.text()
-    assert "source not set" in editor.additive_summary_label.text()
+    assert editor.source_box.property("missing")
+    assert editor.source_message_label.text() == "Enter the source plate and well; the ECHO worksheet needs it."
     editor.update_additive(source_plate="LDV-1", source_well="a1")
     assert editor.design_error is None
-    assert "source LDV-1 A1" in editor.additive_summary_label.text()
+    assert not editor.source_box.property("missing")
+    assert editor.source_well_input.text() == "A1"
     assert editor.matrix_table.horizontalHeaderItem(2).text() == "10 %"
     assert "10 % → 10 nL (9.1 %)" in editor.dose_label.text()
-    editor._reduce_replicates()
-    editor._toggle_cell(3, 3)
-    assert editor.matrix_table.item(3, 3).text() == "–"
-    assert editor.matrix_table.item(3, 2).text() == "1"
+    assert page.footer_status_label.text() == "✓ 16 conditions · 32 wells required"
+    assert page.footer_notes_label.text() == "No wells selected yet"
+    assert page.primary_button.text() == "Select 32 wells"
+    editor.replicates_input.setValue(1)
+    editor.select_condition(3, 3)
+    editor.condition_include_input.setChecked(False)
+    assert editor.matrix_table.item(3, 3).text() == "Excluded"
+    assert editor.matrix_table.item(3, 2).text() == "1 well"
     assert editor.design.required_crystals == 15
-    assert page.footer_status_label.text() == "✓ 15 conditions · 15 crystals"
-    assert page.primary_button.text() == "Select wells"
+    assert page.footer_status_label.text() == "✓ 15 conditions · 15 wells required"
+    assert page.primary_button.text() == "Select 15 wells"
     page.primary_button.click()
     assert window._current_step is WorkflowStep.SELECT_WELLS
 
@@ -2397,12 +2405,26 @@ def test_solvent_test_runs_from_conditions_to_saved_worksheets_and_reopens(
     assert editor.experiment_status.status_of(WorkflowStep.SELECT_WELLS).message == (
         "10 of 15 wells selected"
     )
+    window.go_to_step(WorkflowStep.CONDITIONS)
+    assert page.footer_notes_label.text() == "Selected 10 wells · 5 more needed"
+    assert page.primary_button.text() == "Select 5 more wells"
+    extra = SelectedCrystal(
+        "image-extra", "2070", "H12a",
+        (CrystalTarget("target-extra", Decimal(0), Decimal(0), now + timedelta(seconds=99)),),
+        SWISSCI_MIDI_3_LENS.id,
+    )
+    window._sync_editor_selection(editor, (*crystals, extra))
+    window._refresh_experiment_status(editor)
+    assert page.footer_notes_label.text() == "Selected 16 wells · 1 will remain unused"
+    assert page.primary_button.text() == "Review assignments"
+    page.primary_button.click()
+    assert window._current_step is WorkflowStep.REVIEW
     window._sync_editor_selection(editor, crystals)
     assert editor.current_plan is not None
     assert window._finalize_plan(editor).experiment_id.startswith("PreTest-")
     window.go_to_step(WorkflowStep.WORKSHEETS)
     assert editor.worksheets_step.schedule_label.text().splitlines()[:3] == [
-        "Schedule",
+        "Planned schedule · relative to the start of dispensing (T+0)",
         "T+0 min · dispense with the ECHO file (11 wells)",
         "T+0 min · harvest A01a, A02a, A03a, A04a",
     ]

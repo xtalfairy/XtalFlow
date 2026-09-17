@@ -175,7 +175,7 @@ class WorksheetsStep(QWidget):
         self.result_label.setText(text)
         self.result_label.setStyleSheet(
             theme.status_style(kind) if kind in ("attention", "error")
-            else f"color: {theme.TEXT_MUTED if kind == 'muted' else theme.TEXT};"
+            else f"color: {theme.OK if kind == 'ok' else theme.TEXT_MUTED};"
         )
         self.result_label.setVisible(bool(text))
         self.retry_button.setVisible(can_retry)

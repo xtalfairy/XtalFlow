@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import QLabel, QListView, QShortcut, QWidget
 
 from xtalflow.domain import ImageCalibration, TargetPoint
 from xtalflow.presentation import AspectFitTransform
+from xtalflow.ui import theme
 
 
 class ImageCanvas(QWidget):
@@ -178,7 +179,7 @@ class ImageCanvas(QWidget):
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt API
         painter = QPainter(self)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
-        painter.fillRect(self.rect(), QColor("#15181c"))
+        painter.fillRect(self.rect(), QColor(theme.IMAGE_SURROUND))
         transform = self.transform()
         if transform is None:
             painter.setPen(QColor("#d8dee9"))

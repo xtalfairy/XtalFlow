@@ -408,7 +408,7 @@ class ViewerWindow(QMainWindow):
             self.image_canvas,
         )
         self.review_hint.setStyleSheet(
-            "background: rgba(23, 28, 34, 215); color: white; border-radius: 6px; "
+            "background: rgba(20, 20, 20, 215); color: white; border-radius: 6px; "
             "padding: 8px 12px;"
         )
         self.review_hint.move(theme.SPACING_L, theme.SPACING_L)
@@ -3124,7 +3124,7 @@ class ViewerWindow(QMainWindow):
 
     def _reject_well_entry(self) -> None:
         self.well_input.setText(self._current_well_address)
-        self.well_input.setStyleSheet("border: 1px solid #c62828;")
+        self.well_input.setStyleSheet(f"border: 1px solid {theme.ERROR};")
         self.status_message_label.show_message("Invalid or unavailable subwell", 2000)
         QTimer.singleShot(800, lambda: self.well_input.setStyleSheet(""))
 

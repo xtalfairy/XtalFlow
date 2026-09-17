@@ -8,8 +8,6 @@ from datetime import datetime
 from PyQt5.QtCore import QEvent, Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QAbstractItemView,
-    QFrame,
-    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -22,35 +20,38 @@ from PyQt5.QtWidgets import (
 )
 
 from xtalflow.domain import PlanType
-from xtalflow.ui import theme
+from xtalflow.ui import icons, theme
 
 
 # Scoped to the landing page: other workflow screens keep their existing style.
 HOME_STYLE = f"""
-QWidget#ExperimentHome {{ background: {theme.BACKGROUND}; }}
+QWidget#ExperimentHome {{ background: {theme.BACKGROUND}; color: {theme.TEXT}; }}
 QLabel#HomeTitle {{ color: {theme.TEXT}; font-weight: 600; }}
 QLabel#HomeSection {{ color: {theme.TEXT}; font-weight: 600; }}
 QLabel#HomeMuted {{ color: {theme.TEXT_MUTED}; }}
-QFrame#HomeChoices {{ background: {theme.SURFACE}; border: 1px solid {theme.BORDER};
-    border-radius: 4px; }}
-QFrame#HomeChoices QLabel {{ border: none; background: transparent; }}
-QFrame#HomeDivider {{ border: none; border-top: 1px solid {theme.BORDER}; }}
-QLabel#HomeChoiceTitle {{ color: {theme.TEXT}; font-weight: 600; }}
-QPushButton#HomeCreate {{ background: {theme.SURFACE}; color: {theme.FOCUS};
-    border: 1px solid {theme.BORDER}; border-radius: 4px; padding: 3px 14px; }}
-QPushButton#HomeCreate:hover {{ background: {theme.FOCUS_SOFT}; }}
-QPushButton#HomeCreate:focus {{ border: 1px solid {theme.FOCUS}; }}
-QPushButton#HomePrimary {{ background: {theme.FOCUS}; color: white;
-    border: 1px solid {theme.FOCUS}; border-radius: 4px; padding: 3px 16px; }}
+QPushButton#HomeCard {{ background: {theme.SURFACE}; border: 1px solid {theme.BORDER};
+    min-height: 132px; max-height: 132px;
+    border-radius: 16px; padding: 0; text-align: left; }}
+QPushButton#HomeCard:hover {{ background: {theme.SUBTLE}; border-color: {theme.BORDER}; }}
+QPushButton#HomeCard:pressed {{ background: {theme.SELECTED}; }}
+QPushButton#HomeCard:focus {{ border: 2px solid {theme.FOCUS}; }}
+QPushButton#HomeCard QLabel {{ background: transparent; border: none; }}
+QLabel#HomeCardTitle {{ color: {theme.TEXT}; font-weight: 600; }}
+QLabel#HomeCardArrow {{ color: {theme.TEXT_MUTED}; }}
+QPushButton#HomePrimary {{ background: {theme.PRIMARY}; color: white;
+    border: 1px solid {theme.PRIMARY}; border-radius: 16px; padding: 5px 20px; }}
+QPushButton#HomePrimary:hover {{ background: {theme.PRIMARY_HOVER}; }}
 QPushButton#HomePrimary:disabled {{ background: transparent; color: {theme.TEXT_MUTED};
     border-color: {theme.BORDER}; }}
-QTableWidget#HomeRecent {{ background: {theme.SURFACE}; border: 1px solid {theme.BORDER};
-    border-radius: 4px; selection-background-color: {theme.FOCUS_SOFT};
-    selection-color: {theme.TEXT}; }}
-QTableWidget#HomeRecent::item {{ padding: 0 8px; border-bottom: 1px solid {theme.BORDER}; }}
+QTableWidget#HomeRecent {{ background: {theme.BACKGROUND}; border: none;
+    selection-background-color: {theme.SELECTED}; selection-color: {theme.TEXT}; }}
+QTableWidget#HomeRecent::item {{ padding: 0 12px; border-bottom: 1px solid {theme.BORDER}; }}
+QTableWidget#HomeRecent::item:hover {{ background: {theme.SUBTLE}; }}
 QTableWidget#HomeRecent:focus {{ border: 1px solid {theme.FOCUS}; }}
-QLabel#HomeEmpty {{ color: {theme.TEXT_MUTED}; background: {theme.SURFACE};
-    border: 1px solid {theme.BORDER}; border-radius: 4px; padding: 24px; }}
+QTableWidget#HomeRecent QHeaderView::section {{ background: {theme.BACKGROUND};
+    color: {theme.TEXT_MUTED}; border: none; padding: 10px 12px; font-weight: 400; }}
+QLabel#HomeEmpty {{ color: {theme.TEXT_MUTED}; background: transparent;
+    border: none; padding: 32px; }}
 """
 
 
@@ -60,20 +61,30 @@ class ExperimentChoice:
     title: str
     description: str
     outputs: str
+    icon: str
+    # Icon colour and its tile: a quiet way to tell the types apart at a glance.
+    tint: str
+    tint_soft: str
 
 
 EXPERIMENT_CHOICES = (
     ExperimentChoice(
         PlanType.FRAGMENT_SCREENING,
         "Fragment Screening",
-        "One library fragment per selected well.",
+        "One library fragment soaked into each well.",
         "ECHO + SHIFTER worksheets",
+        icons.FRAGMENT_SCREENING,
+        theme.FOCUS,
+        theme.FOCUS_SOFT,
     ),
     ExperimentChoice(
         PlanType.RAW_CRYSTAL,
         "Raw Crystal",
-        "Harvest selected wells without soaking.",
+        "Harvest the selected wells as they are.",
         "SHIFTER worksheets",
+        icons.RAW_CRYSTAL,
+        theme.SUCCESS,
+        theme.SUCCESS_SOFT,
     ),
 )
 
@@ -97,11 +108,12 @@ class HomePage(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("ExperimentHome")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(HOME_STYLE)
         title = QLabel("Experiments")
         title.setObjectName("HomeTitle")
         font = title.font()
-        font.setPointSizeF(font.pointSizeF() * 1.35)
+        font.setPointSizeF(font.pointSizeF() * 1.8)
         title.setFont(font)
         # The window puts its workspace chooser here; most people never change it.
         self.workspace_row = QHBoxLayout()
@@ -114,22 +126,12 @@ class HomePage(QWidget):
         new_title = QLabel("New experiment")
         new_title.setObjectName("HomeSection")
         self.start_buttons: dict[PlanType, QPushButton] = {}
-        choices = QFrame()
-        choices.setObjectName("HomeChoices")
-        grid = QGridLayout()
-        grid.setContentsMargins(theme.SPACING_L, theme.SPACING_S, theme.SPACING_M, theme.SPACING_S)
-        grid.setHorizontalSpacing(theme.SPACING_XL)
-        grid.setVerticalSpacing(theme.SPACING_S)
-        for index, choice in enumerate(EXPERIMENT_CHOICES):
-            row = index * 2
-            if index:
-                divider = QFrame()
-                divider.setObjectName("HomeDivider")
-                divider.setFixedHeight(1)
-                grid.addWidget(divider, row - 1, 0, 1, 4)
-            self._add_choice(grid, row, choice)
-        grid.setColumnStretch(1, 1)
-        choices.setLayout(grid)
+        choices = QHBoxLayout()
+        choices.setSpacing(theme.SPACING_L)
+        for choice in EXPERIMENT_CHOICES:
+            card = self._choice_card(choice)
+            self.start_buttons[choice.plan_type] = card
+            choices.addWidget(card, 1)
 
         recent_title = QLabel("Recent")
         recent_title.setObjectName("HomeSection")
@@ -141,7 +143,7 @@ class HomePage(QWidget):
             ("Experiment", "Type", "Status", "Workspace", "Edited")
         )
         self.recent_table.verticalHeader().setVisible(False)
-        self.recent_table.verticalHeader().setDefaultSectionSize(30)
+        self.recent_table.verticalHeader().setDefaultSectionSize(48)
         self.recent_table.setShowGrid(False)
         self.recent_table.setWordWrap(False)
         self.recent_table.installEventFilter(self)
@@ -166,13 +168,13 @@ class HomePage(QWidget):
         recent_header.addWidget(self.resume_button)
 
         content = QVBoxLayout()
-        content.setContentsMargins(theme.SPACING_XL * 2, 20, theme.SPACING_XL * 2, theme.SPACING_XL)
+        content.setContentsMargins(40, 32, 40, 24)
         content.setSpacing(theme.SPACING_M)
         content.addLayout(heading)
-        content.addSpacing(theme.SPACING_L)
+        content.addSpacing(28)
         content.addWidget(new_title)
-        content.addWidget(choices)
-        content.addSpacing(theme.SPACING_XL)
+        content.addLayout(choices)
+        content.addSpacing(28)
         content.addLayout(recent_header)
         content.addWidget(self.recent_empty_label)
         content.addWidget(self.recent_table, 1)
@@ -192,24 +194,52 @@ class HomePage(QWidget):
         self.recent_table.customContextMenuRequested.connect(self._show_recent_menu)
         self.show_recent_work(())
 
-    def _add_choice(self, grid: QGridLayout, row: int, choice: ExperimentChoice) -> None:
-        heading = QLabel(choice.title)
-        heading.setObjectName("HomeChoiceTitle")
-        heading.setMinimumWidth(150)
+    def _choice_card(self, choice: ExperimentChoice) -> QPushButton:
+        """The whole card starts the experiment; nothing inside it is a second target."""
+        card = QPushButton()
+        card.setObjectName("HomeCard")
+        card.setCursor(Qt.PointingHandCursor)
+        card.setAccessibleName(f"New {choice.title} experiment")
+        card.setAccessibleDescription(f"{choice.description} {choice.outputs}.")
+        card.setFocusPolicy(Qt.TabFocus)
+        card.setMinimumHeight(132)
+        card.setMinimumWidth(320)
+        icon = QLabel()
+        icon.setObjectName("HomeCardIcon")
+        icon.setFixedSize(48, 48)
+        icon.setAlignment(Qt.AlignCenter)
+        icon.setPixmap(icons.svg_pixmap(choice.icon, 26, choice.tint))
+        icon.setStyleSheet(f"background: {choice.tint_soft}; border-radius: 12px;")
+        title = QLabel(choice.title)
+        title.setObjectName("HomeCardTitle")
         description = QLabel(choice.description)
+        description.setWordWrap(True)
+        description.setObjectName("HomeMuted")
         outputs = QLabel(choice.outputs)
         outputs.setObjectName("HomeMuted")
-        start = QPushButton("Create")
-        start.setObjectName("HomeCreate")
-        start.setAccessibleName(f"Create {choice.title} experiment")
-        start.clicked.connect(
+        arrow = QLabel("›")
+        arrow.setObjectName("HomeCardArrow")
+        font = arrow.font()
+        font.setPointSizeF(font.pointSizeF() * 1.6)
+        arrow.setFont(font)
+        text = QVBoxLayout()
+        text.setSpacing(2)
+        text.addWidget(title)
+        text.addWidget(description)
+        text.addWidget(outputs)
+        layout = QHBoxLayout()
+        layout.setContentsMargins(theme.SPACING_XL, theme.SPACING_M, theme.SPACING_XL, theme.SPACING_M)
+        layout.setSpacing(theme.SPACING_XL)
+        layout.addWidget(icon, 0, Qt.AlignVCenter)
+        layout.addLayout(text, 1)
+        layout.addWidget(arrow, 0, Qt.AlignVCenter)
+        card.setLayout(layout)
+        for label in (icon, title, description, outputs, arrow):
+            label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        card.clicked.connect(
             lambda _=False, selected=choice.plan_type: self.start_requested.emit(selected)
         )
-        self.start_buttons[choice.plan_type] = start
-        grid.addWidget(heading, row, 0)
-        grid.addWidget(description, row, 1)
-        grid.addWidget(outputs, row, 2)
-        grid.addWidget(start, row, 3)
+        return card
 
     def show_recent_work(self, experiments: tuple[RecentExperiment, ...]) -> None:
         self._recent = experiments

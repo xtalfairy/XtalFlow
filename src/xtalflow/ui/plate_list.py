@@ -25,7 +25,7 @@ class PlateCardDelegate(QStyledItemDelegate):
         rect = option.rect
         selected = bool(option.state & QStyle.State_Selected)
         active = bool(index.data(ProjectImageSetListModel.ActiveRole))
-        painter.fillRect(rect, QColor(theme.FOCUS_SOFT if selected else theme.SURFACE))
+        painter.fillRect(rect, QColor(theme.SELECTED if selected else theme.SURFACE))
         if active:
             painter.fillRect(
                 QRect(rect.left(), rect.top() + 4, self.ACCENT_WIDTH, rect.height() - 8),

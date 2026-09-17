@@ -49,14 +49,14 @@ class Stepper(QWidget):
             button.setChecked(is_current)
             # Only a real problem is coloured; done and not-yet steps stay quiet.
             color = {
-                StepState.COMPLETE: theme.TEXT,
+                StepState.COMPLETE: theme.TEXT_MUTED,
                 StepState.ATTENTION: theme.ATTENTION,
                 StepState.INCOMPLETE: theme.TEXT_MUTED,
             }[status.state]
             button.setStyleSheet(
-                f"QPushButton {{ border: none; border-bottom: 2px solid "
-                f"{theme.FOCUS if is_current else 'transparent'}; padding: 6px 10px 4px; "
-                f"color: {theme.FOCUS if is_current else color}; "
+                f"QPushButton {{ border: none; border-radius: 0; border-bottom: 2px solid "
+                f"{theme.TEXT if is_current else 'transparent'}; padding: 6px 10px 4px; "
+                f"color: {theme.TEXT if is_current else color}; "
                 f"font-weight: {'600' if is_current else '400'}; background: transparent; }}"
             )
 

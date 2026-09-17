@@ -21,8 +21,9 @@ from xtalflow.ui.stepper import Stepper
 PAGE_STYLE = f"""
 QFrame#StepNavigation {{ border: none; border-bottom: 1px solid {theme.BORDER}; }}
 QFrame#StepFooter {{ border: none; border-top: 1px solid {theme.BORDER}; }}
-QPushButton#HomeLink {{ border: none; color: {theme.FOCUS}; padding: 2px 4px; }}
-QPushButton#HomeLink:hover {{ text-decoration: underline; }}
+QPushButton#HomeLink {{ border: none; background: transparent; color: {theme.TEXT_MUTED};
+    padding: 2px 8px; }}
+QPushButton#HomeLink:hover {{ color: {theme.TEXT}; background: {theme.SUBTLE}; }}
 """
 
 

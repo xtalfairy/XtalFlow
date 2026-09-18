@@ -64,6 +64,8 @@ PANEL_WIDTH = 300
 # The "+" column and row that add values: narrow, so the table does not look unfinished.
 ADD_COLUMN_WIDTH = 36
 ADD_ROW_HEIGHT = 26
+# While values are typed into it, the "+" column widens instead of covering the last value.
+ADD_EDITOR_WIDTH = 140
 DURATION_HINT = "Minutes or hours: 30, 45 min, 1 h, 1.5 h, 1 h 30 min."
 MAX_WELLS_PER_CONDITION = 24
 
@@ -912,6 +914,14 @@ class ConditionTestEditor(PlanEditorBase):
         header = table.horizontalHeader() if columns else table.verticalHeader()
         axis = self._axis(columns)
         section = axis.index(value) if value is not None else len(axis)
+        if columns and value is None:
+            # Room for typing comes from the "+" column itself, so every value stays in view.
+            header.resizeSection(section, ADD_EDITOR_WIDTH)
+            self._fit_matrix()
+            # Lay the page out now, so the table is already wider when the editor is placed.
+            page = table.parentWidget()
+            if page is not None and page.layout() is not None:
+                page.layout().activate()
         table.scrollTo(table.model().index(0 if columns else section, section if columns else 0))
         self._axis_edit = (columns, value)
         self.axis_remove_button.hide()
@@ -929,16 +939,17 @@ class ConditionTestEditor(PlanEditorBase):
             editor.setToolTip("" if columns else DURATION_HINT)
         _set_flag(editor, "invalid", False)
         self._show_axis_error(None, columns)
+        # Exactly over its own header section: neighbouring values stay readable.
         start = header.sectionViewportPosition(section)
         size = header.sectionSize(section)
         if columns:
-            width, height = max(size, 150), header.height()
-            local = QPoint(start + size - width, 0)
+            width, height = size, header.height()
+            local = QPoint(start, 0)
         else:
-            width, height = header.width(), max(size, 28)
-            local = QPoint(0, start + size - height)
+            width, height = header.width(), size
+            local = QPoint(0, start)
         corner = header.viewport().mapTo(table, local)
-        editor.setGeometry(max(0, corner.x()), max(0, corner.y()), width, height)
+        editor.setGeometry(corner.x(), corner.y(), width, height)
         editor.show()
         editor.raise_()
         editor.setFocus(Qt.OtherFocusReason)
@@ -963,7 +974,14 @@ class ConditionTestEditor(PlanEditorBase):
         return done
 
     def _close_axis_editor(self) -> None:
+        editing = self._axis_edit
         self._axis_edit = None
+        if editing is not None and editing == (True, None):
+            # Back to its narrow width once nothing is being typed into it.
+            columns = len(self._series.percents)
+            if self.matrix_table.columnCount() > columns:
+                self.matrix_table.horizontalHeader().resizeSection(columns, ADD_COLUMN_WIDTH)
+                self._fit_matrix()
         _set_flag(self.axis_editor, "invalid", False)
         self.axis_editor.hide()
         if self.axis_error_label.isVisible():

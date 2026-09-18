@@ -94,6 +94,13 @@ def test_plus_headers_add_values_in_place_and_keep_existing_conditions() -> None
     # "+" opens an editor on that header; several values can go in at once.
     _header_click(editor, columns=True, section=2)
     assert editor.axis_editor.isVisibleTo(editor.matrix_table)
+    # The "+" column widens for typing; the last value's header stays uncovered.
+    header = table.horizontalHeader()
+    last_value_end = header.viewport().mapTo(
+        table, QPoint(header.sectionViewportPosition(1) + header.sectionSize(1), 0)
+    ).x()
+    assert editor.axis_editor.geometry().left() >= last_value_end
+    assert header.sectionSize(2) > 36
     QTest.keyClicks(editor.axis_editor, "20, 5")
     QTest.keyClick(editor.axis_editor, Qt.Key_Return)
     assert not editor.axis_editor.isVisibleTo(editor.matrix_table)
@@ -110,11 +117,12 @@ def test_plus_headers_add_values_in_place_and_keep_existing_conditions() -> None
     assert editor.design.required_crystals == 4 * 3 * 2
     assert editor.design.series[0].cell(Decimal("10"), 60).id == kept
 
-    # Escape leaves everything as it was.
+    # Escape leaves everything as it was, and the "+" column narrow again.
     _header_click(editor, columns=True, section=4)
     QTest.keyClicks(editor.axis_editor, "40")
     QTest.keyClick(editor.axis_editor, Qt.Key_Escape)
     assert editor.design.series[0].percents == tuple(Decimal(v) for v in ("0", "5", "10", "20"))
+    assert header.sectionSize(4) == 36
 
 
 def test_double_clicking_a_header_corrects_that_value_and_keeps_its_conditions() -> None:

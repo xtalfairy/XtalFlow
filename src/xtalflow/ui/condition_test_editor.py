@@ -64,6 +64,7 @@ PANEL_WIDTH = 300
 ROW_AXIS_WIDTH = 200
 # Beyond this many concentrations the per-column transfer line would wrap into a paragraph.
 DOSE_LINE_COLUMNS = 6
+DURATION_HINT = "Minutes or hours: 30, 45 min, 1 h, 1.5 h, 1 h 30 min."
 MAX_WELLS_PER_CONDITION = 24
 
 CONDITIONS_STYLE = f"""
@@ -127,6 +128,11 @@ def _message_label(name: str = "FieldError") -> QLabel:
     label.setWordWrap(True)
     label.hide()
     return label
+
+
+def _sentence(error: ValueError) -> str:
+    message = str(error)
+    return f"{message[0].upper()}{message[1:]}."
 
 
 def _show_message(label: QLabel, text: str) -> None:
@@ -212,6 +218,7 @@ class ConditionTestEditor(PlanEditorBase):
         self.before_percent_input.setMaximumWidth(100)
         self.before_minutes_input = QLineEdit()
         self.before_minutes_input.setPlaceholderText("e.g. 1 h")
+        self.before_minutes_input.setToolTip(DURATION_HINT)
         self.before_minutes_input.setMaximumWidth(110)
         self.before_error_label = _message_label()
         self.smiles_input = QLineEdit()
@@ -224,7 +231,7 @@ class ConditionTestEditor(PlanEditorBase):
         self.percents_error_label = _message_label()
         self.times_input = QLineEdit()
         self.times_input.setPlaceholderText("e.g. 0, 30 min, 1 h")
-        self.times_input.setToolTip("Separate values with commas: 30, 90 min, 2 h.")
+        self.times_input.setToolTip(f"Separate values with commas. {DURATION_HINT}")
         self.times_error_label = _message_label()
 
         self.matrix_table = QTableWidget()
@@ -272,6 +279,7 @@ class ConditionTestEditor(PlanEditorBase):
         self.condition_percent_input.setMaximumWidth(90)
         self.condition_time_input = QLineEdit()
         self.condition_time_input.setMaximumWidth(110)
+        self.condition_time_input.setToolTip(DURATION_HINT)
         self.condition_error_label = _message_label()
         self.condition_wells_input = QSpinBox()
         self.condition_wells_input.setRange(1, MAX_WELLS_PER_CONDITION)
@@ -819,8 +827,7 @@ class ConditionTestEditor(PlanEditorBase):
         except ValueError as error:
             _set_flag(self.before_minutes_input, "invalid", True)
             _show_message(
-                self.before_error_label,
-                f"{str(error)[0].upper()}{str(error)[1:]}. Use e.g. 30 min or 1 h.",
+                self.before_error_label, f"{_sentence(error)} {DURATION_HINT}"
             )
             return False
         _set_flag(self.before_minutes_input, "invalid", False)
@@ -871,8 +878,9 @@ class ConditionTestEditor(PlanEditorBase):
                 )
         except ValueError as error:
             _set_flag(field, "invalid", True)
-            message = str(error)
-            _show_message(label, f"{message[0].upper()}{message[1:]}.")
+            _show_message(
+                label, _sentence(error) if columns else f"{_sentence(error)} {DURATION_HINT}"
+            )
             return False
         _set_flag(field, "invalid", False)
         _show_message(label, "")
@@ -953,9 +961,9 @@ class ConditionTestEditor(PlanEditorBase):
         self._apply_condition_axis(updated)
 
     def _show_condition_error(self, field: QLineEdit, error: ValueError) -> None:
-        message = str(error)
         _set_flag(field, "invalid", True)
-        _show_message(self.condition_error_label, f"{message[0].upper()}{message[1:]}.")
+        hint = "" if field is self.condition_percent_input else f" {DURATION_HINT}"
+        _show_message(self.condition_error_label, f"{_sentence(error)}{hint}")
 
     def _apply_condition_axis(self, updated) -> None:
         for field in (self.condition_percent_input, self.condition_time_input):

@@ -94,19 +94,26 @@ def test_values_that_cannot_be_read_are_shown_at_their_field_and_change_nothing(
     editor = _editor()
     before = editor.design
 
-    editor.times_input.setText("0, 1.5h")
+    editor.times_input.setText("0, overnight")
     assert not editor.set_axis_text(columns=False)
     assert editor.times_input.property("invalid")
     assert "is not a soaking duration" in editor.times_error_label.text()
+    assert "1 h 30 min" in editor.times_error_label.text()  # what to write instead
     assert editor.design == before
     # A later redraw keeps the typed text so it can be corrected.
     editor.refresh_plan()
-    assert editor.times_input.text() == "0, 1.5h"
+    assert editor.times_input.text() == "0, overnight"
 
     editor.percents_input.setText("5, 150")
     assert not editor.set_axis_text(columns=True)
     assert "below 100" in editor.percents_error_label.text()
     assert editor.design == before
+
+    # Hours are read however they are written, and shown back in one spelling.
+    editor.times_input.setText("0, 1.5 hours, 2hr")
+    assert editor.set_axis_text(columns=False)
+    assert editor.design.series[0].times == (0, 90, 120)
+    assert editor.times_input.text() == "0 min, 1 h 30 min, 2 h"
 
 
 def test_invalid_earlier_treatment_time_is_not_saved_as_zero() -> None:

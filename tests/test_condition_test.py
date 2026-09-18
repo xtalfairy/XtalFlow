@@ -49,13 +49,24 @@ def _design(drop="100", percents=("0", "10"), times=(0, 60), replicates=1) -> Co
 
 
 def test_minutes_are_read_and_written_as_researchers_write_them() -> None:
-    assert [parse_minutes(text) for text in ("30", "30 min", "1h", "1 h 30 min", "90m")] == [
-        30, 30, 60, 90, 90
+    assert [parse_minutes(text) for text in ("30", "30 min", "30 minutes", "0.5h", "0.5 hr")] == [
+        30, 30, 30, 30, 30
+    ]
+    assert [parse_minutes(text) for text in ("1h", "1 h", "1hr", "1 hour", "60 mins", "60m")] == [
+        60, 60, 60, 60, 60, 60
+    ]
+    assert [parse_minutes(text) for text in ("1 h 30 min", "1h30", "90m", "1.5 hours")] == [
+        90, 90, 90, 90
     ]
     assert format_minutes(90) == "1 h 30 min"
     assert format_minutes(60, compact=True) == "1h"
     with pytest.raises(ValueError):
         parse_minutes("")
+    with pytest.raises(ValueError, match="whole number of minutes"):
+        parse_minutes("1.51 h")
+    for bad in ("soon", "overnight", "1 day", "-30", "30 s"):
+        with pytest.raises(ValueError, match="is not a soaking duration"):
+            parse_minutes(bad)
 
 
 def test_final_concentration_becomes_dispensed_volume_with_actual_percent() -> None:
@@ -232,7 +243,7 @@ def test_typed_lists_are_read_without_guessing_and_corrections_keep_condition_id
 
     assert parse_percent_list("0, 5 %, 7.5") == (Decimal("0"), Decimal("5"), Decimal("7.5"))
     assert parse_minutes_list("0, 30 min, 1 h 30 min") == (0, 30, 90)
-    for bad in ("1.5h", "soon", "1 hour"):
+    for bad in ("soon", "1 fortnight", "30 s"):
         with pytest.raises(ValueError, match="is not a soaking duration"):
             parse_minutes_list(f"0, {bad}")
     with pytest.raises(ValueError, match="must be from 0 to below 100"):

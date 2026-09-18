@@ -9,6 +9,7 @@ repeated on as many crystals as its replicate count.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field, replace
 from decimal import ROUND_HALF_UP, Decimal
 from uuid import uuid4
@@ -30,28 +31,26 @@ def format_minutes(minutes: int, compact: bool = False) -> str:
     return f"{minutes}{space}min"
 
 
+# Hours and minutes as researchers write them, in any of the usual spellings.
+_DURATION = re.compile(
+    r"^(?:(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours))?"
+    r"\s*(?:(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)?)?$"
+)
+
+
 def parse_minutes(text: str) -> int:
-    """Soak times as a researcher writes them: "30", "30 min", "1h", "1 h 30 min"."""
-    value = text.strip().lower().replace(" ", "")
+    """Soak times however they are written: "30", "30 min", "1h", "1.5 hours", "1 h 30 min"."""
+    value = " ".join(text.strip().lower().split())
     if not value:
         raise ValueError("enter a soak time")
-    hours = minutes = 0
-    if "h" in value:
-        head, _, value = value.partition("h")
-        try:
-            hours = int(head) if head else 0
-        except ValueError:
-            raise ValueError(f"'{text.strip()}' is not a soaking duration") from None
-    value = value.removesuffix("min").removesuffix("m")
-    try:
-        if value:
-            minutes = int(value)
-    except ValueError:
-        raise ValueError(f"'{text.strip()}' is not a soaking duration") from None
+    found = _DURATION.match(value)
+    if found is None or not any(found.groups()):
+        raise ValueError(f"'{text.strip()}' is not a soaking duration")
+    hours, minutes = (Decimal(part) if part else Decimal(0) for part in found.groups())
     total = hours * 60 + minutes
-    if total < 0:
-        raise ValueError("soak time cannot be negative")
-    return total
+    if total != total.to_integral_value():
+        raise ValueError(f"'{text.strip()}' is not a whole number of minutes")
+    return int(total)
 
 
 def parse_percent(text: str) -> Decimal:

@@ -165,6 +165,7 @@ T+1 h    ECHO round 2   Glycerol(복합 2단계)       PreTest-…-01_R2.csv
 |---|---|
 | 상단 | 제목 `Compare solvent concentration and soaking time`(Cryo는 cryoprotectant), 한 줄 설명. Solvent · Stock concentration · Initial drop volume을 한 줄에. drop 부피는 Setup과 같은 값(`design.drop_volume_nl`) |
 | Dispensing source | 별도 작은 영역. 빈 plate/well 칸은 주황 테두리와 "Enter the source …; the ECHO worksheet needs it." |
+| 시간 표기 | `30`, `30 min`, `30 minutes`, `1h`, `1 hr`, `1 hour`, `1.5 h`, `1 h 30 min`을 모두 읽는다. 분 단위로 떨어지지 않는 값(`1.51 h`)과 읽을 수 없는 값(`soon`, `30 s`)만 거절하고, 오류 문구에 쓸 수 있는 형식을 같이 보여 준다 |
 | 축 | 열 `Final concentration in drop (%)`, 행 `Soaking duration`을 쉼표 목록으로 입력. 읽을 수 없는 값은 그 칸 아래 빨간 문구로 알리고 설계를 바꾸지 않음(0으로 대체하지 않음) |
 | 셀 | `2 wells` / `Excluded`. 클릭·방향키는 선택만, Space·Enter 포함/제외, +/− well 수. 우클릭 메뉴는 보조 |
 | 선택 조건 패널 | 농도·시간 수정(조건 ID 유지: `with_percent_changed`, `with_time_changed`), Wells, Include, Requested / Transfer / well / Actual(`compute_doses` 결과 그대로), Planned harvest |

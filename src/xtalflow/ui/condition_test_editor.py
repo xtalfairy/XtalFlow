@@ -64,8 +64,8 @@ PANEL_WIDTH = 300
 # The "+" column and row that add values: narrow, so the table does not look unfinished.
 ADD_COLUMN_WIDTH = 36
 ADD_ROW_HEIGHT = 26
-# While values are typed into it, the "+" column widens instead of covering the last value.
-ADD_EDITOR_WIDTH = 140
+# While values are typed into it, the "+" column is as wide as the others.
+ADD_EDITOR_WIDTH = CELL_WIDTH
 DURATION_HINT = "Minutes or hours: 30, 45 min, 1 h, 1.5 h, 1 h 30 min."
 MAX_WELLS_PER_CONDITION = 24
 
@@ -928,7 +928,8 @@ class ConditionTestEditor(PlanEditorBase):
         editor = self.axis_editor
         if value is None:
             editor.setText("")
-            editor.setPlaceholderText("e.g. 40 or 30, 40" if columns else "e.g. 45 min, 2 h")
+            # A column is too narrow for an example; its tooltip says what fits.
+            editor.setPlaceholderText("" if columns else "e.g. 45 min, 2 h")
             editor.setToolTip(
                 "Separate several values with commas." if columns
                 else f"Separate several values with commas. {DURATION_HINT}"

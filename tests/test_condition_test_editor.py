@@ -100,7 +100,7 @@ def test_plus_headers_add_values_in_place_and_keep_existing_conditions() -> None
         table, QPoint(header.sectionViewportPosition(1) + header.sectionSize(1), 0)
     ).x()
     assert editor.axis_editor.geometry().left() >= last_value_end
-    assert header.sectionSize(2) > 36
+    assert header.sectionSize(2) == header.sectionSize(1) == editor.axis_editor.width()
     QTest.keyClicks(editor.axis_editor, "20, 5")
     QTest.keyClick(editor.axis_editor, Qt.Key_Return)
     assert not editor.axis_editor.isVisibleTo(editor.matrix_table)

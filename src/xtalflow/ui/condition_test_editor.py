@@ -90,6 +90,7 @@ DURATION_HINT = "Minutes or hours: 30, 45 min, 1 h, 1.5 h, 1 h 30 min."
 MAX_WELLS_PER_CONDITION = 24
 RECHECK_NOTE = "Wells are checked again when worksheets are saved."
 NEW_PLATE = "\u0000new plate"
+NAMING_NOTE = "Type the new plate's name, then press Enter; its wells start at A1."
 
 CONDITIONS_STYLE = f"""
 QLabel#ConditionsTitle {{ font-weight: 600; }}
@@ -1062,12 +1063,14 @@ class ConditionTestEditor(PlanEditorBase):
         line.setPlaceholderText("New plate name")
         line.setToolTip("e.g. SOLVENT-02. A name already shared continues that plate.")
         line.returnPressed.connect(self._new_plate_named)
+        # Clicking elsewhere after typing a name also names the plate.
+        line.editingFinished.connect(self._new_plate_named)
         # Escape reaches the combo, which holds the focus, or its text field.
         line.installEventFilter(self)
         combo.installEventFilter(self)
         combo.setEditText("")
         self.new_plate_cancel_button.show()
-        _show_message(self.record_note_label, "Name the new plate; its wells start at A1.")
+        _show_message(self.record_note_label, NAMING_NOTE)
         combo.activateWindow()
         combo.setFocus(Qt.OtherFocusReason)
         self._render_source()
@@ -1079,7 +1082,7 @@ class ConditionTestEditor(PlanEditorBase):
             combo.setEditable(False)
         self.new_plate_cancel_button.hide()
         self._fill_plate_choices()
-        if self.record_note_label.text() == "Name the new plate; its wells start at A1.":
+        if self.record_note_label.text() == NAMING_NOTE:
             _show_message(self.record_note_label, "")
 
     def enter_new_plate(self, name: str) -> None:
@@ -1187,6 +1190,12 @@ class ConditionTestEditor(PlanEditorBase):
         """Wells filled in by the rule keep up with the conditions: as many as now needed."""
         changed = False
         for additive in self.design.additives:
+            if (
+                not additive.source_wells and additive.source_plate.strip()
+                and additive.source_plate_type
+            ):
+                # A plate and type but no wells yet, e.g. a draft opened again: fill them in.
+                self._auto_wells.add(additive.id)
             if additive.id not in self._auto_wells:
                 continue
             wells = self._next_wells_for(additive)

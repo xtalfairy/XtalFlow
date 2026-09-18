@@ -718,3 +718,23 @@ def test_wells_filled_in_by_the_rule_follow_the_conditions_until_typed(tmp_path)
     editor.source_well_input.editingFinished.emit()
     editor.add_axis_values("2 h", columns=False)
     assert editor.design.additives[0].source_wells == ("C1", "D1", "E1")
+
+
+def test_a_typed_plate_name_counts_without_enter_and_a_known_plate_gets_its_wells(tmp_path) -> None:
+    from xtalflow.ui.condition_test_editor import NEW_PLATE
+
+    record = _shared_plate(tmp_path)
+    editor = _editor(percents=("0", "10"), times=(0,), replicates=2)
+    editor.update_additive(source_plate="", source_well="")
+    editor.set_source_record(record, "lee")
+    _choose_plate(editor, NEW_PLATE)
+    _app().processEvents()  # the Plate field turns editable once the list has closed
+    editor.source_plate_input.setEditText("SOLVENT-03")
+    editor.source_plate_input.lineEdit().editingFinished.emit()  # left for another field
+    additive = editor.design.additives[0]
+    assert (additive.source_plate, additive.source_wells) == ("SOLVENT-03", ("A1",))
+
+    # A draft opened again with a plate but no wells gets them filled in.
+    editor.update_additive(source_well="")
+    editor.refresh_plan()
+    assert editor.design.additives[0].source_wells == ("A1",)

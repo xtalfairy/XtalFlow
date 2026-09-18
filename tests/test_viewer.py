@@ -2382,7 +2382,7 @@ def test_solvent_test_runs_from_conditions_to_saved_worksheets_and_reopens(
     assert page.primary_button.text() == "Select 32 wells"
     editor.replicates_input.setValue(1)
     editor.select_condition(3, 3)
-    editor.condition_include_input.setChecked(False)
+    editor.include_button.click()
     assert editor.matrix_table.item(3, 3).text() == "Excluded"
     assert editor.matrix_table.item(3, 2).text() == "1 well"
     assert editor.design.required_crystals == 15

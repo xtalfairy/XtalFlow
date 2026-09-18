@@ -170,10 +170,13 @@ def test_selecting_a_condition_edits_it_beside_the_table_without_toggling() -> N
 
     editor.condition_wells_input.setValue(3)
     assert table.item(1, 1).text() == "3 wells"
-    editor.condition_include_input.setChecked(False)
+    editor.include_button.click()
     assert table.item(1, 1).text() == "Excluded"
+    assert editor.include_button.text() == "+"
+    assert editor.condition_state_label.text() == "Excluded from this test"
     assert editor.design.required_crystals == 6
-    editor.condition_include_input.setChecked(True)
+    editor.include_button.click()
+    assert editor.include_button.text() == "×"
     assert editor.design.required_crystals == 9
 
     editor.condition_percent_input.setText("12.5")
@@ -275,7 +278,7 @@ def test_draft_restores_the_design_selection_and_condition_ids() -> None:
 
     editor = _editor(percents=("0", "10"), times=(0, 60), replicates=2)
     editor.select_condition(1, 1)
-    editor.condition_include_input.setChecked(False)
+    editor.include_button.click()
     editor.replicates_input.setValue(1)
     draft = PlanningDraft(
         "plan", "workspace", "condition_test", "Solvent Test", None, "", "BRD4", "",

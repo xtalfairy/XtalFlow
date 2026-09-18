@@ -12,7 +12,6 @@ from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
-    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
@@ -58,7 +57,7 @@ from xtalflow.ui import theme
 from xtalflow.ui.help_button import HelpButton
 from xtalflow.ui.plan_editors import PlanEditorBase, _plural, _preview_table
 
-CELL_WIDTH = 78
+CELL_WIDTH = 98
 CELL_HEIGHT = 32
 MATRIX_MAX_HEIGHT = 360
 PANEL_WIDTH = 300
@@ -75,6 +74,9 @@ QLabel#FieldError {{ color: {theme.ERROR}; }}
 QLabel#FieldAttention {{ color: {theme.ATTENTION}; }}
 QPushButton#SeriesChip {{ border: 1px solid {theme.BORDER}; border-radius: 14px;
     padding: 3px 30px 3px 14px; background: {theme.SURFACE}; text-align: left; }}
+QToolButton#CellToggle {{ border: none; border-radius: 9px; padding: 0;
+    color: {theme.TEXT_TERTIARY}; background: transparent; min-height: 16px; }}
+QToolButton#CellToggle:hover {{ background: {theme.BORDER_STRONG}; color: {theme.TEXT}; }}
 QToolButton#ChipClose {{ border: none; border-radius: 9px; padding: 0;
     color: {theme.TEXT_TERTIARY}; background: transparent; min-height: 18px; }}
 QToolButton#ChipClose:hover {{ background: {theme.BORDER_STRONG}; color: {theme.TEXT}; }}
@@ -282,7 +284,12 @@ class ConditionTestEditor(PlanEditorBase):
         self.condition_wells_input = QSpinBox()
         self.condition_wells_input.setRange(1, MAX_WELLS_PER_CONDITION)
         self.condition_wells_input.setMaximumWidth(80)
-        self.condition_include_input = QCheckBox("Include")
+        self.include_button = QToolButton(self.matrix_table.viewport())
+        self.include_button.setObjectName("CellToggle")
+        self.include_button.setFixedSize(16, 16)
+        self.include_button.hide()
+        self.condition_state_label = QLabel()
+        self.condition_state_label.setObjectName("Muted")
         self.requested_label = QLabel()
         self.transfer_label = QLabel()
         self.transfer_label.setWordWrap(True)
@@ -355,7 +362,11 @@ class ConditionTestEditor(PlanEditorBase):
         self.condition_percent_input.editingFinished.connect(self._condition_percent_edited)
         self.condition_time_input.editingFinished.connect(self._condition_time_edited)
         self.condition_wells_input.valueChanged.connect(self._condition_wells_changed)
-        self.condition_include_input.toggled.connect(self._condition_include_changed)
+        self.include_button.clicked.connect(self.toggle_selected_condition)
+        for scrollbar in (
+            self.matrix_table.horizontalScrollBar(), self.matrix_table.verticalScrollBar()
+        ):
+            scrollbar.valueChanged.connect(lambda _value: self._place_include_button())
         self.remove_percent_button.clicked.connect(lambda: self._remove_selected_axis(columns=True))
         self.remove_time_button.clicked.connect(lambda: self._remove_selected_axis(columns=False))
         self.order_input.currentIndexChanged.connect(self.refresh_plan)
@@ -537,7 +548,7 @@ class ConditionTestEditor(PlanEditorBase):
         edit.addRow(_field_label("Concentration"), percent)
         edit.addRow(_field_label("Duration"), self.condition_time_input)
         edit.addRow(_field_label("Wells"), self.condition_wells_input)
-        edit.addRow("", self.condition_include_input)
+        edit.addRow("", self.condition_state_label)
 
         facts = QFormLayout()
         facts.setLabelAlignment(Qt.AlignLeft)
@@ -932,6 +943,7 @@ class ConditionTestEditor(PlanEditorBase):
                 _set_flag(self.condition_time_input, "invalid", False)
                 _show_message(self.condition_error_label, "")
                 self._render_condition_panel()
+                self._place_include_button()
 
     def select_condition(self, row: int, column: int) -> None:
         self.matrix_table.setCurrentCell(row, column)
@@ -995,10 +1007,10 @@ class ConditionTestEditor(PlanEditorBase):
         if cell is not None and cell.replicates != value:
             self._set_cells((cell,), replicates=value)
 
-    def _condition_include_changed(self, included: bool) -> None:
+    def toggle_selected_condition(self) -> None:
         cell = self._selected_cell()
-        if cell is not None and cell.included != included:
-            self._set_cells((cell,), included=included)
+        if cell is not None:
+            self._set_cells((cell,), included=not cell.included)
 
     def _change_selected_wells(self, step: int) -> None:
         cell = self._selected_cell()
@@ -1016,12 +1028,11 @@ class ConditionTestEditor(PlanEditorBase):
     def eventFilter(self, watched, event) -> bool:
         if watched is self.matrix_table and event.type() == QEvent.Resize:
             self._fit_matrix()
+            self._place_include_button()
         if watched is self.matrix_table and event.type() == QEvent.KeyPress:
             key = event.key()
             if key in (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter):
-                cell = self._selected_cell()
-                if cell is not None:
-                    self._set_cells((cell,), included=not cell.included)
+                self.toggle_selected_condition()
                 return True
             if key in (Qt.Key_Plus, Qt.Key_Equal):
                 self._change_selected_wells(1)
@@ -1154,6 +1165,31 @@ class ConditionTestEditor(PlanEditorBase):
         table.setCurrentCell(*current)
         self._rendering = False
         self._fit_matrix()
+        self._place_include_button()
+
+    def _place_include_button(self) -> None:
+        """One small toggle, in the selected cell only, so the table stays plain."""
+        cell = self._selected_cell()
+        table = self.matrix_table
+        item = table.currentItem()
+        if cell is None or item is None:
+            self.include_button.hide()
+            return
+        self.include_button.setText("×" if cell.included else "+")
+        self.include_button.setToolTip(
+            ("Exclude this condition (Space)" if cell.included
+             else "Include this condition (Space)")
+        )
+        self.include_button.setAccessibleName(
+            "Exclude condition" if cell.included else "Include condition"
+        )
+        rect = table.visualItemRect(item)
+        size = self.include_button.height()
+        self.include_button.move(
+            rect.right() - size - 3, rect.top() + (rect.height() - size) // 2
+        )
+        self.include_button.setVisible(rect.width() > size * 2)
+        self.include_button.raise_()
 
     def _fit_matrix(self) -> None:
         """As large as its cells up to a limit; beyond that the table scrolls inside itself."""
@@ -1183,14 +1219,13 @@ class ConditionTestEditor(PlanEditorBase):
             self.condition_percent_input.setText(_percent(cell.percent))
         if not self.condition_time_input.property("invalid") and not self.condition_time_input.hasFocus():
             self.condition_time_input.setText(format_minutes(cell.minutes))
-        for widget, setter, value in (
-            (self.condition_wells_input, self.condition_wells_input.setValue, cell.replicates),
-            (self.condition_include_input, self.condition_include_input.setChecked, cell.included),
-        ):
-            widget.blockSignals(True)
-            setter(value)
-            widget.blockSignals(False)
+        self.condition_wells_input.blockSignals(True)
+        self.condition_wells_input.setValue(cell.replicates)
+        self.condition_wells_input.blockSignals(False)
         self.condition_wells_input.setEnabled(cell.included)
+        self.condition_state_label.setText(
+            "" if cell.included else "Excluded from this test"
+        )
         self.remove_percent_button.setText(f"Remove {_percent(cell.percent)} %")
         self.remove_time_button.setText(f"Remove {format_minutes(cell.minutes)}")
         self.remove_percent_button.setEnabled(len(series.percents) > 1)

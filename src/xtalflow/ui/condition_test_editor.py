@@ -187,6 +187,9 @@ def _show_message(label: QLabel, text: str) -> None:
 class ConditionTestEditor(PlanEditorBase):
     """Solvent and cryo tests: conditions first, then one well per replicate."""
 
+    # Asks the experiment page to show the Conditions step.
+    conditions_requested = pyqtSignal()
+
     def __init__(self, design: ConditionTestDesign, parent: QWidget | None = None) -> None:
         super().__init__(None, "transient-condition-editor", parent)
         self.design = design
@@ -289,8 +292,9 @@ class ConditionTestEditor(PlanEditorBase):
         self.fit_button.hide()
         self.fit_note_label = QLabel()
         self.fit_note_label.setObjectName("Muted")
-        self.fit_note_label.setWordWrap(True)
         self.fit_note_label.hide()
+        self.go_to_conditions_button = QPushButton("Go to Conditions")
+        self.go_to_conditions_button.hide()
         # The shared plates as last listed; None if they could not be read.
         self._plate_list: tuple[PlateSummary, ...] | None = None
         # Read once, then again only when the list is opened or the record changes.
@@ -452,6 +456,7 @@ class ConditionTestEditor(PlanEditorBase):
         )
         self.skip_button.clicked.connect(self.skip_well)
         self.fit_button.clicked.connect(self.fit_to_selected_wells)
+        self.go_to_conditions_button.clicked.connect(self.conditions_requested.emit)
         self.previous_button.clicked.connect(self.use_previous_well)
         self.smiles_input.editingFinished.connect(
             lambda: self.update_additive(smiles=self.smiles_input.text())
@@ -689,7 +694,8 @@ class ConditionTestEditor(PlanEditorBase):
         # Too few wells selected: an explicit, previewed way to fit the test to them.
         fit = QHBoxLayout()
         fit.addWidget(self.fit_button)
-        fit.addWidget(self.fit_note_label, 1)
+        fit.addWidget(self.fit_note_label)
+        fit.addWidget(self.go_to_conditions_button)
         fit.addStretch()
         widget.layout().insertLayout(widget.layout().indexOf(self.error_label) + 1, fit)
         return widget
@@ -2013,12 +2019,14 @@ class ConditionTestEditor(PlanEditorBase):
             self.fit_button.setToolTip(
                 "Shows which conditions get fewer crystal drops before anything changes."
             )
+        too_few = short and wells < conditions
         _show_message(
             self.fit_note_label,
             f"{_wells(wells)} cannot hold {_plural(conditions, 'condition')}, one well each: "
             "exclude conditions in Conditions, or select more wells."
-            if short and wells < conditions else "",
+            if too_few else "",
         )
+        self.go_to_conditions_button.setVisible(too_few)
 
     def fit_to_selected_wells(self) -> bool:
         """Fewer crystal drops per condition to fit the wells, after showing what changes."""

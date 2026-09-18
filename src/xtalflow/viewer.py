@@ -1068,6 +1068,9 @@ class ViewerWindow(QMainWindow):
                 CONDITION_TEMPLATES[template or "solvent"](), self.editor_holder
             )
             editor.set_source_record(self._source_plate_record(), getpass.getuser())
+            editor.conditions_requested.connect(
+                lambda: self.go_to_step(WorkflowStep.CONDITIONS)
+            )
         else:
             raise ValueError(f"{plan_type.value} experiments are not available yet")
         editor.hide()

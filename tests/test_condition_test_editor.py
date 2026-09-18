@@ -765,3 +765,14 @@ def test_too_few_wells_for_the_conditions_themselves_are_sent_back_to_conditions
         "3 wells cannot hold 4 conditions, one well each: exclude conditions in Conditions, "
         "or select more wells."
     )
+    assert editor.go_to_conditions_button.isVisibleTo(review)
+    asked = []
+    editor.conditions_requested.connect(lambda: asked.append(True))
+    editor.go_to_conditions_button.click()
+    assert asked == [True]
+
+    # With the conditions cut to what the wells can hold, the fitting button returns.
+    editor.select_condition(1, 1)
+    editor.include_button.click()
+    assert not editor.go_to_conditions_button.isVisibleTo(review)
+    assert editor.fit_button.isVisibleTo(review)

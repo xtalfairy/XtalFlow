@@ -187,11 +187,11 @@ Dispensing source 상자는 Conditions 화면 맨 아래에 있다. 위의 조�
 
 | plate | calibration | 작업 범위 µL (하한 = dead volume) |
 |---|---|---|
-| 384PP (PP-0200, Beckman 001-14555) | 384PP_DMSO2 | 15–65 |
+| 384PP (Beckman 001-14555, 이전 PP-0200) | 384PP_DMSO2 | 15–65 |
 | 384PP | 384PP_AQ_GP3 (buffer / protein: surfactant 없는 시약, 물·buffer·glycerol 보관 용액의 단백질) | 15–65 |
 | 384PP | 384PP_AQ_SP2 (surfactant / protein: surfactant가 든 buffer) | 15–65 |
 | 384PP | 384PP_AQ_CP (crystallization reagents: 염, MPD, PEG, 삼투압 용액) | 20–50 |
-| 1536LDV (LP-0400, Beckman 001-6969) | 1536LDV_DMSO | 1–5.5 |
+| 1536LDV (Beckman 001-6969, 이전 LP-0400) | 1536LDV_DMSO | 1–5.5 |
 
 출처: HKU CPOS Echo650 SOP Table 1, Beckman Echo Qualified Consumables 브로셔(384PP 20–65 µL, 1536LDV 1–5.5 µL, "fluid class에 따라 조금 다를 수 있음"). 1536LDV의 수용액·glycerol 범위는 찾지 못해 DMSO만 제공한다. 선택 목록 이름에는 protein, crystallization reagents를 줄이지 않고 적는다(사용자 요청).
 

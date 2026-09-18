@@ -43,28 +43,32 @@ class SourcePlateType:
         return (self.max_ul - self.dead_ul) * 1000 / (1 + SOURCE_FILL_MARGIN)
 
 
+# Beckman part numbers, with the older Labcyte ones the plates were also sold under.
+PP_384_PART = "001-14555 (PP-0200)"
+LDV_1536_PART = "001-6969 (LP-0400)"
+
 SOURCE_PLATE_TYPES = (
     SourcePlateType(
-        "384PP_DMSO2", "384PP · DMSO", "PP-0200", 384, Decimal("15"), Decimal("65"),
+        "384PP_DMSO2", "384PP · DMSO", PP_384_PART, 384, Decimal("15"), Decimal("65"),
         "DMSO, 70–100 %",
     ),
     SourcePlateType(
-        "384PP_AQ_GP3", "384PP · buffer, protein", "PP-0200", 384, Decimal("15"), Decimal("65"),
+        "384PP_AQ_GP3", "384PP · buffer, protein", PP_384_PART, 384, Decimal("15"), Decimal("65"),
         "Reagents without surfactant: small molecules in water or buffer; DNA and RNA; "
         "proteins in water, buffer or glycerol storage solution; cell culture medium",
     ),
     SourcePlateType(
-        "384PP_AQ_SP2", "384PP · surfactant, protein", "PP-0200", 384,
+        "384PP_AQ_SP2", "384PP · surfactant, protein", PP_384_PART, 384,
         Decimal("15"), Decimal("65"),
         "Buffers containing surfactant, e.g. PCR mixes, lysis buffer, serum and plasma",
     ),
     SourcePlateType(
-        "384PP_AQ_CP", "384PP · crystallization reagents", "PP-0200", 384,
+        "384PP_AQ_CP", "384PP · crystallization reagents", PP_384_PART, 384,
         Decimal("20"), Decimal("50"),
         "Crystallization reagents and salts without surfactant: MPD, PEGs, osmotic solutions",
     ),
     SourcePlateType(
-        "1536LDV_DMSO", "1536LDV · DMSO", "001-6969 (LP-0400)", 1536, Decimal("1"), Decimal("5.5"),
+        "1536LDV_DMSO", "1536LDV · DMSO", LDV_1536_PART, 1536, Decimal("1"), Decimal("5.5"),
         "DMSO, 70–100 %",
     ),
 )

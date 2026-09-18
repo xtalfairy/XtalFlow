@@ -606,18 +606,36 @@ def test_new_plate_asks_for_a_name_and_a_shared_name_continues_that_plate(tmp_pa
     editor = _editor(percents=("0", "10"), times=(0,), replicates=2)
     editor.set_source_record(record, "lee")
 
-    _choose_plate(editor, NEW_PLATE)
-    assert editor.new_plate_input.isVisibleTo(editor.page)
+    # Chosen from the open list with the keyboard, as a mouse click would: the Plate
+    # field becomes the name field, with the focus in it once the list has closed.
+    editor.page.show()
+    combo = editor.source_plate_input
+    combo.setFocus()
+    combo.showPopup()
+    _app().processEvents()
+    for _ in range(combo.findData(NEW_PLATE)):
+        QTest.keyClick(combo.view(), Qt.Key_Down)
+    QTest.keyClick(combo.view(), Qt.Key_Return)
+    for _ in range(5):
+        _app().processEvents()
+    assert editor.new_plate_input.isVisible() and not combo.isVisible()
+    assert QApplication.focusWidget() is editor.new_plate_input
+    QTest.keyClick(editor.new_plate_input, Qt.Key_Escape)
+    assert combo.isVisible() and not editor.new_plate_input.isVisible()
+
     editor.enter_new_plate("solvent-01")
     assert editor.design.additives[0].source_plate == "SOLVENT-01"
     assert editor.record_note_label.text() == "SOLVENT-01 is already a shared plate; it is continued."
     assert not editor.new_plate_input.isVisibleTo(editor.page)
 
     _choose_plate(editor, NEW_PLATE)
-    editor.enter_new_plate("SOLVENT-02")
+    QTest.keyClicks(editor.new_plate_input, "SOLVENT-02")
+    QTest.keyClick(editor.new_plate_input, Qt.Key_Return)
     additive = editor.design.additives[0]
     assert (additive.source_plate, additive.source_wells) == ("SOLVENT-02", ("A1",))
     assert editor.source_plate_input.currentText() == "SOLVENT-02 · not a shared plate yet"
+    assert editor.source_plate_input.isVisible()
+    editor.page.close()
 
 
 def test_a_plate_type_that_does_not_match_the_shared_plate_is_refused(tmp_path) -> None:

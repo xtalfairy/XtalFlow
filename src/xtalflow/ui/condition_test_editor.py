@@ -10,7 +10,7 @@ from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
 from PyQt5 import sip
-from PyQt5.QtCore import QEvent, QPoint, Qt, pyqtSignal
+from PyQt5.QtCore import QEvent, QPoint, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QCursor
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -263,6 +263,10 @@ class ConditionTestEditor(PlanEditorBase):
         self.new_plate_input.setToolTip("e.g. SOLVENT-02. A name already shared continues that plate.")
         self.new_plate_input.setMinimumWidth(200)
         self.new_plate_input.hide()
+        self.new_plate_input.installEventFilter(self)
+        self.new_plate_cancel_button = QPushButton("Cancel")
+        self.new_plate_cancel_button.setObjectName("LinkButton")
+        self.new_plate_cancel_button.hide()
         self.source_well_input = QLineEdit()
         self.source_well_input.setPlaceholderText("Wells, e.g. A1 or A1, A2")
         self.source_well_input.setMinimumWidth(130)
@@ -445,6 +449,7 @@ class ConditionTestEditor(PlanEditorBase):
         self.source_plate_input.opening.connect(lambda: self._fill_plate_choices(fresh=True))
         self.source_plate_input.activated.connect(self._plate_chosen)
         self.new_plate_input.editingFinished.connect(self._new_plate_named)
+        self.new_plate_cancel_button.clicked.connect(self._end_new_plate)
         self.source_well_input.editingFinished.connect(self._source_wells_edited)
         self.source_type_input.activated.connect(
             lambda _index: self._source_plate_edited(
@@ -548,6 +553,7 @@ class ConditionTestEditor(PlanEditorBase):
         fields.addWidget(_field_label("Plate"))
         fields.addWidget(self.source_plate_input)
         fields.addWidget(self.new_plate_input)
+        fields.addWidget(self.new_plate_cancel_button)
         fields.addSpacing(theme.SPACING_L)
         fields.addWidget(_field_label("Plate type"))
         fields.addWidget(self.source_type_input)
@@ -1010,12 +1016,8 @@ class ConditionTestEditor(PlanEditorBase):
     def _plate_chosen(self, index: int) -> None:
         data = self.source_plate_input.itemData(index)
         if data == NEW_PLATE:
-            self.new_plate_input.clear()
-            self.new_plate_input.show()
-            self.new_plate_input.setFocus(Qt.OtherFocusReason)
-            _show_message(self.record_note_label, "Name the new plate; its wells start at A1.")
+            self._begin_new_plate()
             return
-        self.new_plate_input.hide()
         if not data:
             return
         summary = next((item for item in self._plate_list or () if item.name == data), None)
@@ -1031,16 +1033,40 @@ class ConditionTestEditor(PlanEditorBase):
             changes["source_plate_type"] = summary.plate_type.id
         self._source_plate_edited(**changes)
 
+    def _begin_new_plate(self) -> None:
+        """The Plate field turns into a field for the new plate's name, ready for typing."""
+        self.source_plate_input.hide()
+        self.new_plate_input.clear()
+        self.new_plate_input.show()
+        self.new_plate_cancel_button.show()
+        _show_message(self.record_note_label, "Name the new plate; its wells start at A1.")
+        # After the list has closed; closing it would otherwise take the focus back.
+        QTimer.singleShot(0, lambda: self.new_plate_input.setFocus(Qt.OtherFocusReason))
+
+    def _end_new_plate(self) -> None:
+        self.new_plate_input.hide()
+        self.new_plate_cancel_button.hide()
+        self.source_plate_input.show()
+        self._fill_plate_choices()
+        if self.record_note_label.text() == "Name the new plate; its wells start at A1.":
+            _show_message(self.record_note_label, "")
+
     def enter_new_plate(self, name: str) -> None:
+        self._begin_new_plate()
         self.new_plate_input.setText(name)
         self._new_plate_named()
 
     def _new_plate_named(self) -> None:
         """A new plate starts at its first well; a name already shared continues that plate."""
+        if not self.new_plate_input.isVisibleTo(self.source_box):
+            return  # A late signal from the field as it closes.
         name = self.new_plate_input.text().strip()
         if not name:
+            if not self.new_plate_input.hasFocus():
+                self._end_new_plate()  # Left empty: back to the list.
             return
-        self.new_plate_input.hide()
+        self.new_plate_input.clear()
+        self._end_new_plate()
         self._read_plate_list(fresh=True)
         known = {summary.name.casefold(): summary for summary in self._plate_list or ()}
         if name.casefold() in known:
@@ -1521,6 +1547,13 @@ class ConditionTestEditor(PlanEditorBase):
             return self._header_event(True, event) or super().eventFilter(watched, event)
         if watched is table.verticalHeader().viewport():
             return self._header_event(False, event) or super().eventFilter(watched, event)
+        if (
+            watched is self.new_plate_input and event.type() == QEvent.KeyPress
+            and event.key() == Qt.Key_Escape
+        ):
+            self.new_plate_input.clear()
+            self._end_new_plate()
+            return True
         if watched is self.axis_editor and event.type() == QEvent.KeyPress:
             if event.key() == Qt.Key_Escape:
                 self._close_axis_editor()

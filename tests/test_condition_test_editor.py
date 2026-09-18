@@ -179,18 +179,10 @@ def test_selecting_a_condition_edits_it_beside_the_table_without_toggling() -> N
     assert editor.include_button.text() == "×"
     assert editor.design.required_crystals == 9
 
-    editor.condition_percent_input.setText("12.5")
-    editor._condition_percent_edited()
-    editor.condition_time_input.setText("90 min")
-    editor._condition_time_edited()
-    series = editor.design.series[0]
-    assert series.cell(Decimal("12.5"), 90).id == cell_id
-    assert editor.condition_title_label.text() == "DMSO 12.5% · 1 h 30 min"
-
-    editor.condition_percent_input.setText("0")
-    editor._condition_percent_edited()
-    assert "already a column" in editor.condition_error_label.text()
-    assert editor.design.series[0] == series
+    # The panel reports this well; the column and row are changed at the axis.
+    assert editor.condition_title_label.text() == "DMSO 10% · 1 h"
+    assert not hasattr(editor, "condition_percent_input")
+    assert not hasattr(editor, "remove_percent_button")
 
 
 def test_keyboard_moves_selection_and_changes_the_selected_condition() -> None:
@@ -353,3 +345,26 @@ def test_each_solvent_chip_removes_that_solvent_after_asking(monkeypatch) -> Non
     (chip,) = editor.series_group.buttons()
     assert chip.text() == "Solvent 2"
     assert not chip.findChild(QToolButton, "ChipClose").isEnabled()
+
+
+def test_correcting_one_axis_value_keeps_its_conditions(monkeypatch) -> None:
+    editor = _editor(percents=("0", "10"), times=(0, 60), replicates=2)
+    editor.select_condition(1, 1)
+    editor.include_button.click()
+    cell_id = editor.design.series[0].cell(Decimal("10"), 60).id
+
+    # A value corrected in place is a correction, not a new condition.
+    editor.percents_input.setText("0, 12.5")
+    assert editor.set_axis_text(columns=True)
+    corrected = editor.design.series[0].cell(Decimal("12.5"), 60)
+    assert corrected.id == cell_id
+    assert not corrected.included
+    editor.times_input.setText("0 min, 1 h 30 min")
+    assert editor.set_axis_text(columns=False)
+    assert editor.design.series[0].cell(Decimal("12.5"), 90).id == cell_id
+
+    # Adding one is still adding one.
+    editor.percents_input.setText("0, 12.5, 20")
+    assert editor.set_axis_text(columns=True)
+    assert editor.design.series[0].percents == (Decimal("0"), Decimal("12.5"), Decimal("20"))
+    assert editor.design.series[0].cell(Decimal("12.5"), 90).id == cell_id

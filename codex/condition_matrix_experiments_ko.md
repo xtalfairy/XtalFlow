@@ -168,7 +168,8 @@ T+1 h    ECHO round 2   Glycerol(복합 2단계)       PreTest-…-01_R2.csv
 | 시간 표기 | `30`, `30 min`, `30 minutes`, `1h`, `1 hr`, `1 hour`, `1.5 h`, `1 h 30 min`을 모두 읽는다. 분 단위로 떨어지지 않는 값(`1.51 h`)과 읽을 수 없는 값(`soon`, `30 s`)만 거절하고, 오류 문구에 쓸 수 있는 형식을 같이 보여 준다 |
 | 축 | 열 `Final concentration in drop (%)`, 행 `Soaking duration`을 쉼표 목록으로 입력. 읽을 수 없는 값은 그 칸 아래 빨간 문구로 알리고 설계를 바꾸지 않음(0으로 대체하지 않음) |
 | 셀 | `2 wells` / `Excluded`. 클릭·방향키는 선택만, Space·Enter 포함/제외, +/− well 수. 포함/제외 버튼(× / +)은 선택된 칸 안에만 하나 나타난다(칸마다 체크박스를 두지 않음). 우클릭 메뉴는 보조 |
-| 선택 조건 패널 | 농도·시간 수정(조건 ID 유지: `with_percent_changed`, `with_time_changed`), Wells, 제외된 조건이면 `Excluded from this test`, Requested / Transfer / well / Actual(`compute_doses` 결과 그대로), Planned harvest |
+| 선택 조건 패널 | 그 칸(=그 well)에 해당하는 것만 보여 준다: 제목(조건 이름), Wells, 제외 상태, Requested / Transfer / well / Actual(`compute_doses` 결과 그대로), Planned harvest. 농도·시간은 열·행 전체의 값이라 여기서 고치지 않는다(행렬 모델상 한 칸만 이웃과 다른 값을 가질 수 없음) |
+| 농도·시간 값 수정 | 축의 쉼표 목록에서 한다. 값 하나만 고쳐 쓰면 추가·삭제가 아니라 이름 변경으로 보고 `with_percent_changed` / `with_time_changed`로 조건 ID와 칸별 설정(well 수·제외)을 유지한다 |
 | Wells per condition | `design.default_replicates`. 바꾸면 이전 기본값을 쓰던 조건만 따라가고 따로 정한 조건은 유지 |
 | 0 % 이름 | `No DMSO added`, 앞 처리가 있으면 `No additional Glycerol`. "Control"이라 부르지 않음(진짜 대조군 정의는 실험자 결정) |
 | 앞 처리·SMILES·추가 solvent | `Advanced` 접힘 영역으로 이동, 팝업(AdditiveDialog) 제거. 앞 처리 시간은 검증 후에만 적용 |

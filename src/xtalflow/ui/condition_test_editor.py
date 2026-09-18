@@ -46,7 +46,6 @@ from xtalflow.domain.condition_test import (
     new_series,
     parse_minutes,
     parse_minutes_list,
-    parse_percent,
     parse_percent_list,
 )
 from xtalflow.domain.crystal_workflow import AssignmentOrder
@@ -275,12 +274,6 @@ class ConditionTestEditor(PlanEditorBase):
         self.condition_title_label = QLabel()
         self.condition_title_label.setWordWrap(True)
         self.condition_title_label.setStyleSheet("font-weight: 600;")
-        self.condition_percent_input = QLineEdit()
-        self.condition_percent_input.setMaximumWidth(90)
-        self.condition_time_input = QLineEdit()
-        self.condition_time_input.setMaximumWidth(110)
-        self.condition_time_input.setToolTip(DURATION_HINT)
-        self.condition_error_label = _message_label()
         self.condition_wells_input = QSpinBox()
         self.condition_wells_input.setRange(1, MAX_WELLS_PER_CONDITION)
         self.condition_wells_input.setMaximumWidth(80)
@@ -303,12 +296,6 @@ class ConditionTestEditor(PlanEditorBase):
             "Planned time relative to the start of dispensing (T+0). It is not a "
             "record of when wells were actually dispensed or harvested."
         )
-        self.remove_percent_button = QPushButton()
-        self.remove_percent_button.setToolTip("Remove this concentration column")
-        self.remove_percent_button.setObjectName("LinkButton")
-        self.remove_time_button = QPushButton()
-        self.remove_time_button.setToolTip("Remove this soaking duration row")
-        self.remove_time_button.setObjectName("LinkButton")
 
         self.design_error_label = QLabel()
         self.design_error_label.setWordWrap(True)
@@ -359,16 +346,12 @@ class ConditionTestEditor(PlanEditorBase):
         vertical.customContextMenuRequested.connect(
             lambda position: self._show_axis_menu(position, columns=False)
         )
-        self.condition_percent_input.editingFinished.connect(self._condition_percent_edited)
-        self.condition_time_input.editingFinished.connect(self._condition_time_edited)
         self.condition_wells_input.valueChanged.connect(self._condition_wells_changed)
         self.include_button.clicked.connect(self.toggle_selected_condition)
         for scrollbar in (
             self.matrix_table.horizontalScrollBar(), self.matrix_table.verticalScrollBar()
         ):
             scrollbar.valueChanged.connect(lambda _value: self._place_include_button())
-        self.remove_percent_button.clicked.connect(lambda: self._remove_selected_axis(columns=True))
-        self.remove_time_button.clicked.connect(lambda: self._remove_selected_axis(columns=False))
         self.order_input.currentIndexChanged.connect(self.refresh_plan)
         self._load_design_inputs()
         self.refresh_plan()
@@ -536,24 +519,14 @@ class ConditionTestEditor(PlanEditorBase):
         return scroll
 
     def _build_condition_panel(self) -> None:
-        edit = QFormLayout()
-        edit.setLabelAlignment(Qt.AlignLeft)
-        edit.setHorizontalSpacing(theme.SPACING_L)
-        edit.setVerticalSpacing(theme.SPACING_M)
-        percent = QHBoxLayout()
-        percent.setSpacing(theme.SPACING_S)
-        percent.addWidget(self.condition_percent_input)
-        percent.addWidget(_field_label("%"))
-        percent.addStretch()
-        edit.addRow(_field_label("Concentration"), percent)
-        edit.addRow(_field_label("Duration"), self.condition_time_input)
-        edit.addRow(_field_label("Wells"), self.condition_wells_input)
-        edit.addRow("", self.condition_state_label)
-
+        # What this one well gets. Concentrations and durations belong to the whole
+        # column or row, so they are named here but changed at the axis.
         facts = QFormLayout()
         facts.setLabelAlignment(Qt.AlignLeft)
         facts.setHorizontalSpacing(theme.SPACING_L)
         facts.setVerticalSpacing(theme.SPACING_S)
+        facts.addRow(_field_label("Wells"), self.condition_wells_input)
+        facts.addRow("", self.condition_state_label)
         facts.addRow(_field_label("Requested"), self.requested_label)
         facts.addRow(_field_label("Transfer / well"), self.transfer_label)
         facts.addRow(_field_label("Actual"), self.actual_label)
@@ -568,16 +541,8 @@ class ConditionTestEditor(PlanEditorBase):
         layout.setContentsMargins(theme.SPACING_L, theme.SPACING_L, theme.SPACING_L, theme.SPACING_L)
         layout.setSpacing(theme.SPACING_M)
         layout.addWidget(self.condition_title_label)
-        layout.addLayout(edit)
-        layout.addWidget(self.condition_error_label)
         layout.addWidget(divider)
         layout.addLayout(facts)
-        removes = QHBoxLayout()
-        removes.setSpacing(0)
-        removes.addWidget(self.remove_percent_button)
-        removes.addWidget(self.remove_time_button)
-        removes.addStretch()
-        layout.addLayout(removes)
         self.condition_panel.setLayout(layout)
 
     def review_widget(self) -> QWidget:
@@ -723,12 +688,12 @@ class ConditionTestEditor(PlanEditorBase):
     def _clear_field_errors(self) -> None:
         for widget in (
             self.percents_input, self.times_input, self.before_minutes_input,
-            self.condition_percent_input, self.condition_time_input, self.additive_name_input,
+            self.additive_name_input,
         ):
             _set_flag(widget, "invalid", False)
         for label in (
             self.percents_error_label, self.times_error_label, self.before_error_label,
-            self.condition_error_label, self.name_error_label,
+            self.name_error_label,
         ):
             _show_message(label, "")
 
@@ -893,14 +858,8 @@ class ConditionTestEditor(PlanEditorBase):
         label = self.percents_error_label if columns else self.times_error_label
         series = self._series
         try:
-            if columns:
-                updated = series.with_axes(
-                    parse_percent_list(field.text()), series.times, self.design.default_replicates
-                )
-            else:
-                updated = series.with_axes(
-                    series.percents, parse_minutes_list(field.text()), self.design.default_replicates
-                )
+            values = parse_percent_list(field.text()) if columns else parse_minutes_list(field.text())
+            updated = self._with_axis(series, values, columns)
         except ValueError as error:
             _set_flag(field, "invalid", True)
             _show_message(
@@ -914,6 +873,21 @@ class ConditionTestEditor(PlanEditorBase):
         self._load_design_inputs()
         self.refresh_plan()
         return True
+
+    def _with_axis(self, series, values, columns: bool):
+        """Correcting one value in the list renames it, so its conditions stay themselves."""
+        axis = series.percents if columns else series.times
+        wanted = tuple(sorted(set(values)))
+        changed = tuple(value for value in axis if value not in wanted)
+        added = tuple(value for value in wanted if value not in axis)
+        if len(changed) == 1 and len(added) == 1:
+            return (
+                series.with_percent_changed(changed[0], added[0]) if columns
+                else series.with_time_changed(changed[0], added[0])
+            )
+        if columns:
+            return series.with_axes(wanted, series.times, self.design.default_replicates)
+        return series.with_axes(series.percents, wanted, self.design.default_replicates)
 
     # Kept for callers that add a single value.
     def add_percent(self, text: str) -> bool:
@@ -939,9 +913,6 @@ class ConditionTestEditor(PlanEditorBase):
             cell = series.cell(series.percents[column], series.times[row])
             if cell is not None and cell.id != self._selected_cell_id:
                 self._selected_cell_id = cell.id
-                _set_flag(self.condition_percent_input, "invalid", False)
-                _set_flag(self.condition_time_input, "invalid", False)
-                _show_message(self.condition_error_label, "")
                 self._render_condition_panel()
                 self._place_include_button()
 
@@ -962,46 +933,6 @@ class ConditionTestEditor(PlanEditorBase):
         self._replace_series(series)
         self.refresh_plan()
 
-    def _condition_percent_edited(self) -> None:
-        cell = self._selected_cell()
-        if cell is None:
-            return
-        try:
-            value = parse_percent(self.condition_percent_input.text())
-            updated = self._series.with_percent_changed(cell.percent, value)
-        except ValueError as error:
-            self._show_condition_error(self.condition_percent_input, error)
-            return
-        self._apply_condition_axis(updated)
-
-    def _condition_time_edited(self) -> None:
-        cell = self._selected_cell()
-        if cell is None:
-            return
-        try:
-            value = parse_minutes(self.condition_time_input.text())
-            updated = self._series.with_time_changed(cell.minutes, value)
-        except ValueError as error:
-            self._show_condition_error(self.condition_time_input, error)
-            return
-        self._apply_condition_axis(updated)
-
-    def _show_condition_error(self, field: QLineEdit, error: ValueError) -> None:
-        _set_flag(field, "invalid", True)
-        hint = "" if field is self.condition_percent_input else f" {DURATION_HINT}"
-        _show_message(self.condition_error_label, f"{_sentence(error)}{hint}")
-
-    def _apply_condition_axis(self, updated) -> None:
-        for field in (self.condition_percent_input, self.condition_time_input):
-            _set_flag(field, "invalid", False)
-        _show_message(self.condition_error_label, "")
-        if updated != self._series:
-            self._replace_series(updated)
-            self._load_design_inputs()
-            self.refresh_plan()
-        else:
-            self._render_condition_panel()
-
     def _condition_wells_changed(self, value: int) -> None:
         cell = self._selected_cell()
         if cell is not None and cell.replicates != value:
@@ -1019,11 +950,6 @@ class ConditionTestEditor(PlanEditorBase):
         value = min(MAX_WELLS_PER_CONDITION, max(1, cell.replicates + step))
         if value != cell.replicates:
             self._set_cells((cell,), replicates=value)
-
-    def _remove_selected_axis(self, columns: bool) -> None:
-        cell = self._selected_cell()
-        if cell is not None:
-            self._remove_axis_value(cell.percent if columns else cell.minutes, columns)
 
     def eventFilter(self, watched, event) -> bool:
         if watched is self.matrix_table and event.type() == QEvent.Resize:
@@ -1215,10 +1141,6 @@ class ConditionTestEditor(PlanEditorBase):
         series = self._series
         condition = self._condition_for(cell)
         self.condition_title_label.setText(self.design.label(condition))
-        if not self.condition_percent_input.property("invalid") and not self.condition_percent_input.hasFocus():
-            self.condition_percent_input.setText(_percent(cell.percent))
-        if not self.condition_time_input.property("invalid") and not self.condition_time_input.hasFocus():
-            self.condition_time_input.setText(format_minutes(cell.minutes))
         self.condition_wells_input.blockSignals(True)
         self.condition_wells_input.setValue(cell.replicates)
         self.condition_wells_input.blockSignals(False)
@@ -1226,10 +1148,6 @@ class ConditionTestEditor(PlanEditorBase):
         self.condition_state_label.setText(
             "" if cell.included else "Excluded from this test"
         )
-        self.remove_percent_button.setText(f"Remove {_percent(cell.percent)} %")
-        self.remove_time_button.setText(f"Remove {format_minutes(cell.minutes)}")
-        self.remove_percent_button.setEnabled(len(series.percents) > 1)
-        self.remove_time_button.setEnabled(len(series.times) > 1)
 
         additive = self.design.additive(series.additive_id)
         self.requested_label.setText(f"{_percent(cell.percent)} % {additive.name}")

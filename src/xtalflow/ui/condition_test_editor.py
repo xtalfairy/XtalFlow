@@ -237,8 +237,6 @@ class ConditionTestEditor(PlanEditorBase):
         self.smiles_input.setMaximumWidth(320)
 
         # Concentrations and durations are edited on the table's own headers.
-        self.column_caption = QLabel("Final concentration in drop (%)")
-        self.column_caption.setObjectName("AxisCaption")
         self.axis_error_label = _message_label()
         # (columns, value being renamed or None when adding) while the header editor is open.
         self._axis_edit: tuple[bool, object] | None = None
@@ -493,12 +491,11 @@ class ConditionTestEditor(PlanEditorBase):
         matrix.setHorizontalSpacing(theme.SPACING_XL)
         matrix.setVerticalSpacing(theme.SPACING_S)
         matrix.addLayout(defaults, 0, 0)
-        matrix.addWidget(self.column_caption, 1, 0)
-        matrix.addWidget(self.matrix_table, 2, 0)
-        matrix.addWidget(self.condition_panel, 2, 1, 3, 1, Qt.AlignTop)
-        matrix.addWidget(self.axis_error_label, 3, 0)
+        matrix.addWidget(self.matrix_table, 1, 0)
+        matrix.addWidget(self.condition_panel, 1, 1, 3, 1, Qt.AlignTop)
+        matrix.addWidget(self.axis_error_label, 2, 0)
         matrix.setColumnStretch(0, 1)
-        matrix.setRowStretch(4, 1)
+        matrix.setRowStretch(3, 1)
 
         widget = QWidget()
         widget.setObjectName("ConditionsPage")
@@ -537,9 +534,14 @@ class ConditionTestEditor(PlanEditorBase):
         facts.setVerticalSpacing(theme.SPACING_S)
         facts.addRow(_field_label("Wells"), self.condition_wells_input)
         facts.addRow("", self.condition_state_label)
+        # The table's column headers are these concentrations.
+        concentration = QLabel("Final concentration in drop")
+        concentration.setStyleSheet("font-weight: 500;")
+        concentration.setContentsMargins(0, theme.SPACING_M, 0, 0)
+        facts.addRow(concentration)
         facts.addRow(_field_label("Requested"), self.requested_label)
-        facts.addRow(_field_label("Transfer / well"), self.transfer_label)
         facts.addRow(_field_label("Actual"), self.actual_label)
+        facts.addRow(_field_label("Transfer / well"), self.transfer_label)
         facts.addRow(_field_label("Earlier"), self.earlier_label)
         facts.addRow(_field_label("Planned harvest"), self.harvest_label)
         self._facts_layout = facts
@@ -1334,12 +1336,11 @@ class ConditionTestEditor(PlanEditorBase):
         table.setMaximumWidth(width + (bar if clipped_rows else 0))
         clipped_columns = table.isVisible() and table.width() < table.maximumWidth()
         table.setFixedHeight(min(height, MATRIX_MAX_HEIGHT) + (bar if clipped_columns else 0))
-        # Axis names: the row axis in the empty corner, the column axis above the columns.
+        # The row axis is named in the empty corner; the panel names the concentration.
         column_header = table.horizontalHeader().sizeHint().height()
         self.row_caption.setGeometry(
             table.frameWidth() + 8, table.frameWidth(), row_header - 10, column_header
         )
-        self.column_caption.setContentsMargins(table.frameWidth() + row_header + 4, 0, 0, 0)
 
     def _render_condition_panel(self) -> None:
         cell = self._selected_cell()

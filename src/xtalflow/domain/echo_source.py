@@ -251,12 +251,21 @@ class SourceAllocation:
                 f"{_ul_text(well.transferred_nl)} µL to transfer + {margin}."
             )
         else:
-            text = f"Needs {len(self.wells)} wells: {self.fills_text()} ({self.fill_note} each)."
+            fills = [f"{well.address or '?'} with {_number(well.fill_ul)} µL" for well in self.wells]
+            text = (
+                f"Fill {', '.join(fills[:-1])} and {fills[-1]} — each "
+                f"{_number(self.plate_type.dead_ul)} µL dead volume + its transfers + {margin}."
+            )
         unused = self.unused_wells
         if unused:
             names = unused[0] if len(unused) == 1 else f"{', '.join(unused[:-1])} and {unused[-1]}"
             text += f" {names} {'is' if len(unused) == 1 else 'are'} not needed."
         return text
+
+
+def ul_text(nl: Decimal) -> str:
+    """nL as µL for people: rounded up to 0.01 µL, never showing less than there is."""
+    return _ul_text(nl)
 
 
 def _ul_text(nl: Decimal) -> str:

@@ -57,7 +57,10 @@ def test_transfers_move_to_the_next_well_before_one_would_go_below_its_dead_volu
     assert all(well.fill_ul <= LDV_1536.max_ul for well in allocation.wells)
     assert allocation.transfer_wells[:9] == ("A1",) * 8 + ("A2",)
     assert allocation.transfer_wells[-1] is None  # the third well is not entered yet
-    assert allocation.instruction().startswith("Needs 3 wells: A1 5.4 µL · A2 5.4 µL · ? 3.2 µL")
+    assert allocation.instruction() == (
+        "Fill A1 with 5.4 µL, A2 with 5.4 µL and ? with 3.2 µL — "
+        "each 1 µL dead volume + its transfers + 10 % margin."
+    )
 
 
 def test_a_transfer_larger_than_one_well_can_give_is_refused() -> None:

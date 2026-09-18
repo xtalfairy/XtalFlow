@@ -64,6 +64,7 @@ from xtalflow.domain.echo_source import (
     PlateSummary,
     allocate_source_wells,
     next_free_wells,
+    ul_text,
     normalize_well,
     parse_wells,
     source_plate_type,
@@ -1699,7 +1700,7 @@ class ConditionTestEditor(PlanEditorBase):
             statuses = source_statuses(self.design, transfers, True, self._records_for_checks())
             status = next((item for item in statuses if item.additive.id == additive.id), None)
         self._source_problem = status.problem if status is not None else None
-        self._render_preparation(transfers, statuses)
+        self._render_preparation(transfers)
         if self._source_well_error:
             message, attention = self._source_well_error, True
         elif missing:
@@ -1709,8 +1710,10 @@ class ConditionTestEditor(PlanEditorBase):
                 message += self._shared_plate_hint()
         elif status is not None and status.problem:
             message, attention = status.problem, True
+        elif status is not None and status.allocation is not None:
+            # The plate is chosen: which of its wells to fill, and with how much.
+            message, attention = status.allocation.instruction(), False
         else:
-            # Ready: how to fill the wells is listed under Preparation.
             message, attention = "", False
         _set_flag(self.source_message_label, "attention", attention)
         _set_flag(self.source_box, "missing", attention)
@@ -1719,7 +1722,7 @@ class ConditionTestEditor(PlanEditorBase):
         _set_flag(self.drop_volume_input, "missing", drop_missing)
         _set_flag(self.conditions_drop_input, "missing", drop_missing)
 
-    def _render_preparation(self, transfers, statuses) -> None:
+    def _render_preparation(self, transfers) -> None:
         """Crystal drops to select, and for each solvent the wells to fill and with how much."""
         conditions = self.design.conditions()
         drops = self.design.required_crystals
@@ -1729,21 +1732,19 @@ class ConditionTestEditor(PlanEditorBase):
         else:
             count = f"{drops} for {_plural(len(conditions), 'condition')}, one per well"
         rows = [("Crystal drops", count)]
-        by_additive = {status.additive.id: status for status in statuses}
         for additive in self.design.additives:
+            # What the drops actually receive; how to fill the source wells is said
+            # with the plate, which decides the dead volume.
             if transfers is None:
-                text = "Enter the initial drop volume to see how much to prepare."
+                text = "Enter the initial drop volume to see how much is used."
             elif additive.id not in transfers:
-                text = "Nothing is transferred."
+                text = "None used: no condition adds it."
             else:
-                status = by_additive.get(additive.id)
-                if status is not None and status.allocation is not None and not status.problem:
-                    text = status.allocation.instruction()
-                elif additive.id == self._series.additive_id:
-                    text = "Set its source plate and wells below."
-                else:
-                    # The fields below belong to the solvent chosen above.
-                    text = f"Choose {additive.name} above to set its source plate and wells."
+                volumes = transfers[additive.id]
+                total = sum(volumes, Decimal("0"))
+                text = (
+                    f"{ul_text(total)} µL in total, into {_plural(len(volumes), 'crystal drop')}"
+                )
             rows.append((additive.name, text))
         cells = "".join(
             f'<tr><td style="color:{theme.TEXT_MUTED}; padding:1px 16px 1px 0">'

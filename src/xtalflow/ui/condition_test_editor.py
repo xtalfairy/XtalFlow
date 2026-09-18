@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import re
 from collections.abc import Callable
 from dataclasses import replace
@@ -267,6 +268,10 @@ class ConditionTestEditor(PlanEditorBase):
         self.source_well_input.setPlaceholderText("Wells, e.g. A1 or A1, A2")
         self.source_well_input.setMinimumWidth(130)
         self.source_well_input.setMaximumWidth(170)
+        # What to have ready: crystal drops, and each solvent's source wells and volumes.
+        self.preparation_label = QLabel()
+        self.preparation_label.setTextFormat(Qt.RichText)
+        self.preparation_label.setWordWrap(True)
         self.source_message_label = QLabel()
         self.source_message_label.setObjectName("SourceMessage")
         self.source_message_label.setWordWrap(True)
@@ -540,7 +545,7 @@ class ConditionTestEditor(PlanEditorBase):
         inputs.addStretch()
 
         # The title sits above the fields, so plate names that say what they hold fit in one row.
-        source_title = QLabel("Dispensing source")
+        source_title = QLabel("Preparation")
         source_title.setStyleSheet("font-weight: 500;")
         # Which plate on one line, which of its wells on the next.
         fields = QHBoxLayout()
@@ -573,15 +578,17 @@ class ConditionTestEditor(PlanEditorBase):
         source.setContentsMargins(theme.SPACING_L, theme.SPACING_M, theme.SPACING_L, theme.SPACING_M)
         source.setSpacing(theme.SPACING_S)
         source.addWidget(source_title)
+        source.addWidget(self.preparation_label)
+        source.addSpacing(theme.SPACING_S)
         source.addLayout(fields)
         source.addLayout(wells)
         source.addWidget(self.skip_row)
         source.addWidget(self.source_message_label)
         source.addWidget(self.record_note_label)
         self.source_box.setLayout(source)
+        # As wide as the page: it lists what the whole test needs.
         source_row = QHBoxLayout()
         source_row.addWidget(self.source_box)
-        source_row.addStretch()
 
         before = QHBoxLayout()
         before.setSpacing(theme.SPACING_M)
@@ -1683,21 +1690,16 @@ class ConditionTestEditor(PlanEditorBase):
             _set_flag(field, "missing", absent[name])
         missing = [name for name, gone in absent.items() if gone]
         status = None
+        statuses: tuple = ()
         try:
             transfers = additive_transfers(self.design)
         except ValueError:
             transfers = None
         else:
-            status = next(
-                (
-                    item for item in source_statuses(
-                        self.design, transfers, True, self._records_for_checks()
-                    )
-                    if item.additive.id == additive.id
-                ),
-                None,
-            )
+            statuses = source_statuses(self.design, transfers, True, self._records_for_checks())
+            status = next((item for item in statuses if item.additive.id == additive.id), None)
         self._source_problem = status.problem if status is not None else None
+        self._render_preparation(transfers, statuses)
         if self._source_well_error:
             message, attention = self._source_well_error, True
         elif missing:
@@ -1705,20 +1707,58 @@ class ConditionTestEditor(PlanEditorBase):
             message, attention = f"Enter the source {names}; the ECHO worksheet needs them.", True
             if "plate" in missing and not self._naming_plate:
                 message += self._shared_plate_hint()
-        elif transfers is None:
-            message, attention = "Enter the initial drop volume to see how much to prepare.", False
-        elif status is None:
-            message, attention = "Nothing is transferred from this source.", False
-        elif status.problem:
+        elif status is not None and status.problem:
             message, attention = status.problem, True
         else:
-            message, attention = status.allocation.instruction(), False
+            # Ready: how to fill the wells is listed under Preparation.
+            message, attention = "", False
         _set_flag(self.source_message_label, "attention", attention)
         _set_flag(self.source_box, "missing", attention)
         _show_message(self.source_message_label, message)
         drop_missing = self.design.drop_volume_nl is None
         _set_flag(self.drop_volume_input, "missing", drop_missing)
         _set_flag(self.conditions_drop_input, "missing", drop_missing)
+
+    def _render_preparation(self, transfers, statuses) -> None:
+        """Crystal drops to select, and for each solvent the wells to fill and with how much."""
+        conditions = self.design.conditions()
+        drops = self.design.required_crystals
+        replicates = {condition.replicates for condition in conditions}
+        if len(replicates) == 1 and conditions:
+            count = f"{drops} ({_plural(len(conditions), 'condition')} × {replicates.pop()}), one per well"
+        else:
+            count = f"{drops} for {_plural(len(conditions), 'condition')}, one per well"
+        rows = [("Crystal drops", count)]
+        by_additive = {status.additive.id: status for status in statuses}
+        for additive in self.design.additives:
+            if transfers is None:
+                text = "Enter the initial drop volume to see how much to prepare."
+            elif additive.id not in transfers:
+                text = "Nothing is transferred."
+            else:
+                status = by_additive.get(additive.id)
+                if status is not None and status.allocation is not None and not status.problem:
+                    text = status.allocation.instruction()
+                elif additive.id == self._series.additive_id:
+                    text = "Set its source plate and wells below."
+                else:
+                    # The fields below belong to the solvent chosen above.
+                    text = f"Choose {additive.name} above to set its source plate and wells."
+            rows.append((additive.name, text))
+        cells = "".join(
+            f'<tr><td style="color:{theme.TEXT_MUTED}; padding:1px 16px 1px 0">'
+            f"{html.escape(label)}</td><td>{html.escape(value)}</td></tr>"
+            for label, value in rows
+        )
+        self.preparation_label.setText(f"<table>{cells}</table>")
+
+    def preparation_rows(self) -> list[str]:
+        """The preparation list as plain lines, e.g. for checking it."""
+        text = self.preparation_label.text()
+        return [
+            " · ".join(html.unescape(part) for part in re.findall(r"<td[^>]*>(.*?)</td>", row))
+            for row in re.findall(r"<tr>(.*?)</tr>", text)
+        ]
 
     def _condition_for(self, cell) -> Condition:
         series = self._series

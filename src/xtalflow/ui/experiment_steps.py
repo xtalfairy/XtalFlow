@@ -194,7 +194,7 @@ class WorksheetsStep(QWidget):
         """Source wells to fill first, then the planned times."""
         blocks = []
         if preparation:
-            blocks.append("Prepare the source plate before dispensing\n" + "\n".join(preparation))
+            blocks.append("Prepare before dispensing\n" + "\n".join(preparation))
         if lines:
             blocks.append(
                 "Planned schedule · relative to the start of dispensing (T+0)\n" + "\n".join(lines)

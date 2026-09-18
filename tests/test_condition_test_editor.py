@@ -446,11 +446,13 @@ def test_source_box_comes_last_and_says_how_to_fill_the_source_wells() -> None:
     last = placed[-1]
     assert last.itemAt(0).widget() is editor.source_box
 
+    # What to have ready, on top: crystal drops, then how to fill each solvent's wells.
     # 4 transfers of 10 nL from a 384PP well: 15 µL dead volume + 0.04 µL + 10 %.
-    assert editor.source_message_label.text() == (
-        "Fill A1 with 15.1 µL — 15 µL dead volume + 0.04 µL to transfer + 10 % margin."
-    )
-    assert not editor.source_message_label.property("attention")
+    assert editor.preparation_rows() == [
+        "Crystal drops · 8 (4 conditions × 2), one per well",
+        "DMSO · Fill A1 with 15.1 µL — 15 µL dead volume + 0.04 µL to transfer + 10 % margin.",
+    ]
+    assert not editor.source_message_label.isVisibleTo(editor.source_box)
 
     editor.update_additive(source_plate_type="")
     assert editor.design_error == "Choose the source plate type for DMSO."
@@ -473,8 +475,8 @@ def test_several_source_wells_are_asked_for_when_one_is_not_enough() -> None:
     editor.source_well_input.editingFinished.emit()
     assert editor.design.additives[0].source_wells == ("A1", "AF48")
     assert editor.design_error is None
-    assert editor.source_message_label.text() == (
-        "Needs 2 wells: A1 5 µL · AF48 3 µL (1 µL dead volume + transfers + 10 % margin each)."
+    assert editor.preparation_rows()[1] == (
+        "DMSO · Needs 2 wells: A1 5 µL · AF48 3 µL (1 µL dead volume + transfers + 10 % margin each)."
     )
 
     # A well that is not on the plate is refused where it was typed.

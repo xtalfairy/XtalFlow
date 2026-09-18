@@ -2430,9 +2430,11 @@ def test_solvent_test_runs_from_conditions_to_saved_worksheets_and_reopens(
     assert window._finalize_plan(editor).experiment_id.startswith("PreTest-")
     window.go_to_step(WorkflowStep.WORKSHEETS)
     preparation, schedule = editor.worksheets_step.schedule_label.text().split("\n\n")
-    assert preparation.splitlines()[0] == "Prepare the source plate before dispensing"
-    assert preparation.splitlines()[1].startswith("DMSO · LDV-1 A1 ")
-    assert preparation.splitlines()[1].endswith("(15 µL dead volume + transfers + 10 % margin)")
+    assert preparation.splitlines()[:2] == [
+        "Prepare before dispensing", "Crystal drops · 15, one per well"
+    ]
+    assert preparation.splitlines()[2].startswith("DMSO · LDV-1 A1 ")
+    assert preparation.splitlines()[2].endswith("(15 µL dead volume + transfers + 10 % margin)")
     assert schedule.splitlines()[:3] == [
         "Planned schedule · relative to the start of dispensing (T+0)",
         "T+0 min · dispense with the ECHO file (11 wells)",

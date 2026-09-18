@@ -1605,10 +1605,13 @@ class ViewerWindow(QMainWindow):
         preparation = ()
         if isinstance(plan, ConditionTestPlan):
             allocations = plan.source_allocations()
-            preparation = tuple(
-                f"{additive.name} · {additive.source_plate} {allocations[additive.id].fills_text()} "
-                f"({allocations[additive.id].fill_note})"
-                for additive in plan.design.additives if additive.id in allocations
+            preparation = (
+                f"Crystal drops · {len(plan.assignments)}, one per well",
+                *(
+                    f"{additive.name} · {additive.source_plate} "
+                    f"{allocations[additive.id].fills_text()} ({allocations[additive.id].fill_note})"
+                    for additive in plan.design.additives if additive.id in allocations
+                ),
             )
         editor.worksheets_step.show_schedule(
             tuple(f"T+{format_minutes(minute)} · {action}" for minute, action in schedule),

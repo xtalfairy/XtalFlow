@@ -2,7 +2,8 @@ import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QEvent, QPoint, Qt
+from PyQt5.QtGui import QMouseEvent
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QMessageBox, QToolButton
 
@@ -63,57 +64,135 @@ def _selection(count: int, positions: int = 1):
 
 
 def _cell_texts(editor):
+    """Condition cells only: the last column and row are the "+" that adds values."""
     table = editor.matrix_table
     return [
-        [table.item(row, column).text() for column in range(table.columnCount())]
-        for row in range(table.rowCount())
+        [table.item(row, column).text() for column in range(table.columnCount() - 1)]
+        for row in range(table.rowCount() - 1)
     ]
 
 
-def test_typed_concentrations_and_durations_add_and_remove_conditions_keeping_ids() -> None:
+def _header_click(editor, columns: bool, section: int, double: bool = False) -> None:
+    table = editor.matrix_table
+    header = table.horizontalHeader() if columns else table.verticalHeader()
+    start = header.sectionViewportPosition(section) + header.sectionSize(section) // 2
+    position = QPoint(start, header.height() // 2) if columns else QPoint(header.width() // 2, start)
+    if double:
+        QTest.mouseDClick(header.viewport(), Qt.LeftButton, pos=position)
+    else:
+        QTest.mouseClick(header.viewport(), Qt.LeftButton, pos=position)
+
+
+def test_plus_headers_add_values_in_place_and_keep_existing_conditions() -> None:
     editor = _editor()
+    table = editor.matrix_table
     kept = editor.design.series[0].cell(Decimal("10"), 60).id
+    assert table.horizontalHeaderItem(2).text() == "+"
+    assert table.verticalHeaderItem(2).text() == "+"
+    assert not table.item(0, 2).flags() & Qt.ItemIsSelectable
 
-    editor.percents_input.setText("0, 10, 20")
-    assert editor.set_axis_text(columns=True)
-    editor.times_input.setText("0, 1 h, 2 h")
-    assert editor.set_axis_text(columns=False)
+    # "+" opens an editor on that header; several values can go in at once.
+    _header_click(editor, columns=True, section=2)
+    assert editor.axis_editor.isVisibleTo(editor.matrix_table)
+    QTest.keyClicks(editor.axis_editor, "20, 5")
+    QTest.keyClick(editor.axis_editor, Qt.Key_Return)
+    assert not editor.axis_editor.isVisibleTo(editor.matrix_table)
+    assert [table.horizontalHeaderItem(index).text() for index in range(5)] == [
+        "0 %", "5 %", "10 %", "20 %", "+"
+    ]
+    # The new column sorted into place and is selected, so it is easy to find.
+    assert editor.condition_title_label.text() == "DMSO 5% · 0 min"
 
-    assert editor.matrix_table.columnCount() == 3
-    assert editor.matrix_table.verticalHeaderItem(2).text() == "2 h"
-    assert editor.design.required_crystals == 18
+    _header_click(editor, columns=False, section=2)
+    QTest.keyClicks(editor.axis_editor, "2 h")
+    QTest.keyClick(editor.axis_editor, Qt.Key_Return)
+    assert table.verticalHeaderItem(2).text() == "2 h"
+    assert editor.design.required_crystals == 4 * 3 * 2
     assert editor.design.series[0].cell(Decimal("10"), 60).id == kept
 
-    editor.percents_input.setText("10")
-    assert editor.set_axis_text(columns=True)
-    assert editor.design.required_crystals == 6
-    assert editor.design.series[0].cell(Decimal("10"), 60).id == kept
+    # Escape leaves everything as it was.
+    _header_click(editor, columns=True, section=4)
+    QTest.keyClicks(editor.axis_editor, "40")
+    QTest.keyClick(editor.axis_editor, Qt.Key_Escape)
+    assert editor.design.series[0].percents == tuple(Decimal(v) for v in ("0", "5", "10", "20"))
 
 
-def test_values_that_cannot_be_read_are_shown_at_their_field_and_change_nothing() -> None:
+def test_double_clicking_a_header_corrects_that_value_and_keeps_its_conditions() -> None:
+    editor = _editor(percents=("0", "10"), times=(0, 60), replicates=2)
+    editor.select_condition(1, 1)
+    editor.include_button.click()
+    cell_id = editor.design.series[0].cell(Decimal("10"), 60).id
+
+    _header_click(editor, columns=True, section=1, double=True)
+    assert editor.axis_editor.text() == "10"
+    editor.axis_editor.setText("12.5")
+    assert editor.commit_axis_editor()
+    corrected = editor.design.series[0].cell(Decimal("12.5"), 60)
+    assert corrected.id == cell_id and not corrected.included
+
+    _header_click(editor, columns=False, section=1, double=True)
+    assert editor.axis_editor.text() == "1 h"
+    editor.axis_editor.setText("1.5 hours")
+    assert editor.commit_axis_editor()
+    assert editor.design.series[0].cell(Decimal("12.5"), 90).id == cell_id
+    assert editor.matrix_table.verticalHeaderItem(1).text() == "1 h 30 min"
+
+
+def _hover(header, position) -> None:
+    QApplication.sendEvent(
+        header.viewport(),
+        QMouseEvent(QEvent.MouseMove, position, Qt.NoButton, Qt.NoButton, Qt.NoModifier),
+    )
+
+
+def test_hovering_a_header_offers_removal_of_that_column_or_row() -> None:
+    editor = _editor(percents=("0", "10", "20"), times=(0, 60), replicates=1)
+    editor.page.resize(1000, 600)
+    editor.page.show()
+    _app().processEvents()
+    table = editor.matrix_table
+    header = table.horizontalHeader()
+    middle = header.sectionViewportPosition(1) + header.sectionSize(1) // 2
+    _hover(header, QPoint(middle, header.height() // 2))
+    assert editor.axis_remove_button.isVisible()
+    assert editor.axis_remove_button.toolTip() == "Remove the 10 % column"
+    editor.axis_remove_button.click()
+    assert editor.design.series[0].percents == (Decimal("0"), Decimal("20"))
+    # Nothing to remove over the "+" itself.
+    plus = header.sectionViewportPosition(2) + header.sectionSize(2) // 2
+    _hover(header, QPoint(plus, header.height() // 2))
+    assert not editor.axis_remove_button.isVisible()
+    editor.page.close()
+
+
+def test_values_that_cannot_be_read_are_shown_at_the_header_and_change_nothing() -> None:
     editor = _editor()
     before = editor.design
 
-    editor.times_input.setText("0, overnight")
-    assert not editor.set_axis_text(columns=False)
-    assert editor.times_input.property("invalid")
-    assert "is not a soaking duration" in editor.times_error_label.text()
-    assert "1 h 30 min" in editor.times_error_label.text()  # what to write instead
+    editor.open_axis_editor(columns=False)
+    editor.axis_editor.setText("0, overnight")
+    assert not editor.commit_axis_editor()
+    assert editor.axis_editor.isVisibleTo(editor.matrix_table)
+    assert editor.axis_editor.property("invalid")
+    assert "is not a soaking duration" in editor.axis_error_label.text()
+    assert "1 h 30 min" in editor.axis_error_label.text()  # what to write instead
     assert editor.design == before
-    # A later redraw keeps the typed text so it can be corrected.
-    editor.refresh_plan()
-    assert editor.times_input.text() == "0, overnight"
 
-    editor.percents_input.setText("5, 150")
-    assert not editor.set_axis_text(columns=True)
-    assert "below 100" in editor.percents_error_label.text()
+    editor.open_axis_editor(columns=True, value=Decimal("10"))
+    editor.axis_editor.setText("150")
+    assert not editor.commit_axis_editor()
+    assert "below 100" in editor.axis_error_label.text()
+    editor.axis_editor.setText("0")
+    assert not editor.commit_axis_editor()
+    assert "already a column" in editor.axis_error_label.text()
     assert editor.design == before
 
     # Hours are read however they are written, and shown back in one spelling.
-    editor.times_input.setText("0, 1.5 hours, 2hr")
-    assert editor.set_axis_text(columns=False)
-    assert editor.design.series[0].times == (0, 90, 120)
-    assert editor.times_input.text() == "0 min, 1 h 30 min, 2 h"
+    editor.open_axis_editor(columns=False)
+    editor.axis_editor.setText("1.5 hours, 2hr")
+    assert editor.commit_axis_editor()
+    assert editor.design.series[0].times == (0, 60, 90, 120)
+    assert editor.matrix_table.verticalHeaderItem(2).text() == "1 h 30 min"
 
 
 def test_invalid_earlier_treatment_time_is_not_saved_as_zero() -> None:
@@ -222,8 +301,7 @@ def test_wells_per_condition_follows_conditions_left_at_the_default() -> None:
 
     assert _cell_texts(editor) == [["3 wells", "3 wells"], ["3 wells", "4 wells"]]
     assert editor.design.required_crystals == 13
-    editor.percents_input.setText("0, 10, 20")
-    editor.set_axis_text(columns=True)
+    assert editor.add_axis_values("20", columns=True)
     assert editor.matrix_table.item(0, 2).text() == "3 wells"
 
 
@@ -301,7 +379,8 @@ def test_large_matrix_scrolls_inside_its_bounds() -> None:
     widget.show()
     _app().processEvents()
     table = editor.matrix_table
-    assert table.columnCount() == 15 and table.rowCount() == 20
+    # One more column and row: the "+" that adds values.
+    assert table.columnCount() == 16 and table.rowCount() == 21
     assert table.height() <= 360
     assert table.verticalScrollBar().maximum() > 0
     widget.close()
@@ -345,26 +424,3 @@ def test_each_solvent_chip_removes_that_solvent_after_asking(monkeypatch) -> Non
     (chip,) = editor.series_group.buttons()
     assert chip.text() == "Solvent 2"
     assert not chip.findChild(QToolButton, "ChipClose").isEnabled()
-
-
-def test_correcting_one_axis_value_keeps_its_conditions(monkeypatch) -> None:
-    editor = _editor(percents=("0", "10"), times=(0, 60), replicates=2)
-    editor.select_condition(1, 1)
-    editor.include_button.click()
-    cell_id = editor.design.series[0].cell(Decimal("10"), 60).id
-
-    # A value corrected in place is a correction, not a new condition.
-    editor.percents_input.setText("0, 12.5")
-    assert editor.set_axis_text(columns=True)
-    corrected = editor.design.series[0].cell(Decimal("12.5"), 60)
-    assert corrected.id == cell_id
-    assert not corrected.included
-    editor.times_input.setText("0 min, 1 h 30 min")
-    assert editor.set_axis_text(columns=False)
-    assert editor.design.series[0].cell(Decimal("12.5"), 90).id == cell_id
-
-    # Adding one is still adding one.
-    editor.percents_input.setText("0, 12.5, 20")
-    assert editor.set_axis_text(columns=True)
-    assert editor.design.series[0].percents == (Decimal("0"), Decimal("12.5"), Decimal("20"))
-    assert editor.design.series[0].cell(Decimal("12.5"), 90).id == cell_id

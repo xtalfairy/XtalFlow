@@ -7,8 +7,9 @@ from dataclasses import replace
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
-from PyQt5.QtCore import QEvent, Qt
-from PyQt5.QtGui import QColor
+from PyQt5 import sip
+from PyQt5.QtCore import QEvent, QPoint, Qt
+from PyQt5.QtGui import QColor, QCursor
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -16,7 +17,6 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -46,6 +46,7 @@ from xtalflow.domain.condition_test import (
     new_series,
     parse_minutes,
     parse_minutes_list,
+    parse_percent,
     parse_percent_list,
 )
 from xtalflow.domain.crystal_workflow import AssignmentOrder
@@ -60,8 +61,9 @@ CELL_WIDTH = 98
 CELL_HEIGHT = 32
 MATRIX_MAX_HEIGHT = 360
 PANEL_WIDTH = 300
-ROW_AXIS_WIDTH = 200
-# Beyond this many concentrations the per-column transfer line would wrap into a paragraph.
+# The "+" column and row that add values: narrow, so the table does not look unfinished.
+ADD_COLUMN_WIDTH = 36
+ADD_ROW_HEIGHT = 26
 DURATION_HINT = "Minutes or hours: 30, 45 min, 1 h, 1.5 h, 1 h 30 min."
 MAX_WELLS_PER_CONDITION = 24
 
@@ -93,6 +95,10 @@ QFrame#SourceBox QLabel, QFrame#ConditionPanel QLabel, QFrame#ConditionPanel QCh
 QLineEdit[missing="true"], QDoubleSpinBox[missing="true"] {{
     border-color: {theme.ATTENTION}; background: {theme.ATTENTION_SOFT}; }}
 QLineEdit[invalid="true"] {{ border-color: {theme.ERROR}; background: {theme.ERROR_SOFT}; }}
+QLabel#AxisCaption {{ color: {theme.TEXT_MUTED}; font-weight: 500; background: transparent; }}
+QLineEdit#AxisEditor {{ border: 1px solid {theme.FOCUS}; border-radius: 4px; padding: 0 6px;
+    min-height: 0; }}
+QLineEdit#AxisEditor[invalid="true"] {{ border-color: {theme.ERROR}; background: {theme.ERROR_SOFT}; }}
 QTableWidget#ConditionMatrix {{ border: 1px solid {theme.BORDER_STRONG}; border-radius: 0;
     gridline-color: {theme.BORDER_STRONG}; background: {theme.SURFACE}; }}
 QTableWidget#ConditionMatrix:focus {{ border: 1px solid {theme.FOCUS}; }}
@@ -227,14 +233,13 @@ class ConditionTestEditor(PlanEditorBase):
         self.smiles_input.setPlaceholderText("Optional, sent to MxLive")
         self.smiles_input.setMaximumWidth(320)
 
-        self.percents_input = QLineEdit()
-        self.percents_input.setPlaceholderText("e.g. 0, 5, 10, 20")
-        self.percents_input.setToolTip("Separate values with commas.")
-        self.percents_error_label = _message_label()
-        self.times_input = QLineEdit()
-        self.times_input.setPlaceholderText("e.g. 0, 30 min, 1 h")
-        self.times_input.setToolTip(f"Separate values with commas. {DURATION_HINT}")
-        self.times_error_label = _message_label()
+        # Concentrations and durations are edited on the table's own headers.
+        self.column_caption = QLabel("Final concentration in drop (%)")
+        self.column_caption.setObjectName("AxisCaption")
+        self.axis_error_label = _message_label()
+        # (columns, value being renamed or None when adding) while the header editor is open.
+        self._axis_edit: tuple[bool, object] | None = None
+        self._hover_axis: tuple[bool, object] | None = None
 
         self.matrix_table = QTableWidget()
         self.matrix_table.setObjectName("ConditionMatrix")
@@ -266,6 +271,25 @@ class ConditionTestEditor(PlanEditorBase):
         vertical.setDefaultSectionSize(CELL_HEIGHT)
         vertical.setDefaultAlignment(Qt.AlignRight | Qt.AlignVCenter)
         vertical.setHighlightSections(False)
+        self.row_caption = QLabel("Soaking duration", self.matrix_table)
+        self.row_caption.setObjectName("AxisCaption")
+        self.row_caption.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        vertical.setMinimumWidth(self.row_caption.sizeHint().width() + 20)
+        self.axis_editor = QLineEdit(self.matrix_table)
+        self.axis_editor.setObjectName("AxisEditor")
+        self.axis_editor.hide()
+        self.axis_editor.installEventFilter(self)
+        self.axis_remove_button = QToolButton(self.matrix_table)
+        self.axis_remove_button.setObjectName("CellToggle")
+        self.axis_remove_button.setText("×")
+        self.axis_remove_button.setFixedSize(16, 16)
+        self.axis_remove_button.hide()
+        self.axis_remove_button.installEventFilter(self)
+        for header in (horizontal, vertical):
+            # Header clicks edit values instead of selecting a whole column or row.
+            header.setSectionsClickable(False)
+            header.viewport().setMouseTracking(True)
+            header.viewport().installEventFilter(self)
 
         # The selected condition, edited beside the table.
         self.condition_panel = QFrame()
@@ -336,8 +360,8 @@ class ConditionTestEditor(PlanEditorBase):
         self.before_additive_input.activated.connect(lambda _index: self.apply_earlier_treatment())
         self.before_percent_input.valueChanged.connect(lambda _value: self.apply_earlier_treatment())
         self.before_minutes_input.editingFinished.connect(self.apply_earlier_treatment)
-        self.percents_input.editingFinished.connect(lambda: self.set_axis_text(columns=True))
-        self.times_input.editingFinished.connect(lambda: self.set_axis_text(columns=False))
+        self.axis_editor.editingFinished.connect(self.commit_axis_editor)
+        self.axis_remove_button.clicked.connect(self._remove_hovered_axis)
         self.matrix_table.currentCellChanged.connect(self._current_cell_changed)
         self.matrix_table.customContextMenuRequested.connect(self._show_cell_menu)
         horizontal.customContextMenuRequested.connect(
@@ -454,40 +478,23 @@ class ConditionTestEditor(PlanEditorBase):
         advanced.addLayout(smiles)
         self.advanced_box.setLayout(advanced)
 
-        column_axis = QHBoxLayout()
-        column_axis.setSpacing(theme.SPACING_M)
-        column_axis.addWidget(QLabel("Final concentration in drop (%)"))
-        column_axis.addWidget(self.percents_input, 1)
-        column_axis_box = QVBoxLayout()
-        column_axis_box.setSpacing(2)
-        column_axis_box.addLayout(column_axis)
-        column_axis_box.addWidget(self.percents_error_label)
-
-        row_axis = QVBoxLayout()
-        row_axis.setSpacing(theme.SPACING_S)
-        row_axis.addWidget(QLabel("Soaking duration"))
-        row_axis.addWidget(self.times_input)
-        row_axis.addWidget(self.times_error_label)
-        row_axis.addSpacing(theme.SPACING_L)
-        row_axis.addWidget(QLabel("Wells per condition"))
-        row_axis.addWidget(self.replicates_input)
-        row_axis.addStretch()
-        row_axis_widget = QWidget()
-        row_axis_widget.setFixedWidth(ROW_AXIS_WIDTH)
-        row_axis_widget.setLayout(row_axis)
-
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(theme.SPACING_L)
-        grid.setVerticalSpacing(theme.SPACING_S)
-        grid.addLayout(column_axis_box, 0, 1)
-        grid.addWidget(row_axis_widget, 1, 0, 2, 1, Qt.AlignTop)
-        grid.addWidget(self.matrix_table, 1, 1)
-        grid.setColumnStretch(1, 1)
-        grid.setRowStretch(2, 1)
+        defaults = QHBoxLayout()
+        defaults.setSpacing(theme.SPACING_M)
+        defaults.addWidget(_field_label("Wells per condition"))
+        defaults.addWidget(self.replicates_input)
+        defaults.addStretch()
+        table_box = QVBoxLayout()
+        table_box.setSpacing(theme.SPACING_S)
+        table_box.addWidget(self.column_caption)
+        table_box.addWidget(self.matrix_table)
+        table_box.addWidget(self.axis_error_label)
+        table_box.addSpacing(theme.SPACING_S)
+        table_box.addLayout(defaults)
+        table_box.addStretch()
 
         matrix = QHBoxLayout()
         matrix.setSpacing(theme.SPACING_XL)
-        matrix.addLayout(grid, 1)
+        matrix.addLayout(table_box, 1)
         matrix.addWidget(self.condition_panel, 0, Qt.AlignTop)
 
         widget = QWidget()
@@ -601,8 +608,6 @@ class ConditionTestEditor(PlanEditorBase):
             (self.source_plate_input, additive.source_plate),
             (self.source_well_input, additive.source_well),
             (self.smiles_input, additive.smiles),
-            (self.percents_input, ", ".join(_percent(value) for value in series.percents)),
-            (self.times_input, ", ".join(format_minutes(value) for value in series.times)),
         )
         for widget, text in texts:
             if not widget.property("invalid") and widget.text() != text:
@@ -686,16 +691,11 @@ class ConditionTestEditor(PlanEditorBase):
         self._load_earlier_treatment()
 
     def _clear_field_errors(self) -> None:
-        for widget in (
-            self.percents_input, self.times_input, self.before_minutes_input,
-            self.additive_name_input,
-        ):
+        for widget in (self.before_minutes_input, self.additive_name_input):
             _set_flag(widget, "invalid", False)
-        for label in (
-            self.percents_error_label, self.times_error_label, self.before_error_label,
-            self.name_error_label,
-        ):
+        for label in (self.before_error_label, self.name_error_label):
             _show_message(label, "")
+        self._close_axis_editor()
 
     def _series_changed(self, index: int) -> None:
         if 0 <= index < len(self.design.series) and index != self._series_index:
@@ -852,54 +852,189 @@ class ConditionTestEditor(PlanEditorBase):
         self.design = replace(self.design, series=series, default_replicates=value)
         self.refresh_plan()
 
-    def set_axis_text(self, columns: bool) -> bool:
-        """Read the typed concentrations or durations; a value that cannot be read changes nothing."""
-        field = self.percents_input if columns else self.times_input
-        label = self.percents_error_label if columns else self.times_error_label
-        series = self._series
+    def _axis(self, columns: bool) -> tuple:
+        return self._series.percents if columns else self._series.times
+
+    def add_axis_values(self, text: str, columns: bool) -> bool:
+        """Add one or several typed values; values that cannot be read change nothing."""
         try:
-            values = parse_percent_list(field.text()) if columns else parse_minutes_list(field.text())
-            updated = self._with_axis(series, values, columns)
+            values = parse_percent_list(text) if columns else parse_minutes_list(text)
         except ValueError as error:
-            _set_flag(field, "invalid", True)
-            _show_message(
-                label, _sentence(error) if columns else f"{_sentence(error)} {DURATION_HINT}"
-            )
+            self._show_axis_error(error, columns)
             return False
-        _set_flag(field, "invalid", False)
-        _show_message(label, "")
-        if updated != series:
-            self._replace_series(updated)
+        series = self._series
+        axis = self._axis(columns)
+        added = sorted(value for value in set(values) if value not in axis)
+        if columns:
+            updated = series.with_axes((*axis, *values), series.times, self.design.default_replicates)
+        else:
+            updated = series.with_axes(series.percents, (*axis, *values), self.design.default_replicates)
+        self._show_axis_error(None, columns)
+        self._replace_series(updated)
+        if added:
+            # Show where the new value went: values sort into place.
+            current = self._selected_cell()
+            percent = added[0] if columns else (current.percent if current else updated.percents[0])
+            minutes = (current.minutes if current else updated.times[0]) if columns else added[0]
+            self._selected_cell_id = updated.cell(percent, minutes).id
         self._load_design_inputs()
         self.refresh_plan()
         return True
 
-    def _with_axis(self, series, values, columns: bool):
-        """Correcting one value in the list renames it, so its conditions stay themselves."""
-        axis = series.percents if columns else series.times
-        wanted = tuple(sorted(set(values)))
-        changed = tuple(value for value in axis if value not in wanted)
-        added = tuple(value for value in wanted if value not in axis)
-        if len(changed) == 1 and len(added) == 1:
-            return (
-                series.with_percent_changed(changed[0], added[0]) if columns
-                else series.with_time_changed(changed[0], added[0])
+    def rename_axis_value(self, old, text: str, columns: bool) -> bool:
+        """Correct one column or row; its conditions keep their identity and settings."""
+        series = self._series
+        try:
+            if columns:
+                updated = series.with_percent_changed(old, parse_percent(text))
+            else:
+                updated = series.with_time_changed(old, parse_minutes(text))
+        except ValueError as error:
+            self._show_axis_error(error, columns)
+            return False
+        self._show_axis_error(None, columns)
+        if updated != series:
+            self._replace_series(updated)
+            self._load_design_inputs()
+            self.refresh_plan()
+        return True
+
+    def _show_axis_error(self, error: ValueError | None, columns: bool) -> None:
+        if error is None:
+            _show_message(self.axis_error_label, "")
+            return
+        hint = "" if columns else f" {DURATION_HINT}"
+        _show_message(self.axis_error_label, f"{_sentence(error)}{hint}")
+
+    def open_axis_editor(self, columns: bool, value=None) -> None:
+        """Edit a value, or add values, in place on the header."""
+        table = self.matrix_table
+        header = table.horizontalHeader() if columns else table.verticalHeader()
+        axis = self._axis(columns)
+        section = axis.index(value) if value is not None else len(axis)
+        table.scrollTo(table.model().index(0 if columns else section, section if columns else 0))
+        self._axis_edit = (columns, value)
+        self.axis_remove_button.hide()
+        editor = self.axis_editor
+        if value is None:
+            editor.setText("")
+            editor.setPlaceholderText("e.g. 40 or 30, 40" if columns else "e.g. 45 min, 2 h")
+            editor.setToolTip(
+                "Separate several values with commas." if columns
+                else f"Separate several values with commas. {DURATION_HINT}"
             )
+        else:
+            editor.setText(_percent(value) if columns else format_minutes(value))
+            editor.setPlaceholderText("")
+            editor.setToolTip("" if columns else DURATION_HINT)
+        _set_flag(editor, "invalid", False)
+        self._show_axis_error(None, columns)
+        start = header.sectionViewportPosition(section)
+        size = header.sectionSize(section)
         if columns:
-            return series.with_axes(wanted, series.times, self.design.default_replicates)
-        return series.with_axes(series.percents, wanted, self.design.default_replicates)
+            width, height = max(size, 150), header.height()
+            local = QPoint(start + size - width, 0)
+        else:
+            width, height = header.width(), max(size, 28)
+            local = QPoint(0, start + size - height)
+        corner = header.viewport().mapTo(table, local)
+        editor.setGeometry(max(0, corner.x()), max(0, corner.y()), width, height)
+        editor.show()
+        editor.raise_()
+        editor.setFocus(Qt.OtherFocusReason)
+        editor.selectAll()
 
-    # Kept for callers that add a single value.
-    def add_percent(self, text: str) -> bool:
-        return self._add_axis_value(text, columns=True)
+    def commit_axis_editor(self) -> bool:
+        if self._axis_edit is None:
+            return True
+        columns, old = self._axis_edit
+        text = self.axis_editor.text()
+        if not text.strip():
+            self._close_axis_editor()
+            return True
+        done = (
+            self.add_axis_values(text, columns) if old is None
+            else self.rename_axis_value(old, text, columns)
+        )
+        if done:
+            self._close_axis_editor()
+        else:
+            _set_flag(self.axis_editor, "invalid", True)
+        return done
 
-    def add_time(self, text: str) -> bool:
-        return self._add_axis_value(text, columns=False)
+    def _close_axis_editor(self) -> None:
+        self._axis_edit = None
+        _set_flag(self.axis_editor, "invalid", False)
+        self.axis_editor.hide()
+        if self.axis_error_label.isVisible():
+            _show_message(self.axis_error_label, "")
 
-    def _add_axis_value(self, text: str, columns: bool) -> bool:
-        field = self.percents_input if columns else self.times_input
-        field.setText(f"{field.text()}, {text}" if field.text().strip() else text)
-        return self.set_axis_text(columns)
+    def _header_event(self, columns: bool, event) -> bool:
+        """Clicks on the "+" add, a double-click edits, hovering offers ×."""
+        table = self.matrix_table
+        header = table.horizontalHeader() if columns else table.verticalHeader()
+        kind = event.type()
+        if kind == QEvent.MouseMove:
+            self._hover_header(columns, header, event.pos())
+            return False
+        if kind == QEvent.Leave:
+            cursor = table.mapFromGlobal(QCursor.pos())
+            if not self.axis_remove_button.geometry().contains(cursor):
+                self.axis_remove_button.hide()
+            return False
+        if kind not in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick):
+            return False
+        if event.button() != Qt.LeftButton:
+            return False
+        axis = self._axis(columns)
+        section = header.logicalIndexAt(event.pos())
+        if section == len(axis):
+            if kind == QEvent.MouseButtonPress:
+                self.open_axis_editor(columns)
+            return True
+        if 0 <= section < len(axis):
+            if kind == QEvent.MouseButtonDblClick:
+                self.open_axis_editor(columns, axis[section])
+            else:
+                current = table.currentIndex()
+                self.select_condition(
+                    max(0, current.row()) if columns else section,
+                    section if columns else max(0, current.column()),
+                )
+            return True
+        return False
+
+    def _hover_header(self, columns: bool, header, position) -> None:
+        axis = self._axis(columns)
+        section = header.logicalIndexAt(position)
+        button = self.axis_remove_button
+        if not 0 <= section < len(axis) or len(axis) < 2 or self.axis_editor.isVisible():
+            self._hover_axis = None
+            button.hide()
+            return
+        value = axis[section]
+        self._hover_axis = (columns, value)
+        name = f"{_percent(value)} % column" if columns else f"{format_minutes(value)} row"
+        button.setToolTip(f"Remove the {name}")
+        button.setAccessibleName(f"Remove the {name}")
+        start = header.sectionViewportPosition(section)
+        size = header.sectionSize(section)
+        edge = button.height()
+        if columns:
+            local = QPoint(start + size - edge - 4, (header.height() - edge) // 2)
+        else:
+            # Row labels are right-aligned, so × sits on the left.
+            local = QPoint(4, start + (size - edge) // 2)
+        button.move(header.viewport().mapTo(self.matrix_table, local))
+        button.show()
+        button.raise_()
+
+    def _remove_hovered_axis(self) -> None:
+        if self._hover_axis is not None:
+            columns, value = self._hover_axis
+            self._hover_axis = None
+            self.axis_remove_button.hide()
+            self._remove_axis_value(value, columns)
 
     def _selected_cell(self):
         series = self._series
@@ -952,6 +1087,26 @@ class ConditionTestEditor(PlanEditorBase):
             self._set_cells((cell,), replicates=value)
 
     def eventFilter(self, watched, event) -> bool:
+        if "axis_remove_button" not in self.__dict__ or sip.isdeleted(self.matrix_table):
+            # The table sends events while its overlays are built and while it is torn down.
+            return super().eventFilter(watched, event)
+        table = self.matrix_table
+        if watched is table.horizontalHeader().viewport():
+            return self._header_event(True, event) or super().eventFilter(watched, event)
+        if watched is table.verticalHeader().viewport():
+            return self._header_event(False, event) or super().eventFilter(watched, event)
+        if watched is self.axis_editor and event.type() == QEvent.KeyPress:
+            if event.key() == Qt.Key_Escape:
+                self._close_axis_editor()
+                table.setFocus(Qt.OtherFocusReason)
+                return True
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                # Handled here: passed on, Enter would also toggle the selected condition.
+                if self.commit_axis_editor():
+                    table.setFocus(Qt.OtherFocusReason)
+                return True
+        if watched is self.axis_remove_button and event.type() == QEvent.Leave:
+            self.axis_remove_button.hide()
         if watched is self.matrix_table and event.type() == QEvent.Resize:
             self._fit_matrix()
             self._place_include_button()
@@ -970,9 +1125,12 @@ class ConditionTestEditor(PlanEditorBase):
 
     def _show_cell_menu(self, position) -> None:
         index = self.matrix_table.indexAt(position)
-        if not index.isValid():
-            return
         series = self._series
+        if (
+            not index.isValid() or index.row() >= len(series.times)
+            or index.column() >= len(series.percents)
+        ):
+            return
         cell = series.cell(series.percents[index.column()], series.times[index.row()])
         self.select_condition(index.row(), index.column())
         menu = QMenu(self.matrix_table)
@@ -992,7 +1150,7 @@ class ConditionTestEditor(PlanEditorBase):
         header = self.matrix_table.horizontalHeader() if columns else self.matrix_table.verticalHeader()
         section = header.logicalIndexAt(position)
         series = self._series
-        if section < 0:
+        if not 0 <= section < len(series.percents if columns else series.times):
             return
         if columns:
             value = series.percents[section]
@@ -1001,6 +1159,10 @@ class ConditionTestEditor(PlanEditorBase):
             value = series.times[section]
             cells = tuple(item for item in series.cells if item.minutes == value)
         menu = QMenu(header)
+        menu.addAction("Edit value…").triggered.connect(
+            lambda: self.open_axis_editor(columns, value)
+        )
+        menu.addSeparator()
         menu.addAction("Include all").triggered.connect(lambda: self._set_cells(cells, included=True))
         menu.addAction("Exclude all").triggered.connect(lambda: self._set_cells(cells, included=False))
         menu.addSeparator()
@@ -1060,10 +1222,32 @@ class ConditionTestEditor(PlanEditorBase):
         table = self.matrix_table
         self._rendering = True
         table.clear()
-        table.setColumnCount(len(series.percents))
-        table.setRowCount(len(series.times))
-        table.setHorizontalHeaderLabels([f"{_percent(percent)} %" for percent in series.percents])
-        table.setVerticalHeaderLabels([format_minutes(minutes) for minutes in series.times])
+        columns, rows = len(series.percents), len(series.times)
+        # One more column and row, headed "+", add values where they will appear.
+        table.setColumnCount(columns + 1)
+        table.setRowCount(rows + 1)
+        table.setHorizontalHeaderLabels([*(f"{_percent(percent)} %" for percent in series.percents), "+"])
+        table.setVerticalHeaderLabels([*(format_minutes(minutes) for minutes in series.times), "+"])
+        for header, count, size, add_size in (
+            (table.horizontalHeader(), columns, CELL_WIDTH, ADD_COLUMN_WIDTH),
+            (table.verticalHeader(), rows, CELL_HEIGHT, ADD_ROW_HEIGHT),
+        ):
+            for section in range(count):
+                header.resizeSection(section, size)
+            header.resizeSection(count, add_size)
+        for item, tip in (
+            (table.horizontalHeaderItem(columns), "Add concentrations"),
+            (table.verticalHeaderItem(rows), "Add soaking durations"),
+        ):
+            item.setForeground(QColor(theme.TEXT_MUTED))
+            item.setTextAlignment(Qt.AlignCenter)
+            item.setToolTip(tip)
+        for row in range(rows + 1):
+            for column in range(columns + 1):
+                if row == rows or column == columns:
+                    empty = QTableWidgetItem()
+                    empty.setFlags(Qt.NoItemFlags)
+                    table.setItem(row, column, empty)
         if self._selected_cell() is None and series.cells:
             first = series.cell(series.percents[0], series.times[0])
             self._selected_cell_id = first.id if first is not None else None
@@ -1121,16 +1305,21 @@ class ConditionTestEditor(PlanEditorBase):
         """As large as its cells up to a limit; beyond that the table scrolls inside itself."""
         table = self.matrix_table
         frame = 2 * table.frameWidth()
-        width = (
-            table.verticalHeader().sizeHint().width()
-            + table.horizontalHeader().length() + frame
-        )
+        # The row header is widened to fit its axis name, beyond its own size hint.
+        row_header = max(table.verticalHeader().sizeHint().width(), table.verticalHeader().minimumWidth())
+        width = row_header + table.horizontalHeader().length() + frame
         height = table.horizontalHeader().sizeHint().height() + table.verticalHeader().length() + frame
         bar = table.style().pixelMetric(table.style().PM_ScrollBarExtent)
         clipped_rows = height > MATRIX_MAX_HEIGHT
         table.setMaximumWidth(width + (bar if clipped_rows else 0))
         clipped_columns = table.isVisible() and table.width() < table.maximumWidth()
         table.setFixedHeight(min(height, MATRIX_MAX_HEIGHT) + (bar if clipped_columns else 0))
+        # Axis names: the row axis in the empty corner, the column axis above the columns.
+        column_header = table.horizontalHeader().sizeHint().height()
+        self.row_caption.setGeometry(
+            table.frameWidth() + 8, table.frameWidth(), row_header - 10, column_header
+        )
+        self.column_caption.setContentsMargins(table.frameWidth() + row_header + 4, 0, 0, 0)
 
     def _render_condition_panel(self) -> None:
         cell = self._selected_cell()

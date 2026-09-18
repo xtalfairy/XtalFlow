@@ -1746,23 +1746,31 @@ class ConditionTestEditor(PlanEditorBase):
                 additive.name,
                 f"{ul_text(total)} µL in total, into {_plural(len(volumes), 'crystal drop')}",
             ))
-            status = by_additive.get(additive.id)
-            if status is not None and status.allocation is not None and not status.problem:
-                fill = f"{additive.source_plate.strip()}: {status.allocation.instruction()}"
-            elif additive.id != self._series.additive_id:
-                # The plate fields belong to the solvent chosen above.
-                fill = f"Choose {additive.name} above to set its source plate."
-            elif status is not None and status.problem:
-                fill = "Not ready yet; see below."
-            else:
-                fill = "Choose the plate and plate type below to see which wells to fill."
-            rows.append(("Source wells", fill))
+            rows.append(("Source wells", self._fill_text(additive, volumes, by_additive.get(additive.id))))
         cells = "".join(
             f'<tr><td style="color:{theme.TEXT_MUTED}; padding:1px 16px 1px 0">'
             f"{html.escape(label)}</td><td>{html.escape(value)}</td></tr>"
             for label, value in rows
         )
         self.preparation_label.setText(f"<table>{cells}</table>")
+
+    def _fill_text(self, additive, volumes, status) -> str:
+        """How many source wells, and how much in each: known from the plate type alone.
+
+        The plate's name and wells only say which wells; the dead volume and maximum
+        that decide how many come from its type.
+        """
+        if status is not None and status.allocation is not None and not status.problem:
+            return f"{additive.source_plate.strip()}: {status.allocation.instruction()}"
+        if not additive.source_plate_type:
+            if additive.id != self._series.additive_id:
+                return f"Choose {additive.name} above, then its plate type."
+            return "Choose the plate type below to see how many wells to fill, and with how much."
+        try:
+            plate_type = source_plate_type(additive.source_plate_type)
+            return allocate_source_wells(plate_type, volumes, ()).instruction()
+        except ValueError as error:
+            return _sentence(error)
 
     def preparation_rows(self) -> list[str]:
         """The preparation list as plain lines, e.g. for checking it."""

@@ -243,6 +243,20 @@ class SourceAllocation:
         margin = f"{_number(SOURCE_FILL_MARGIN * 100)} % margin"
         if not self.wells:
             return "Nothing is transferred from this source."
+        dead = f"{_number(self.plate_type.dead_ul)} µL dead volume"
+        if not self.entered_wells:
+            # Before wells are chosen: how many, and how much in each.
+            if len(self.wells) == 1:
+                (well,) = self.wells
+                return (
+                    f"Needs 1 well, filled with {_number(well.fill_ul)} µL — {dead} + "
+                    f"{_ul_text(well.transferred_nl)} µL to transfer + {margin}."
+                )
+            fills = [f"{_number(well.fill_ul)}" for well in self.wells]
+            return (
+                f"Needs {len(self.wells)} wells, filled with {', '.join(fills[:-1])} and "
+                f"{fills[-1]} µL — each {dead} + its transfers + {margin}."
+            )
         if len(self.wells) == 1:
             (well,) = self.wells
             text = (

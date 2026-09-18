@@ -680,3 +680,17 @@ def test_while_no_plate_is_chosen_the_source_box_says_where_shared_plates_are(tm
     assert editor.source_message_label.text().endswith(
         "Choose one of 1 shared plate in Plate, or start one with New plate…"
     )
+
+
+def test_how_many_source_wells_and_how_much_is_known_from_the_plate_type_alone() -> None:
+    editor = _editor(percents=("0", "10"), times=(0, 60), replicates=2)
+    editor.update_additive(source_plate="", source_well="")
+    # 4 transfers of 10 nL from a 384PP well: 15 µL dead volume + 0.04 µL + 10 %.
+    assert editor.preparation_rows()[2] == (
+        "Source wells · Needs 1 well, filled with 15.1 µL — 15 µL dead volume + 0.04 µL "
+        "to transfer + 10 % margin."
+    )
+    editor.update_additive(source_plate_type="")
+    assert editor.preparation_rows()[2] == (
+        "Source wells · Choose the plate type below to see how many wells to fill, and with how much."
+    )

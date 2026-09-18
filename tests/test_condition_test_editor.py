@@ -345,8 +345,7 @@ def test_missing_source_and_drop_volume_are_marked_where_they_are_entered() -> N
     assert editor.design.drop_volume_nl == Decimal("150")
     assert editor.source_plate_input.property("missing")
     assert editor.source_well_input.property("missing")
-    editor.source_plate_input.setText("LDV-1")
-    editor.source_plate_input.editingFinished.emit()
+    editor.enter_new_plate("LDV-1")
     assert not editor.source_plate_input.property("missing")
     assert editor.source_message_label.text() == (
         "Enter the source plate type and wells; the ECHO worksheet needs them."
@@ -510,8 +509,7 @@ def test_next_wells_come_after_the_last_used_well_on_the_shared_plate(tmp_path) 
     editor = _editor(percents=("90",), times=(0, 60), replicates=3)
     editor.set_source_record(record, "lee")
     editor.update_additive(source_well="", extra_source_wells=())
-    editor.source_plate_input.setText("SOLVENT-01")
-    editor.source_plate_input.editingFinished.emit()
+    _choose_plate(editor, "SOLVENT-01")
     # On the 384PP plate it came with, one well is enough.
     assert editor.design.additives[0].source_wells == ("C1",)
     editor.source_type_input.setCurrentIndex(editor.source_type_input.findData("1536LDV_DMSO"))
@@ -574,52 +572,52 @@ def _plate_entry(wells, plate_type="1536LDV_DMSO"):
     return PlateRecordEntry("used", tuple(wells), "kim", NOW, "PreTest-01", "DMSO", plate_type=plate_type)
 
 
-def test_a_shared_plate_is_chosen_from_the_list_with_its_type_and_next_wells(tmp_path) -> None:
+def _choose_plate(editor, data):
+    combo = editor.source_plate_input
+    combo.opening.emit()
+    index = combo.findData(data)
+    combo.setCurrentIndex(index)
+    combo.activated.emit(index)
+
+
+def test_a_shared_plate_is_chosen_from_the_plate_list_with_its_type_and_next_wells(tmp_path) -> None:
     record = _shared_plate(tmp_path, [_plate_entry(["A1", "B1"])])
     editor = _editor(percents=("0", "10"), times=(0,), replicates=2)
+    editor.update_additive(source_plate="", source_well="")
     editor.set_source_record(record, "lee")
 
-    editor._fill_plate_menu()
-    labels = [action.text() for action in editor.plate_menu.actions() if action.text()]
-    assert labels == ["SOLVENT-01 · 1536LDV · 2 wells used, next C1", "New plate…"]
-    editor.plate_menu.actions()[0].trigger()
-
+    combo = editor.source_plate_input
+    combo.opening.emit()
+    assert [combo.itemText(index) for index in range(combo.count())] == [
+        "Choose plate", "SOLVENT-01 · 1536LDV · 2 wells used, next C1", "", "New plate…"
+    ]
+    _choose_plate(editor, "SOLVENT-01")
     additive = editor.design.additives[0]
     assert (additive.source_plate, additive.source_plate_type, additive.source_wells) == (
         "SOLVENT-01", "1536LDV_DMSO", ("C1",)
     )
-    # Typing the same plate in another case continues it too.
-    editor.source_plate_input.setText("solvent-01")
-    editor.source_plate_input.editingFinished.emit()
-    assert editor.design.additives[0].source_plate == "SOLVENT-01"
+    assert combo.currentText() == "SOLVENT-01 · 1536LDV · 2 wells used, next C1"
 
 
-def test_a_name_that_is_not_a_shared_plate_is_confirmed_before_starting_a_new_one(
-    tmp_path, monkeypatch
-) -> None:
+def test_new_plate_asks_for_a_name_and_a_shared_name_continues_that_plate(tmp_path) -> None:
+    from xtalflow.ui.condition_test_editor import NEW_PLATE
+
     record = _shared_plate(tmp_path, [_plate_entry(["A1", "B1"])])
     editor = _editor(percents=("0", "10"), times=(0,), replicates=2)
     editor.set_source_record(record, "lee")
-    editor.choose_shared_plate(record.plates()[0])
 
-    asked = []
-    monkeypatch.setattr(
-        QMessageBox, "question", lambda *args, **kwargs: asked.append(args[2]) or QMessageBox.No
-    )
-    editor.source_plate_input.setText("SOLVENT01")
-    editor.source_plate_input.editingFinished.emit()
-    assert "'SOLVENT01' is not a shared plate yet" in asked[0]
-    assert "Shared plates: SOLVENT-01" in asked[0]
+    _choose_plate(editor, NEW_PLATE)
+    assert editor.new_plate_input.isVisibleTo(editor.page)
+    editor.enter_new_plate("solvent-01")
     assert editor.design.additives[0].source_plate == "SOLVENT-01"
-    assert editor.source_plate_input.text() == "SOLVENT-01"
+    assert editor.record_note_label.text() == "SOLVENT-01 is already a shared plate; it is continued."
+    assert not editor.new_plate_input.isVisibleTo(editor.page)
 
-    # Asked for on purpose, a new plate is not questioned and starts at its first well.
-    editor.start_new_plate()
-    editor.source_plate_input.setText("SOLVENT-02")
-    editor.source_plate_input.editingFinished.emit()
-    assert len(asked) == 1
+    _choose_plate(editor, NEW_PLATE)
+    editor.enter_new_plate("SOLVENT-02")
     additive = editor.design.additives[0]
     assert (additive.source_plate, additive.source_wells) == ("SOLVENT-02", ("A1",))
+    assert editor.source_plate_input.currentText() == "SOLVENT-02 · not a shared plate yet"
 
 
 def test_a_plate_type_that_does_not_match_the_shared_plate_is_refused(tmp_path) -> None:
@@ -641,11 +639,11 @@ def test_while_no_plate_is_chosen_the_source_box_says_where_shared_plates_are(tm
     editor.update_additive(source_plate="", source_well="")
     editor.set_source_record(record, "lee")
     assert editor.source_message_label.text().endswith(
-        "No shared plates yet: start one with Shared plates ▾ → New plate…"
+        "No shared plates yet: choose New plate… in Plate to start one."
     )
 
     record.append("SOLVENT-01", [_plate_entry(["A1"])])
     editor.refresh_plate_records()
     assert editor.source_message_label.text().endswith(
-        "Choose one of 1 shared plate from Shared plates ▾, or start a new one there."
+        "Choose one of 1 shared plate in Plate, or start one with New plate…"
     )

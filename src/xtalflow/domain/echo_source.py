@@ -34,6 +34,8 @@ class SourcePlateType:
     well_format: int
     dead_ul: Decimal
     max_ul: Decimal
+    # What this calibration is for, as the SOP lists it.
+    fluids: str = ""
 
     @property
     def capacity_nl(self) -> Decimal:
@@ -42,16 +44,28 @@ class SourcePlateType:
 
 
 SOURCE_PLATE_TYPES = (
-    SourcePlateType("384PP_DMSO2", "384PP · DMSO", "PP-0200", 384, Decimal("15"), Decimal("65")),
     SourcePlateType(
-        "384PP_AQ_GP3", "384PP · buffer, glycerol", "PP-0200", 384, Decimal("15"), Decimal("65")
+        "384PP_DMSO2", "384PP · DMSO", "PP-0200", 384, Decimal("15"), Decimal("65"),
+        "DMSO, 70–100 %",
     ),
     SourcePlateType(
-        "384PP_AQ_CP", "384PP · MPD, PEG", "PP-0200", 384,
+        "384PP_AQ_GP3", "384PP · buffer, protein", "PP-0200", 384, Decimal("15"), Decimal("65"),
+        "Reagents without surfactant: small molecules in water or buffer; DNA and RNA; "
+        "proteins in water, buffer or glycerol storage solution; cell culture medium",
+    ),
+    SourcePlateType(
+        "384PP_AQ_SP2", "384PP · surfactant, protein", "PP-0200", 384,
+        Decimal("15"), Decimal("65"),
+        "Buffers containing surfactant, e.g. PCR mixes, lysis buffer, serum and plasma",
+    ),
+    SourcePlateType(
+        "384PP_AQ_CP", "384PP · crystallization reagents", "PP-0200", 384,
         Decimal("20"), Decimal("50"),
+        "Crystallization reagents and salts without surfactant: MPD, PEGs, osmotic solutions",
     ),
     SourcePlateType(
-        "1536LDV_DMSO", "1536LDV · DMSO", "LP-0400", 1536, Decimal("1"), Decimal("5.5")
+        "1536LDV_DMSO", "1536LDV · DMSO", "LP-0400", 1536, Decimal("1"), Decimal("5.5"),
+        "DMSO, 70–100 %",
     ),
 )
 

@@ -391,7 +391,9 @@ def test_large_matrix_scrolls_inside_its_bounds() -> None:
     table = editor.matrix_table
     # One more column and row: the "+" that adds values.
     assert table.columnCount() == 16 and table.rowCount() == 21
-    assert table.height() <= 360
+    # Rows stop at 360 px; a horizontal scroll bar, when columns overflow, comes on top.
+    bar = table.horizontalScrollBar()
+    assert table.height() <= 360 + (bar.height() if bar.isVisible() else 0)
     assert table.verticalScrollBar().maximum() > 0
     widget.close()
 

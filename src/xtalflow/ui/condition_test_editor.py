@@ -221,8 +221,10 @@ class ConditionTestEditor(PlanEditorBase):
             )
             self.source_type_input.setItemData(
                 self.source_type_input.count() - 1,
-                f"{plate_type.part_number} · calibration {plate_type.id}. The lower end is the "
-                "dead volume a well cannot give, the upper end its maximum fill.",
+                f"{plate_type.part_number} · calibration {plate_type.id}\n"
+                f"For: {plate_type.fluids}\n"
+                "The lower end is the dead volume a well cannot give; the upper end is its "
+                "maximum fill.",
                 Qt.ToolTipRole,
             )
         # Wide enough for its longest name, so the working range is never cut off.
@@ -470,12 +472,11 @@ class ConditionTestEditor(PlanEditorBase):
             inputs.addSpacing(theme.SPACING_L)
         inputs.addStretch()
 
-        fields = QHBoxLayout()
-        fields.setSpacing(theme.SPACING_M)
+        # The title sits above the fields, so plate names that say what they hold fit in one row.
         source_title = QLabel("Dispensing source")
         source_title.setStyleSheet("font-weight: 500;")
-        fields.addWidget(source_title)
-        fields.addSpacing(theme.SPACING_M)
+        fields = QHBoxLayout()
+        fields.setSpacing(theme.SPACING_M)
         fields.addWidget(_field_label("Plate type"))
         fields.addWidget(self.source_type_input)
         fields.addWidget(_field_label("Plate"))
@@ -485,6 +486,7 @@ class ConditionTestEditor(PlanEditorBase):
         source = QVBoxLayout()
         source.setContentsMargins(theme.SPACING_L, theme.SPACING_M, theme.SPACING_L, theme.SPACING_M)
         source.setSpacing(theme.SPACING_S)
+        source.addWidget(source_title)
         source.addLayout(fields)
         source.addWidget(self.source_message_label)
         self.source_box.setLayout(source)

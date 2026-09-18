@@ -494,6 +494,44 @@ def compute_doses(design: ConditionTestDesign, condition: Condition) -> tuple[Do
     return tuple(doses)
 
 
+def fit_to_wells(
+    design: ConditionTestDesign, wells: int
+) -> tuple[ConditionTestDesign, tuple[tuple[Condition, int, int], ...]]:
+    """Fewer crystal drops per condition so the test fits the wells selected.
+
+    Drops are taken one at a time from whichever condition has the most, so the
+    cut is spread evenly and every condition keeps at least one. What changes is
+    returned, to be shown before it is applied; conditions are never dropped here.
+    """
+    conditions = design.conditions()
+    if wells < len(conditions):
+        raise ValueError(
+            f"{wells} wells cannot hold {len(conditions)} conditions, one well each; "
+            "exclude conditions first"
+        )
+    counts = {condition.id: condition.replicates for condition in conditions}
+    order = [condition.id for condition in conditions]
+    total = sum(counts.values())
+    while total > wells:
+        most = max(counts.values())
+        # Among the equals, the later condition gives first.
+        taken = next(condition_id for condition_id in reversed(order) if counts[condition_id] == most)
+        counts[taken] -= 1
+        total -= 1
+    series = tuple(
+        replace(item, cells=tuple(
+            replace(cell, replicates=counts[cell.id]) if cell.id in counts else cell
+            for cell in item.cells
+        ))
+        for item in design.series
+    )
+    changes = tuple(
+        (condition, condition.replicates, counts[condition.id])
+        for condition in conditions if counts[condition.id] != condition.replicates
+    )
+    return replace(design, series=series), changes
+
+
 def additive_transfers(design: ConditionTestDesign) -> dict[str, tuple[Decimal, ...]]:
     """Every transfer each additive makes, in the order the plan gives conditions their wells."""
     transfers: dict[str, list[Decimal]] = {}

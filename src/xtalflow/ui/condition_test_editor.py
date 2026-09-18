@@ -47,6 +47,7 @@ from xtalflow.domain.condition_test import (
     Treatment,
     build_condition_test_plan,
     compute_doses,
+    fit_to_wells,
     format_minutes,
     new_series,
     parse_minutes,
@@ -284,6 +285,12 @@ class ConditionTestEditor(PlanEditorBase):
         self._plate_records: dict[str, tuple[PlateRecordEntry, ...] | None] = {}
         # Additives whose wells were filled in by the rule rather than typed.
         self._auto_wells: set[str] = set()
+        self.fit_button = QPushButton()
+        self.fit_button.hide()
+        self.fit_note_label = QLabel()
+        self.fit_note_label.setObjectName("Muted")
+        self.fit_note_label.setWordWrap(True)
+        self.fit_note_label.hide()
         # The shared plates as last listed; None if they could not be read.
         self._plate_list: tuple[PlateSummary, ...] | None = None
         # Read once, then again only when the list is opened or the record changes.
@@ -444,6 +451,7 @@ class ConditionTestEditor(PlanEditorBase):
             )
         )
         self.skip_button.clicked.connect(self.skip_well)
+        self.fit_button.clicked.connect(self.fit_to_selected_wells)
         self.previous_button.clicked.connect(self.use_previous_well)
         self.smiles_input.editingFinished.connect(
             lambda: self.update_additive(smiles=self.smiles_input.text())
@@ -678,6 +686,12 @@ class ConditionTestEditor(PlanEditorBase):
         ))
         order.addStretch()
         widget.layout().insertLayout(2, order)
+        # Too few wells selected: an explicit, previewed way to fit the test to them.
+        fit = QHBoxLayout()
+        fit.addWidget(self.fit_button)
+        fit.addWidget(self.fit_note_label, 1)
+        fit.addStretch()
+        widget.layout().insertLayout(widget.layout().indexOf(self.error_label) + 1, fit)
         return widget
 
     # -- Words for the kind of test -----------------------------------------------------
@@ -1984,8 +1998,59 @@ class ConditionTestEditor(PlanEditorBase):
             None,
         )
 
+    def _selected_well_total(self) -> int | None:
+        return len(self.selection.wells) if self.selection is not None else None
+
+    def _update_fit_button(self) -> None:
+        """Offered only while fewer wells are selected than the conditions need."""
+        wells = self._selected_well_total()
+        needed = self.design.required_crystals
+        short = wells is not None and 0 < wells < needed
+        conditions = len(self.design.conditions())
+        self.fit_button.setVisible(short and wells >= conditions)
+        if short and wells >= conditions:
+            self.fit_button.setText(f"Plan with the {_wells(wells)} selected…")
+            self.fit_button.setToolTip(
+                "Shows which conditions get fewer crystal drops before anything changes."
+            )
+        _show_message(
+            self.fit_note_label,
+            f"{_wells(wells)} cannot hold {_plural(conditions, 'condition')}, one well each: "
+            "exclude conditions in Conditions, or select more wells."
+            if short and wells < conditions else "",
+        )
+
+    def fit_to_selected_wells(self) -> bool:
+        """Fewer crystal drops per condition to fit the wells, after showing what changes."""
+        wells = self._selected_well_total()
+        if wells is None:
+            return False
+        try:
+            fitted, changes = fit_to_wells(self.design, wells)
+        except ValueError as error:
+            _show_message(self.fit_note_label, _sentence(error))
+            return False
+        if not changes:
+            return False
+        lines = "\n".join(
+            f"{self.design.label(condition)}: {old} → {new}" for condition, old, new in changes
+        )
+        if QMessageBox.question(
+            self, "Plan with the selected wells",
+            f"Plan the test for the {_wells(wells)} selected instead of "
+            f"{self.design.required_crystals}? These conditions get fewer crystal drops; "
+            f"every condition keeps at least one.\n\n{lines}",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        ) != QMessageBox.Yes:
+            return False
+        self.design = fitted
+        self._load_design_inputs()
+        self.refresh_plan()
+        return True
+
     def refresh_plan(self) -> None:
         self._sync_auto_wells()
+        self._update_fit_button()
         self._render_source()
         self._render_matrix()
         self._render_condition_panel()

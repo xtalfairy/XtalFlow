@@ -334,3 +334,24 @@ def test_tests_without_a_plate_type_keep_their_saved_form_and_worksheets() -> No
     assert [(row.source_plate, row.source_well) for row in rows] == [("LDV-1", "A1")]
     sourced = _sourced(wells=("A1", "A2"))
     assert ConditionTestDesign.from_json(sourced.to_json()) == sourced
+
+
+def test_a_test_is_fitted_to_fewer_wells_evenly_and_only_when_asked() -> None:
+    from xtalflow.domain.condition_test import fit_to_wells
+
+    design = _design(percents=("0", "10"), times=(0, 60), replicates=3)  # 4 conditions × 3
+    fitted, changes = fit_to_wells(design, 9)
+    assert fitted.required_crystals == 9
+    # Three drops come off, from the later conditions first, one each.
+    assert [(design.label(condition), old, new) for condition, old, new in changes] == [
+        ("DMSO 10% · 0 min", 3, 2), ("No DMSO added · 1 h", 3, 2), ("DMSO 10% · 1 h", 3, 2),
+    ]
+    # Condition identity is kept; only the counts change.
+    assert [condition.id for condition in fitted.conditions()] == [
+        condition.id for condition in design.conditions()
+    ]
+    fitted, changes = fit_to_wells(design, 4)
+    assert [condition.replicates for condition in fitted.conditions()] == [1, 1, 1, 1]
+    assert fit_to_wells(design, 20) == (design, ())
+    with pytest.raises(ValueError, match="3 wells cannot hold 4 conditions"):
+        fit_to_wells(design, 3)

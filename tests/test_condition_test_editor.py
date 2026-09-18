@@ -729,3 +729,39 @@ def test_a_typed_plate_name_counts_without_enter_and_a_known_plate_gets_its_well
     editor.update_additive(source_well="")
     editor.refresh_plan()
     assert editor.design.additives[0].source_wells == ("A1",)
+
+
+def test_review_offers_to_plan_with_the_selected_wells_after_showing_what_changes(monkeypatch) -> None:
+    editor = _editor(percents=("0", "10"), times=(0, 60), replicates=3)  # 12 needed
+    review = editor.review_widget()
+    editor.set_selection(_selection(10))
+    assert editor.current_plan is None
+    assert editor.fit_button.isVisibleTo(review)
+    assert editor.fit_button.text() == "Plan with the 10 wells selected…"
+
+    asked = []
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *args, **kwargs: asked.append(args[2]) or QMessageBox.No
+    )
+    editor.fit_button.click()
+    assert "DMSO 10% · 1 h: 3 → 2" in asked[0] and "No DMSO added · 1 h: 3 → 2" in asked[0]
+    assert editor.design.required_crystals == 12  # nothing changes without a yes
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    editor.fit_button.click()
+    assert editor.design.required_crystals == 10
+    assert editor.current_plan is not None and len(editor.current_plan.assignments) == 10
+    assert not editor.fit_button.isVisibleTo(review)
+    # Two drops come off the later conditions: the 1 h row.
+    assert _cell_texts(editor) == [["3 wells", "3 wells"], ["2 wells", "2 wells"]]
+
+
+def test_too_few_wells_for_the_conditions_themselves_are_sent_back_to_conditions() -> None:
+    editor = _editor(percents=("0", "10"), times=(0, 60), replicates=2)  # 4 conditions
+    review = editor.review_widget()
+    editor.set_selection(_selection(3))
+    assert not editor.fit_button.isVisibleTo(review)
+    assert editor.fit_note_label.text() == (
+        "3 wells cannot hold 4 conditions, one well each: exclude conditions in Conditions, "
+        "or select more wells."
+    )

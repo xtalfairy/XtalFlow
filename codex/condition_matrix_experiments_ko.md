@@ -172,6 +172,7 @@ T+1 h    ECHO round 2   Glycerol(복합 2단계)       PreTest-…-01_R2.csv
 | Wells per condition | `design.default_replicates`. 바꾸면 이전 기본값을 쓰던 조건만 따라가고 따로 정한 조건은 유지 |
 | 0 % 이름 | `No DMSO added`, 앞 처리가 있으면 `No additional Glycerol`. "Control"이라 부르지 않음(진짜 대조군 정의는 실험자 결정) |
 | 앞 처리·SMILES·추가 solvent | `Advanced` 접힘 영역으로 이동, 팝업(AdditiveDialog) 제거. 앞 처리 시간은 검증 후에만 적용 |
+| solvent 칩 | solvent가 둘 이상일 때만 칩이 보이고, 칩마다 작은 × 로 그 solvent를 지운다(마지막 것만이 아니라 아무거나). 조건이 있으면 몇 개 조건·well이 사라지는지 묻고 지운다. 열려 있던 solvent는 그대로 열려 있다 |
 | 하단 | 상태 `16 conditions · 32 wells required`, 옆에 실제 선택 `Selected 20 wells · 2 will remain unused` / `… more needed` / `No wells selected yet`. 버튼 `Select 32 wells`, `Select 5 more wells`, 충분하면 `Review assignments`(Review로 이동) |
 | 제거 | 미리보기 없이 모든 반복을 1로 바꾸던 "Use 1 crystal each" 버튼. Crystals on hand는 추정값으로만 표시 |
 | 일정 표현 | Review 탭 `Planned schedule`, Worksheets `Planned schedule · relative to the start of dispensing (T+0)`. Review의 순서 선택은 `Assign wells in`(재배정임을 도움말로 명시) |

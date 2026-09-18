@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QMenu,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -74,7 +75,10 @@ QLabel#FieldLabel {{ color: {theme.TEXT_MUTED}; }}
 QLabel#FieldError {{ color: {theme.ERROR}; }}
 QLabel#FieldAttention {{ color: {theme.ATTENTION}; }}
 QPushButton#SeriesChip {{ border: 1px solid {theme.BORDER}; border-radius: 14px;
-    padding: 3px 14px; background: {theme.SURFACE}; }}
+    padding: 3px 30px 3px 14px; background: {theme.SURFACE}; text-align: left; }}
+QToolButton#ChipClose {{ border: none; border-radius: 9px; padding: 0;
+    color: {theme.TEXT_TERTIARY}; background: transparent; min-height: 18px; }}
+QToolButton#ChipClose:hover {{ background: {theme.BORDER_STRONG}; color: {theme.TEXT}; }}
 QPushButton#SeriesChip:checked {{ background: {theme.SELECTED}; border-color: {theme.BORDER_STRONG};
     font-weight: 600; }}
 QPushButton#LinkButton {{ border: none; background: transparent; color: {theme.TEXT_MUTED};
@@ -173,8 +177,6 @@ class ConditionTestEditor(PlanEditorBase):
         self.series_row.setSpacing(theme.SPACING_S)
         self.add_series_button = QPushButton()
         self.add_series_button.setObjectName("LinkButton")
-        self.remove_series_button = QPushButton()
-        self.remove_series_button.setObjectName("LinkButton")
 
         self.additive_name_label = _field_label("")
         self.additive_name_input = QLineEdit()
@@ -332,7 +334,6 @@ class ConditionTestEditor(PlanEditorBase):
         self.conditions_drop_input.valueChanged.connect(self._drop_volume_changed)
         self.series_group.idClicked.connect(self._series_changed)
         self.add_series_button.clicked.connect(self._add_series)
-        self.remove_series_button.clicked.connect(lambda: self._remove_series(self._series_index))
         self.additive_name_input.editingFinished.connect(self._name_edited)
         self.stock_input.valueChanged.connect(
             lambda value: self.update_additive(stock_percent=Decimal(str(value)))
@@ -415,7 +416,6 @@ class ConditionTestEditor(PlanEditorBase):
         chips = QHBoxLayout()
         chips.setSpacing(theme.SPACING_S)
         chips.addLayout(self.series_row)
-        chips.addWidget(self.remove_series_button)
         chips.addStretch()
 
         inputs = QHBoxLayout()
@@ -629,7 +629,6 @@ class ConditionTestEditor(PlanEditorBase):
         self.title_label.setText(f"Compare {noun} concentration and soaking time")
         self.additive_name_label.setText(noun.capitalize())
         self.add_series_button.setText(f"+ Add {noun}")
-        self.remove_series_button.setText(f"Remove {additive.name}")
         values = (
             (self.drop_volume_input, float(self.design.drop_volume_nl or 0)),
             (self.conditions_drop_input, float(self.design.drop_volume_nl or 0)),
@@ -691,22 +690,38 @@ class ConditionTestEditor(PlanEditorBase):
             self.advanced_button.setText("Advanced")
 
     def _render_chips(self) -> None:
+        """One chip per solvent, each with its own ×; a single solvent needs no chip."""
         for button in self.series_group.buttons():
             self.series_group.removeButton(button)
             self.series_row.removeWidget(button)
             # Hide now: a removed chip would otherwise paint until deleteLater runs.
             button.hide()
             button.deleteLater()
-        several = len(self.design.series) > 1
-        if several:
-            for index, series in enumerate(self.design.series):
-                chip = QPushButton(self.design.additive(series.additive_id).name)
-                chip.setObjectName("SeriesChip")
-                chip.setCheckable(True)
-                chip.setChecked(index == self._series_index)
-                self.series_group.addButton(chip, index)
-                self.series_row.addWidget(chip)
-        self.remove_series_button.setVisible(several)
+        if len(self.design.series) < 2:
+            return
+        for index, series in enumerate(self.design.series):
+            name = self.design.additive(series.additive_id).name
+            chip = QPushButton(name)
+            chip.setObjectName("SeriesChip")
+            chip.setCheckable(True)
+            chip.setChecked(index == self._series_index)
+            close = QToolButton(chip)
+            close.setObjectName("ChipClose")
+            close.setText("×")
+            close.setToolTip(f"Remove {name} and its conditions")
+            close.setAccessibleName(f"Remove {name}")
+            close.setFixedSize(18, 18)
+            close.clicked.connect(
+                lambda _=False, removed=index: self.remove_series(removed)
+            )
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, theme.SPACING_S, 0)
+            # No stretch: it would let the chip grow across the row.
+            row.addWidget(close, 0, Qt.AlignRight | Qt.AlignVCenter)
+            chip.setLayout(row)
+            chip.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            self.series_group.addButton(chip, index)
+            self.series_row.addWidget(chip)
 
     def _toggle_advanced(self, visible: bool) -> None:
         self.advanced_box.setVisible(visible)
@@ -750,9 +765,27 @@ class ConditionTestEditor(PlanEditorBase):
         self._load_design_inputs()
         self.refresh_plan()
 
-    def _remove_series(self, index: int) -> None:
-        if len(self.design.series) <= 1:
+    def remove_series(self, index: int) -> None:
+        """Ask first: removing a solvent takes its whole table with it."""
+        if not 0 <= index < len(self.design.series) or len(self.design.series) <= 1:
             return
+        series = self.design.series[index]
+        name = self.design.additive(series.additive_id).name
+        conditions = series.conditions()
+        wells = sum(condition.replicates for condition in conditions)
+        if conditions and QMessageBox.question(
+            self,
+            f"Remove {name}",
+            f"Remove {name} from this test?\n\n"
+            f"Its {_plural(len(conditions), 'condition')} ({_wells(wells)}) are removed "
+            "with it. Conditions for the other solvents stay as they are.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        ) != QMessageBox.Yes:
+            return
+        self._remove_series(index)
+
+    def _remove_series(self, index: int) -> None:
         removed = self.design.series[index]
         series = tuple(item for position, item in enumerate(self.design.series) if position != index)
         used = {item.additive_id for item in series} | {
@@ -763,8 +796,12 @@ class ConditionTestEditor(PlanEditorBase):
             if item.id != removed.additive_id or item.id in used
         )
         self.design = replace(self.design, additives=additives, series=series)
-        self._series_index = max(0, min(self._series_index, len(series) - 1))
-        self._selected_cell_id = None
+        # Stay on the solvent that was open, unless it is the one removed.
+        if index != self._series_index:
+            self._series_index -= 1 if index < self._series_index else 0
+        else:
+            self._series_index = min(self._series_index, len(series) - 1)
+            self._selected_cell_id = None
         self._clear_field_errors()
         self._load_design_inputs()
         self.refresh_plan()

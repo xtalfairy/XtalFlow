@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QMessageBox, QToolButton
 
 from xtalflow.domain import SWISSCI_MIDI_3_LENS, crystal_selection_from_selected_crystals
 from xtalflow.domain.condition_test import (
@@ -310,3 +310,39 @@ def test_large_matrix_scrolls_inside_its_bounds() -> None:
     assert table.height() <= 360
     assert table.verticalScrollBar().maximum() > 0
     widget.close()
+
+
+def test_each_solvent_chip_removes_that_solvent_after_asking(monkeypatch) -> None:
+    editor = _editor(percents=("0", "10"), times=(0,), replicates=2)
+    editor._add_series()
+    editor._add_series()
+    names = [editor.design.additive(item.additive_id).name for item in editor.design.series]
+    assert names == ["DMSO", "Solvent 2", "Solvent 3"]
+    chips = editor.series_group.buttons()
+    assert [chip.text() for chip in chips] == names
+    assert editor._series_index == 2
+
+    asked = []
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        lambda *args, **kwargs: asked.append(args[2]) or QMessageBox.No,
+    )
+    chips[0].findChild(QToolButton, "ChipClose").click()
+    assert "Remove DMSO from this test?" in asked[0]
+    assert "2 conditions (4 wells)" in asked[0]
+    assert len(editor.design.series) == 3  # Answering no changes nothing.
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    # Not only the last one: the first chip removes the first solvent.
+    editor.series_group.buttons()[0].findChild(QToolButton, "ChipClose").click()
+    assert [
+        editor.design.additive(item.additive_id).name for item in editor.design.series
+    ] == ["Solvent 2", "Solvent 3"]
+    assert [item.name for item in editor.design.additives] == ["Solvent 2", "Solvent 3"]
+    # The solvent that was open stays open.
+    assert editor._series_index == 1
+    assert editor.additive_name_input.text() == "Solvent 3"
+
+    editor.series_group.buttons()[1].findChild(QToolButton, "ChipClose").click()
+    assert [item.name for item in editor.design.additives] == ["Solvent 2"]
+    assert editor.series_group.buttons() == []  # One solvent needs no chips.

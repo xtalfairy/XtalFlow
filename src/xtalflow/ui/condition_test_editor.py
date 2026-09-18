@@ -1700,7 +1700,7 @@ class ConditionTestEditor(PlanEditorBase):
             statuses = source_statuses(self.design, transfers, True, self._records_for_checks())
             status = next((item for item in statuses if item.additive.id == additive.id), None)
         self._source_problem = status.problem if status is not None else None
-        self._render_preparation(transfers)
+        self._render_preparation(transfers, statuses)
         if self._source_well_error:
             message, attention = self._source_well_error, True
         elif missing:
@@ -1710,10 +1710,8 @@ class ConditionTestEditor(PlanEditorBase):
                 message += self._shared_plate_hint()
         elif status is not None and status.problem:
             message, attention = status.problem, True
-        elif status is not None and status.allocation is not None:
-            # The plate is chosen: which of its wells to fill, and with how much.
-            message, attention = status.allocation.instruction(), False
         else:
+            # Ready: which wells to fill, and with how much, is listed under Preparation.
             message, attention = "", False
         _set_flag(self.source_message_label, "attention", attention)
         _set_flag(self.source_box, "missing", attention)
@@ -1722,7 +1720,7 @@ class ConditionTestEditor(PlanEditorBase):
         _set_flag(self.drop_volume_input, "missing", drop_missing)
         _set_flag(self.conditions_drop_input, "missing", drop_missing)
 
-    def _render_preparation(self, transfers) -> None:
+    def _render_preparation(self, transfers, statuses) -> None:
         """Crystal drops to select, and for each solvent the wells to fill and with how much."""
         conditions = self.design.conditions()
         drops = self.design.required_crystals
@@ -1732,20 +1730,33 @@ class ConditionTestEditor(PlanEditorBase):
         else:
             count = f"{drops} for {_plural(len(conditions), 'condition')}, one per well"
         rows = [("Crystal drops", count)]
+        by_additive = {status.additive.id: status for status in statuses}
         for additive in self.design.additives:
-            # What the drops actually receive; how to fill the source wells is said
-            # with the plate, which decides the dead volume.
+            # What the drops actually receive, then the source wells to fill for it,
+            # from the chosen plate's dead volume and maximum.
             if transfers is None:
-                text = "Enter the initial drop volume to see how much is used."
-            elif additive.id not in transfers:
-                text = "None used: no condition adds it."
+                rows.append((additive.name, "Enter the initial drop volume to see how much is used."))
+                continue
+            if additive.id not in transfers:
+                rows.append((additive.name, "None used: no condition adds it."))
+                continue
+            volumes = transfers[additive.id]
+            total = sum(volumes, Decimal("0"))
+            rows.append((
+                additive.name,
+                f"{ul_text(total)} µL in total, into {_plural(len(volumes), 'crystal drop')}",
+            ))
+            status = by_additive.get(additive.id)
+            if status is not None and status.allocation is not None and not status.problem:
+                fill = f"{additive.source_plate.strip()}: {status.allocation.instruction()}"
+            elif additive.id != self._series.additive_id:
+                # The plate fields belong to the solvent chosen above.
+                fill = f"Choose {additive.name} above to set its source plate."
+            elif status is not None and status.problem:
+                fill = "Not ready yet; see below."
             else:
-                volumes = transfers[additive.id]
-                total = sum(volumes, Decimal("0"))
-                text = (
-                    f"{ul_text(total)} µL in total, into {_plural(len(volumes), 'crystal drop')}"
-                )
-            rows.append((additive.name, text))
+                fill = "Choose the plate and plate type below to see which wells to fill."
+            rows.append(("Source wells", fill))
         cells = "".join(
             f'<tr><td style="color:{theme.TEXT_MUTED}; padding:1px 16px 1px 0">'
             f"{html.escape(label)}</td><td>{html.escape(value)}</td></tr>"

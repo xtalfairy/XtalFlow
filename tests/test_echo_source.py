@@ -16,7 +16,7 @@ LDV_1536 = source_plate_type("1536LDV_DMSO")
 
 
 def test_the_two_lab_plates_are_described_with_their_working_ranges() -> None:
-    assert {item.part_number for item in SOURCE_PLATE_TYPES} == {"PP-0200", "LP-0400"}
+    assert {item.part_number for item in SOURCE_PLATE_TYPES} == {"PP-0200", "001-6969 (LP-0400)"}
     assert (PP_DMSO.dead_ul, PP_DMSO.max_ul, PP_DMSO.well_format) == (Decimal("15"), Decimal("65"), 384)
     assert (LDV_1536.dead_ul, LDV_1536.max_ul, LDV_1536.well_format) == (
         Decimal("1"), Decimal("5.5"), 1536

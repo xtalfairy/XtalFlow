@@ -64,7 +64,7 @@ SOURCE_PLATE_TYPES = (
         "Crystallization reagents and salts without surfactant: MPD, PEGs, osmotic solutions",
     ),
     SourcePlateType(
-        "1536LDV_DMSO", "1536LDV · DMSO", "LP-0400", 1536, Decimal("1"), Decimal("5.5"),
+        "1536LDV_DMSO", "1536LDV · DMSO", "001-6969 (LP-0400)", 1536, Decimal("1"), Decimal("5.5"),
         "DMSO, 70–100 %",
     ),
 )

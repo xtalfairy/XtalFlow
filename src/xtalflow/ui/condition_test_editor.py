@@ -10,7 +10,7 @@ from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
 from PyQt5 import sip
-from PyQt5.QtCore import QEvent, QPoint, Qt, pyqtSignal
+from PyQt5.QtCore import QEvent, QPoint, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QCursor
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -1013,7 +1013,9 @@ class ConditionTestEditor(PlanEditorBase):
         data = self.source_plate_input.itemData(index)
         if data == NEW_PLATE:
             if not self._naming_plate:
-                self._begin_new_plate()
+                # Only once the list has closed: changing the combo while it closes
+                # leaves the focus in the closing list, where typing is lost.
+                QTimer.singleShot(0, self._begin_new_plate)
             return
         if self._naming_plate:
             self._end_new_plate()
@@ -1033,6 +1035,8 @@ class ConditionTestEditor(PlanEditorBase):
         self._source_plate_edited(**changes)
 
     def _begin_new_plate(self) -> None:
+        if self._naming_plate:
+            return
         """The Plate field itself takes the new plate's name.
 
         Typing goes where the list was, so the focus never has to move to another
@@ -1054,7 +1058,9 @@ class ConditionTestEditor(PlanEditorBase):
         combo.setEditText("")
         self.new_plate_cancel_button.show()
         _show_message(self.record_note_label, "Name the new plate; its wells start at A1.")
+        combo.activateWindow()
         combo.setFocus(Qt.OtherFocusReason)
+        self._render_source()
 
     def _end_new_plate(self) -> None:
         combo = self.source_plate_input
@@ -1697,7 +1703,7 @@ class ConditionTestEditor(PlanEditorBase):
         elif missing:
             names = ", ".join(missing[:-1]) + (" and " if len(missing) > 1 else "") + missing[-1]
             message, attention = f"Enter the source {names}; the ECHO worksheet needs them.", True
-            if "plate" in missing:
+            if "plate" in missing and not self._naming_plate:
                 message += self._shared_plate_hint()
         elif transfers is None:
             message, attention = "Enter the initial drop volume to see how much to prepare.", False

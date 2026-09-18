@@ -169,7 +169,7 @@ T+1 h    ECHO round 2   Glycerol(복합 2단계)       PreTest-…-01_R2.csv
 | 축 | 표 머리글에서 직접 편집. 가로·세로 머리글 끝에 `+` 머리글을 가진 좁은 빈 열·행이 있고, 누르면 그 자리에 입력칸이 열려 값 하나나 여러 개(`30, 40`)를 받는다. 머리글 더블클릭(또는 우클릭 → Edit value…)은 그 값을 고치며 조건 ID와 칸별 설정을 유지, 머리글에 마우스를 올리면 나타나는 × 로 그 열·행을 지운다. 읽을 수 없는 값은 입력칸이 빨갛게 남고 표 아래에 이유와 쓸 수 있는 형식을 보여 주며 설계는 바뀌지 않는다. 축 이름은 `Final concentration in drop (%)`가 열 머리글 위, `Soaking duration`이 왼쪽 위 모서리. `+` 칸은 선택·방향키 대상이 아니다 |
 | 셀 | `2 wells` / `Excluded`. 클릭·방향키는 선택만, Space·Enter 포함/제외, +/− well 수. 포함/제외 버튼(× / +)은 선택된 칸 안에만 하나 나타난다(칸마다 체크박스를 두지 않음). 우클릭 메뉴는 보조 |
 | 선택 조건 패널 | 그 칸(=그 well)에 해당하는 것만 보여 준다: 제목(조건 이름), Wells, 제외 상태, Requested / Transfer / well / Actual(`compute_doses` 결과 그대로), Planned harvest. 농도·시간은 열·행 전체의 값이라 여기서 고치지 않는다(행렬 모델상 한 칸만 이웃과 다른 값을 가질 수 없음) |
-| Wells per condition | 표 전체의 기본값이라 표 바로 아래 |
+| Crystal drops per condition | 표 전체의 기본값(`design.default_replicates`), 표 바로 위. 우측 상자는 표 윗선에서 시작 |
 | Wells per condition | `design.default_replicates`. 바꾸면 이전 기본값을 쓰던 조건만 따라가고 따로 정한 조건은 유지 |
 | 0 % 이름 | `No DMSO added`, 앞 처리가 있으면 `No additional Glycerol`. "Control"이라 부르지 않음(진짜 대조군 정의는 실험자 결정) |
 | 앞 처리·SMILES·추가 solvent | `Advanced` 접힘 영역으로 이동, 팝업(AdditiveDialog) 제거. 앞 처리 시간은 검증 후에만 적용 |

@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -198,8 +199,8 @@ class ConditionTestEditor(PlanEditorBase):
         self.replicates_input.setRange(1, MAX_WELLS_PER_CONDITION)
         self.replicates_input.setMaximumWidth(80)
         self.replicates_input.setToolTip(
-            "Wells for each new condition. Changing it also updates conditions that "
-            "still use the previous number."
+            "Crystal drops, each in its own well, for each new condition. Changing it "
+            "also updates conditions that still use the previous number."
         )
         self.name_error_label = _message_label()
 
@@ -482,22 +483,22 @@ class ConditionTestEditor(PlanEditorBase):
 
         defaults = QHBoxLayout()
         defaults.setSpacing(theme.SPACING_M)
-        defaults.addWidget(_field_label("Wells per condition"))
+        defaults.setContentsMargins(0, 0, 0, theme.SPACING_M)
+        defaults.addWidget(_field_label("Crystal drops per condition"))
         defaults.addWidget(self.replicates_input)
         defaults.addStretch()
-        table_box = QVBoxLayout()
-        table_box.setSpacing(theme.SPACING_S)
-        table_box.addWidget(self.column_caption)
-        table_box.addWidget(self.matrix_table)
-        table_box.addWidget(self.axis_error_label)
-        table_box.addSpacing(theme.SPACING_S)
-        table_box.addLayout(defaults)
-        table_box.addStretch()
 
-        matrix = QHBoxLayout()
-        matrix.setSpacing(theme.SPACING_XL)
-        matrix.addLayout(table_box, 1)
-        matrix.addWidget(self.condition_panel, 0, Qt.AlignTop)
+        # The panel starts level with the table, beside the condition it describes.
+        matrix = QGridLayout()
+        matrix.setHorizontalSpacing(theme.SPACING_XL)
+        matrix.setVerticalSpacing(theme.SPACING_S)
+        matrix.addLayout(defaults, 0, 0)
+        matrix.addWidget(self.column_caption, 1, 0)
+        matrix.addWidget(self.matrix_table, 2, 0)
+        matrix.addWidget(self.condition_panel, 2, 1, 3, 1, Qt.AlignTop)
+        matrix.addWidget(self.axis_error_label, 3, 0)
+        matrix.setColumnStretch(0, 1)
+        matrix.setRowStretch(4, 1)
 
         widget = QWidget()
         widget.setObjectName("ConditionsPage")

@@ -158,6 +158,8 @@ class PlateRecordEntry:
     experiment_id: str = ""
     additive: str = ""
     reason: str = ""
+    # The plate's type, so choosing a shared plate also chooses its type.
+    plate_type: str = ""
 
     def describe(self, well: str, plate: str) -> str:
         when = f"{self.time:%Y-%m-%d}"
@@ -292,3 +294,37 @@ def allocate_source_wells(
         tuple(fills),
         tuple(wells),
     )
+
+
+def recorded_plate_type(entries: Iterable[PlateRecordEntry]) -> SourcePlateType | None:
+    """The type a shared plate was first recorded with, if any."""
+    for entry in entries:
+        if entry.plate_type:
+            try:
+                return source_plate_type(entry.plate_type)
+            except ValueError:
+                return None
+    return None
+
+
+@dataclass(frozen=True)
+class PlateSummary:
+    """A shared plate as offered for choosing: what it is and how far it is used."""
+
+    name: str
+    plate_type: SourcePlateType | None
+    used: int
+    next_well: str | None
+
+    @property
+    def label(self) -> str:
+        kind = self.plate_type.label.split(" · ")[0] if self.plate_type else "type not recorded"
+        text = f"{self.name} · {kind} · {self.used} well{'' if self.used == 1 else 's'} used"
+        return text + (f", next {self.next_well}" if self.next_well else "")
+
+
+def summarize_plate(name: str, entries: Sequence[PlateRecordEntry]) -> PlateSummary:
+    plate_type = recorded_plate_type(entries)
+    used = sum(len(entry.wells) for entry in entries if entry.kind == USED)
+    following = next_free_wells(plate_type.well_format, entries, 1) if plate_type else ()
+    return PlateSummary(name, plate_type, used, following[0] if following else None)

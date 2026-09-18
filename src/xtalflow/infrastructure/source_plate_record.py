@@ -21,7 +21,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import TypeVar
 
-from xtalflow.domain.echo_source import USED, PlateRecordEntry, well_history
+from xtalflow.domain.echo_source import (
+    USED,
+    PlateRecordEntry,
+    PlateSummary,
+    summarize_plate,
+    well_history,
+)
 from xtalflow.infrastructure.worksheet_exporter import WorksheetDestinationUnavailable
 
 T = TypeVar("T")
@@ -47,7 +53,7 @@ def _entry_to_line(plate: str, entry: PlateRecordEntry) -> str:
             "time": entry.time.isoformat(), "plate": plate, "kind": entry.kind,
             "wells": list(entry.wells), "user": entry.user,
             "experiment": entry.experiment_id, "additive": entry.additive,
-            "reason": entry.reason,
+            "reason": entry.reason, "plate_type": entry.plate_type,
         },
         ensure_ascii=False, sort_keys=True,
     )
@@ -60,6 +66,7 @@ def _entry_from_line(line: str) -> PlateRecordEntry | None:
             str(data["kind"]), tuple(str(well) for well in data["wells"]), str(data["user"]),
             datetime.fromisoformat(data["time"]), str(data.get("experiment", "")),
             str(data.get("additive", "")), str(data.get("reason", "")),
+            str(data.get("plate_type", "")),
         )
     except (ValueError, KeyError, TypeError):
         return None
@@ -92,14 +99,37 @@ class SourcePlateRecord:
 
     def entries(self, plate: str) -> tuple[PlateRecordEntry, ...]:
         self._require_root()
-        path = self._path(plate)
+        return self._read(self._path(plate), plate)[1]
+
+    def _read(self, path: Path, plate: str) -> tuple[str, tuple[PlateRecordEntry, ...]]:
+        """The plate's name as first written, and its entries."""
         try:
             text = path.read_text(encoding="utf-8")
         except FileNotFoundError:
-            return ()
+            return plate, ()
         except OSError as error:
             raise SourcePlateRecordUnavailable(f"could not read the record of {plate}: {error}") from error
-        return tuple(entry for line in text.splitlines() if (entry := _entry_from_line(line)))
+        name = plate
+        for line in text.splitlines():
+            try:
+                name = str(json.loads(line)["plate"]) or plate
+                break
+            except (ValueError, KeyError, TypeError):
+                continue
+        return name, tuple(entry for line in text.splitlines() if (entry := _entry_from_line(line)))
+
+    def plates(self) -> tuple[PlateSummary, ...]:
+        """Every shared plate with a record, by name."""
+        self._require_root()
+        try:
+            paths = sorted(self.directory.glob("*.log"))
+        except OSError as error:
+            raise SourcePlateRecordUnavailable(f"could not list {self.directory}: {error}") from error
+        summaries = []
+        for path in paths:
+            name, entries = self._read(path, path.stem)
+            summaries.append(summarize_plate(name, entries))
+        return tuple(sorted(summaries, key=lambda item: item.name.casefold()))
 
     def append(self, plate: str, entries: Sequence[PlateRecordEntry]) -> None:
         with self._locked(plate):

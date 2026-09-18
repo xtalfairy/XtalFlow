@@ -60,6 +60,7 @@ from xtalflow.domain.echo_source import (
     SKIPPED,
     SOURCE_PLATE_TYPES,
     PlateRecordEntry,
+    PlateSummary,
     allocate_source_wells,
     next_free_wells,
     normalize_well,
@@ -244,7 +245,8 @@ class ConditionTestEditor(PlanEditorBase):
         self.source_type_input.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         self.source_plate_input = QLineEdit()
         self.source_plate_input.setPlaceholderText("Plate, e.g. LDV-01")
-        self.source_plate_input.setMaximumWidth(130)
+        self.source_plate_input.setMinimumWidth(130)
+        self.source_plate_input.setMaximumWidth(170)
         self.source_well_input = QLineEdit()
         self.source_well_input.setPlaceholderText("Wells, e.g. A1 or A1, A2")
         self.source_well_input.setMinimumWidth(130)
@@ -263,6 +265,17 @@ class ConditionTestEditor(PlanEditorBase):
         self._plate_records: dict[str, tuple[PlateRecordEntry, ...] | None] = {}
         # Skips that could not be recorded yet; they are recorded with the worksheets.
         self.pending_skips: dict[str, list[PlateRecordEntry]] = {}
+        # Shared plates to choose from, and a way to start a new one.
+        self.plate_menu = QMenu(self.source_plate_input)
+        self.plate_menu_button = QToolButton()
+        self.plate_menu_button.setText("Shared plates ▾")
+        self.plate_menu_button.setPopupMode(QToolButton.InstantPopup)
+        self.plate_menu_button.setMenu(self.plate_menu)
+        self.plate_menu_button.setToolTip(
+            "Choose a source plate everyone shares, or start a new one."
+        )
+        # Set when the user asked for a new plate, so its new name is not questioned.
+        self._new_plate_intent = False
         self.next_wells_button = QPushButton("Use next wells")
         self.next_wells_button.setObjectName("LinkButton")
         self.next_wells_button.setToolTip(
@@ -420,9 +433,8 @@ class ConditionTestEditor(PlanEditorBase):
             lambda value: self.update_additive(stock_percent=Decimal(str(value)))
         )
         self.replicates_input.valueChanged.connect(self._default_replicates_changed)
-        self.source_plate_input.editingFinished.connect(
-            lambda: self._source_plate_edited(source_plate=self.source_plate_input.text())
-        )
+        self.source_plate_input.editingFinished.connect(self._plate_name_edited)
+        self.plate_menu.aboutToShow.connect(self._fill_plate_menu)
         self.source_well_input.editingFinished.connect(self._source_wells_edited)
         self.source_type_input.activated.connect(
             lambda _index: self._source_plate_edited(
@@ -520,16 +532,23 @@ class ConditionTestEditor(PlanEditorBase):
         # The title sits above the fields, so plate names that say what they hold fit in one row.
         source_title = QLabel("Dispensing source")
         source_title.setStyleSheet("font-weight: 500;")
+        # Which plate on one line, which of its wells on the next.
         fields = QHBoxLayout()
         fields.setSpacing(theme.SPACING_M)
-        fields.addWidget(_field_label("Plate type"))
-        fields.addWidget(self.source_type_input)
         fields.addWidget(_field_label("Plate"))
         fields.addWidget(self.source_plate_input)
-        fields.addWidget(_field_label("Wells"))
-        fields.addWidget(self.source_well_input)
-        fields.addWidget(self.next_wells_button)
-        fields.addWidget(self.skip_button)
+        fields.addWidget(self.plate_menu_button)
+        fields.addSpacing(theme.SPACING_L)
+        fields.addWidget(_field_label("Plate type"))
+        fields.addWidget(self.source_type_input)
+        fields.addStretch()
+        wells = QHBoxLayout()
+        wells.setSpacing(theme.SPACING_M)
+        wells.addWidget(_field_label("Wells"))
+        wells.addWidget(self.source_well_input)
+        wells.addWidget(self.next_wells_button)
+        wells.addWidget(self.skip_button)
+        wells.addStretch()
         skip = QHBoxLayout()
         skip.setContentsMargins(0, 0, 0, 0)
         skip.setSpacing(theme.SPACING_M)
@@ -545,6 +564,7 @@ class ConditionTestEditor(PlanEditorBase):
         source.setSpacing(theme.SPACING_S)
         source.addWidget(source_title)
         source.addLayout(fields)
+        source.addLayout(wells)
         source.addWidget(self.skip_row)
         source.addWidget(self.source_message_label)
         source.addWidget(self.record_note_label)
@@ -922,6 +942,86 @@ class ConditionTestEditor(PlanEditorBase):
             )
         return records
 
+    def _shared_plates(self) -> tuple[PlateSummary, ...] | None:
+        """Plates on the shared record, or None when there is none or it cannot be read."""
+        if self._source_record is None:
+            return None
+        try:
+            return self._source_record.plates()
+        except SourcePlateRecordUnavailable as error:
+            _show_message(self.record_note_label, f"{_sentence(error)} {RECHECK_NOTE}")
+            return None
+
+    def _fill_plate_menu(self) -> None:
+        self.plate_menu.clear()
+        plates = self._shared_plates()
+        if plates is None:
+            self.plate_menu.addAction("The shared record cannot be read now").setEnabled(False)
+        elif not plates:
+            self.plate_menu.addAction("No shared plates yet").setEnabled(False)
+        for summary in plates or ():
+            self.plate_menu.addAction(summary.label).triggered.connect(
+                lambda _=False, chosen=summary: self.choose_shared_plate(chosen)
+            )
+        self.plate_menu.addSeparator()
+        self.plate_menu.addAction("New plate…").triggered.connect(self.start_new_plate)
+
+    def choose_shared_plate(self, summary: PlateSummary) -> None:
+        """Continue a shared plate: its name, its type, and its next free wells."""
+        self._new_plate_intent = False
+        changes = {"source_plate": summary.name}
+        if summary.plate_type is not None:
+            changes["source_plate_type"] = summary.plate_type.id
+        self._source_plate_edited(**changes)
+        _show_message(self.record_note_label, f"{summary.label}.")
+
+    def start_new_plate(self) -> None:
+        """A new plate starts at its first well; its name must not be one already shared."""
+        self._new_plate_intent = True
+        self.source_plate_input.clear()
+        self.source_plate_input.setPlaceholderText("New plate name")
+        self.source_plate_input.setFocus(Qt.OtherFocusReason)
+        _show_message(self.record_note_label, "Enter a name for the new plate, e.g. SOLVENT-02.")
+
+    def _plate_name_edited(self) -> None:
+        """A typed plate name: a shared plate is continued; a new one is confirmed first.
+
+        A mistyped name would otherwise look like a new plate, and its first well
+        would be taken again on a plate already in use.
+        """
+        name = self.source_plate_input.text().strip()
+        current = self.design.additive(self._series.additive_id)
+        self.source_plate_input.setPlaceholderText("Plate, e.g. LDV-01")
+        if not name or name == current.source_plate:
+            self._new_plate_intent = False
+            self._source_plate_edited(source_plate=name)
+            return
+        plates = self._shared_plates()
+        known = {summary.name.casefold(): summary for summary in plates or ()}
+        if name.casefold() in known:
+            if self._new_plate_intent:
+                _show_message(
+                    self.record_note_label,
+                    f"{known[name.casefold()].name} is already a shared plate; it is continued.",
+                )
+            self._new_plate_intent = False
+            self.choose_shared_plate(known[name.casefold()])
+            return
+        if plates is not None and not self._new_plate_intent:
+            names = ", ".join(summary.name for summary in plates) or "none yet"
+            if QMessageBox.question(
+                self, "New source plate",
+                f"'{name}' is not a shared plate yet. Start a new plate with this name?\n\n"
+                f"Shared plates: {names}",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            ) != QMessageBox.Yes:
+                self.source_plate_input.setText(current.source_plate)
+                return
+        self._new_plate_intent = False
+        self._source_plate_edited(source_plate=name)
+        if plates is not None:
+            _show_message(self.record_note_label, f"New plate {name}: wells start at the first one.")
+
     def _source_plate_edited(self, **changes) -> None:
         """A new plate or plate type: its wells are that plate's next free ones.
 
@@ -1001,7 +1101,8 @@ class ConditionTestEditor(PlanEditorBase):
             return False
         reason = self.skip_reason_input.currentText()
         entry = PlateRecordEntry(
-            SKIPPED, (well,), self._username, datetime.now(timezone.utc), "", additive.name, reason
+            SKIPPED, (well,), self._username, datetime.now(timezone.utc), "", additive.name, reason,
+            additive.source_plate_type,
         )
         recorded = False
         if self._source_record is not None:

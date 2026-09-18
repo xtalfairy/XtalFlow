@@ -83,7 +83,10 @@ class WorksheetExportService:
         }
         for plate, additive, wells in plan.source_wells_used():
             entries.setdefault(plate, []).append(
-                PlateRecordEntry(USED, wells, self.username, now, experiment_id, additive.name)
+                PlateRecordEntry(
+                    USED, wells, self.username, now, experiment_id, additive.name,
+                    plate_type=additive.source_plate_type,
+                )
             )
         if not entries:
             return publish()

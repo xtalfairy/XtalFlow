@@ -25,6 +25,7 @@ from .echo_source import (
     allocate_source_wells,
     next_free_wells,
     normalize_well,
+    recorded_plate_type,
     source_plate_type,
     well_history,
 )
@@ -564,7 +565,13 @@ def source_statuses(
         records = tuple((plate_records or {}).get(plate, ()))
         history = well_history(records)
         recorded = next((well for well in wells if well in history), None)
-        if shared is not None:
+        plate_kind = recorded_plate_type(records)
+        if plate_kind is not None and plate_kind.part_number != plate_type.part_number:
+            problem = (
+                f"{plate} is a {plate_kind.label.split(' · ')[0]} plate; "
+                f"choose a {plate_kind.label.split(' · ')[0]} plate type for {name}."
+            )
+        elif shared is not None:
             problem = f"{shared} and {name} use the same source well on {plate}."
         elif recorded is not None:
             problem = (

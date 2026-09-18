@@ -96,3 +96,20 @@ def test_an_unreachable_echo_folder_is_reported_not_created(tmp_path: Path) -> N
     with pytest.raises(SourcePlateRecordUnavailable):
         record.append("SOLVENT-01", [_used(["A1"])])
     assert not (tmp_path / "smbmount").exists()
+
+
+def test_shared_plates_are_listed_with_their_type_and_next_well(tmp_path: Path) -> None:
+    record = _record(tmp_path)
+    assert record.plates() == ()
+    record.append("SOLVENT-01", [
+        PlateRecordEntry("used", ("A1", "B1", "C1"), "kim", NOW, "PreTest-01", "DMSO", plate_type="1536LDV_DMSO"),
+    ])
+    record.append("SOLVENT-01", [PlateRecordEntry("skipped", ("D1",), "lee", NOW, reason="Damaged")])
+    record.append("glycerol plate", [
+        PlateRecordEntry("used", ("A1",), "kim", NOW, "PreTest-02", "Glycerol", plate_type="384PP_AQ_GP3"),
+    ])
+
+    assert [summary.label for summary in record.plates()] == [
+        "glycerol plate · 384PP · 1 well used, next B1",
+        "SOLVENT-01 · 1536LDV · 3 wells used, next E1",
+    ]

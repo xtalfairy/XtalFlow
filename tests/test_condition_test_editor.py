@@ -314,8 +314,9 @@ def test_large_matrix_scrolls_inside_its_bounds() -> None:
 
 def test_each_solvent_chip_removes_that_solvent_after_asking(monkeypatch) -> None:
     editor = _editor(percents=("0", "10"), times=(0,), replicates=2)
-    editor._add_series()
-    editor._add_series()
+    assert [chip.text() for chip in editor.series_group.buttons()] == ["DMSO"]
+    editor.add_series_button.click()
+    editor.add_series_button.click()
     names = [editor.design.additive(item.additive_id).name for item in editor.design.series]
     assert names == ["DMSO", "Solvent 2", "Solvent 3"]
     chips = editor.series_group.buttons()
@@ -345,4 +346,7 @@ def test_each_solvent_chip_removes_that_solvent_after_asking(monkeypatch) -> Non
 
     editor.series_group.buttons()[1].findChild(QToolButton, "ChipClose").click()
     assert [item.name for item in editor.design.additives] == ["Solvent 2"]
-    assert editor.series_group.buttons() == []  # One solvent needs no chips.
+    # The last solvent keeps its chip, but cannot be removed.
+    (chip,) = editor.series_group.buttons()
+    assert chip.text() == "Solvent 2"
+    assert not chip.findChild(QToolButton, "ChipClose").isEnabled()

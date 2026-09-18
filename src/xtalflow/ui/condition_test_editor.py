@@ -416,6 +416,7 @@ class ConditionTestEditor(PlanEditorBase):
         chips = QHBoxLayout()
         chips.setSpacing(theme.SPACING_S)
         chips.addLayout(self.series_row)
+        chips.addWidget(self.add_series_button)
         chips.addStretch()
 
         inputs = QHBoxLayout()
@@ -468,7 +469,6 @@ class ConditionTestEditor(PlanEditorBase):
         advanced.setSpacing(theme.SPACING_M)
         advanced.addLayout(before)
         advanced.addLayout(smiles)
-        advanced.addWidget(self.add_series_button, 0, Qt.AlignLeft)
         self.advanced_box.setLayout(advanced)
 
         column_axis = QHBoxLayout()
@@ -690,15 +690,14 @@ class ConditionTestEditor(PlanEditorBase):
             self.advanced_button.setText("Advanced")
 
     def _render_chips(self) -> None:
-        """One chip per solvent, each with its own ×; a single solvent needs no chip."""
+        """One chip per solvent, each with its own ×; the last solvent cannot be removed."""
         for button in self.series_group.buttons():
             self.series_group.removeButton(button)
             self.series_row.removeWidget(button)
             # Hide now: a removed chip would otherwise paint until deleteLater runs.
             button.hide()
             button.deleteLater()
-        if len(self.design.series) < 2:
-            return
+        several = len(self.design.series) > 1
         for index, series in enumerate(self.design.series):
             name = self.design.additive(series.additive_id).name
             chip = QPushButton(name)
@@ -708,8 +707,12 @@ class ConditionTestEditor(PlanEditorBase):
             close = QToolButton(chip)
             close.setObjectName("ChipClose")
             close.setText("×")
-            close.setToolTip(f"Remove {name} and its conditions")
+            close.setToolTip(
+                f"Remove {name} and its conditions" if several
+                else "A test needs at least one solvent"
+            )
             close.setAccessibleName(f"Remove {name}")
+            close.setEnabled(several)
             close.setFixedSize(18, 18)
             close.clicked.connect(
                 lambda _=False, removed=index: self.remove_series(removed)

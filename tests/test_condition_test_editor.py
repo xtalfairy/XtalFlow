@@ -694,3 +694,27 @@ def test_how_many_source_wells_and_how_much_is_known_from_the_plate_type_alone()
     assert editor.preparation_rows()[2] == (
         "Source wells · Choose the plate type below to see how many wells to fill, and with how much."
     )
+
+
+def test_wells_filled_in_by_the_rule_follow_the_conditions_until_typed(tmp_path) -> None:
+    record = _shared_plate(tmp_path)
+    # 90 % of 100 nL is 900 nL; a 1536LDV well gives four of those.
+    editor = _editor(percents=("90",), times=(0,), replicates=2)
+    editor.set_source_record(record, "lee")
+    editor.update_additive(source_plate="", source_well="", source_plate_type="1536LDV_DMSO")
+
+    # The plate type came first; naming a new plate fills its wells from A1.
+    editor.enter_new_plate("SOLVENT-02")
+    assert editor.design.additives[0].source_wells == ("A1",)
+    assert editor.source_well_input.text() == "A1"
+
+    # More conditions need a second well: it is added, down the column.
+    editor.add_axis_values("0 min, 30 min, 1 h", columns=False)
+    assert editor.design.additives[0].source_wells == ("A1", "B1")
+    assert editor.source_well_input.text() == "A1, B1"
+
+    # Wells typed by the user are left as they are.
+    editor.source_well_input.setText("C1, D1, E1")
+    editor.source_well_input.editingFinished.emit()
+    editor.add_axis_values("2 h", columns=False)
+    assert editor.design.additives[0].source_wells == ("C1", "D1", "E1")

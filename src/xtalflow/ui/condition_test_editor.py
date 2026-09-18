@@ -285,6 +285,8 @@ class ConditionTestEditor(PlanEditorBase):
         self._username = ""
         # None for a plate whose record could not be read; it is read again when asked afresh.
         self._plate_records: dict[str, tuple[PlateRecordEntry, ...] | None] = {}
+        # Additives whose wells were filled in by the rule rather than typed.
+        self._auto_wells: set[str] = set()
         # Skips that could not be recorded yet; they are recorded with the worksheets.
         self.pending_skips: dict[str, list[PlateRecordEntry]] = {}
         # The shared plates as last listed; None if they could not be read.
@@ -1124,23 +1126,25 @@ class ConditionTestEditor(PlanEditorBase):
         ):
             self.use_next_wells()
 
-    def use_next_wells(self) -> bool:
-        """Enter as many wells as the transfers need, after the last one used on the plate."""
-        additive = self.design.additive(self._series.additive_id)
+    def _next_wells_for(self, additive, fresh: bool = False) -> tuple[str, ...] | None:
+        """The wells an additive should use: after the plate's last used one, as many as needed.
+
+        A new plate starts at A1. None when the plate, its type or the volumes are not
+        known yet, or the plate has too few wells left.
+        """
         plate = additive.source_plate.strip()
         if not plate or not additive.source_plate_type:
-            _show_message(self.record_note_label, "Choose the plate type and enter the plate first.")
-            return False
+            return None
         plate_type = source_plate_type(additive.source_plate_type)
         try:
             transfers = additive_transfers(self.design).get(additive.id, ())
             needed = allocate_source_wells(plate_type, transfers, ()).wells_needed
         except ValueError:
-            return False  # The source box already says what to fix.
+            return None  # The Preparation box already says what to fix.
         if not needed:
-            _show_message(self.record_note_label, "Nothing is transferred from this source.")
-            return False
-        self._plate_entries(plate, fresh=True)
+            return ()
+        if fresh:
+            self._plate_entries(plate, fresh=True)
         entries = self._records_for_checks().get(plate, ())
         others = {
             well for item in self.design.additives
@@ -1153,14 +1157,51 @@ class ConditionTestEditor(PlanEditorBase):
                 self.record_note_label,
                 f"Only {len(wells)} free wells are left on {plate}; start a new plate with a new name.",
             )
+            return None
+        return wells
+
+    def use_next_wells(self) -> bool:
+        """Enter as many wells as the transfers need, after the last one used on the plate."""
+        additive = self.design.additive(self._series.additive_id)
+        if not additive.source_plate.strip() or not additive.source_plate_type:
+            _show_message(self.record_note_label, "Choose the plate type and enter the plate first.")
             return False
-        if self._source_record is not None and plate in self._plate_records:
+        wells = self._next_wells_for(additive, fresh=True)
+        if wells is None:
+            return False
+        if not wells:
+            _show_message(self.record_note_label, "Nothing is transferred from this source.")
+            return False
+        plate = additive.source_plate.strip()
+        if self._source_record is not None and self._plate_records.get(plate) is not None:
             _show_message(self.record_note_label, "")
         self._source_well_error = None
         _set_flag(self.source_well_input, "invalid", False)
+        # Filled in by the rule, these wells follow the conditions from now on.
+        self._auto_wells.add(additive.id)
         self.update_additive(source_well=wells[0], extra_source_wells=tuple(wells[1:]))
         self._load_design_inputs()
         return True
+
+    def _sync_auto_wells(self) -> None:
+        """Wells filled in by the rule keep up with the conditions: as many as now needed."""
+        changed = False
+        for additive in self.design.additives:
+            if additive.id not in self._auto_wells:
+                continue
+            wells = self._next_wells_for(additive)
+            if wells is None or len(wells) == len(additive.source_wells):
+                continue
+            updated = replace(
+                additive, source_well=wells[0] if wells else "", extra_source_wells=tuple(wells[1:])
+            )
+            self.design = replace(
+                self.design,
+                additives=tuple(updated if item.id == additive.id else item for item in self.design.additives),
+            )
+            changed = True
+        if changed:
+            self._load_design_inputs()
 
     def _toggle_skip_row(self) -> None:
         visible = not self.skip_row.isVisible()
@@ -1227,6 +1268,8 @@ class ConditionTestEditor(PlanEditorBase):
             return
         self._source_well_error = None
         _set_flag(self.source_well_input, "invalid", False)
+        # Typed by the user: kept as typed, no longer following the conditions.
+        self._auto_wells.discard(self._series.additive_id)
         self.update_additive(
             source_well=wells[0] if wells else "", extra_source_wells=tuple(wells[1:])
         )
@@ -1970,6 +2013,7 @@ class ConditionTestEditor(PlanEditorBase):
         )
 
     def refresh_plan(self) -> None:
+        self._sync_auto_wells()
         self._render_source()
         self._render_matrix()
         self._render_condition_panel()

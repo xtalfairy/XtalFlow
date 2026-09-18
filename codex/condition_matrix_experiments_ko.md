@@ -208,8 +208,9 @@ ECHO 옆 공용 solvent test plate를 여러 사용자가 계정과 관계없이
 - 기록 위치: 모든 사용자가 worksheet를 저장하는 ECHO 폴더의 `source-plates/<plate 이름>.log`. plate 이름은 대소문자를 구분하지 않는다. 한 줄에 JSON 하나로 시각·plate·종류(used / skipped)·well·사용자·실험 ID·첨가제·이유를 적고, 덧붙이기만 한다. 네트워크 공유에서 잠금이 불안정한 SQLite는 쓰지 않는다.
 - well 순서: 열 방향(A1→P1, A2…; 1536은 A1→AF1, A2…). 다음 well은 마지막으로 **사용된** well 다음부터이고, 기록된 well(사용·건너뜀)과 같은 설계의 다른 첨가제 well은 건너뛴다. 중간 빈 칸으로 되돌아가지 않는다.
 - Conditions: plate 이름과 종류를 정하면 필요한 수만큼 다음 빈 well이 자동으로 들어간다(plate나 종류를 바꾸면 다시 고름). `Use next wells`로 다시 고를 수 있고, 기록된 well을 직접 입력하면 누가 언제 썼는지 알리고 받지 않는다.
-- `Skip a well`: well과 이유(Dust or debris, Damaged, Used outside XtalFlow, Other)를 골라 즉시 공용 기록에 남긴다. 쓰려던 well이면 다음 빈 well로 바뀐다. 기록을 쓸 수 없으면 이 실험에 보관했다가 worksheet 저장 때 함께 기록한다(앱을 닫으면 사라짐). 되돌리기는 없다.
+- `Skip well` / `Use previous well`: 지금 배정된 첫 칸을 건너뛰고 다음 칸부터 쓰거나(먼지 등), 한 칸 되돌린다. plate의 첫 빈 칸보다 앞으로는 가지 않는다. 건너뛴 칸은 따로 기록하지 않는다. 다음 사람은 마지막으로 **사용된** 칸 다음부터 받으므로 앞의 칸은 자연히 지나간다.
 - worksheet 저장: plate별 잠금 파일(배타적 생성, 120초 넘은 잠금은 비정상 종료로 보고 제거)을 잡고 기록을 다시 읽어, 그사이 다른 사람이 가져간 well이 있으면 저장하지 않고 알린다. 없으면 worksheet를 게시한 뒤 사용 기록을 덧붙인다. 같은 실험을 다시 저장해도 두 번 기록하지 않는다. `Save elsewhere`로 저장한 사본은 ECHO가 실행하는 파일이 아니므로 기록하지 않는다.
+- 사용 처리 시점은 worksheet 저장뿐이다. 계획·확정만으로는 기록되지 않는다.
 - 공용 폴더에 접근할 수 없으면 worksheet 저장도 원래 실패하므로 새 실패 경우는 없다. 계획 단계에서는 "저장할 때 다시 확인한다"고 안내한다.
 - plate 고르기: Plate 칸이 드롭다운이다. 공용 기록이 있는 plate가 "이름 · 종류 · 사용한 well 수, next 다음 well"로 나오고(열 때마다 다시 읽음), 고르면 이름·종류·다음 well이 함께 정해진다. 기록마다 plate 종류를 적어 두므로 종류가 다른 plate type을 고르면 받지 않는다(예: "SOLVENT-01 is a 1536LDV plate").
 - `New plate…`: Plate 드롭다운 자체가 글자를 칠 수 있는 칸이 된다(초점이 다른 칸으로 옮겨 가지 않음, 자동 완성 없음, Enter로 확정, Esc·Cancel로 되돌림, 비워 둬도 저절로 닫히지 않음), 새 plate는 A1부터 쓴다. 이미 공용 plate인 이름(대소문자 무관)을 넣으면 새로 만들지 않고 그 plate를 이어 쓴다. 직접 타이핑은 이 경로뿐이라 오타로 새 plate가 생기지 않는다. 새 plate는 첫 사용이 기록될 때 목록에 나타나며, 그 전에는 "이름 · not a shared plate yet"으로 보인다.

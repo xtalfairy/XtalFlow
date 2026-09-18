@@ -533,44 +533,35 @@ def test_next_wells_come_after_the_last_used_well_on_the_shared_plate(tmp_path) 
     assert editor.design_error == (
         "SOLVENT-01 B1 was used by kim on 2026-09-17 (PreTest-01). Use next wells picks free ones."
     )
-    editor.next_wells_button.click()
+    editor.use_next_wells()
     assert editor.design.additives[0].source_wells == ("C1", "E1")
 
 
-def test_a_skipped_well_is_recorded_for_everyone_and_replaced(tmp_path) -> None:
-    record = _shared_plate(tmp_path)
+def test_skip_well_moves_on_one_well_and_use_previous_well_goes_back(tmp_path) -> None:
+    record = _shared_plate(tmp_path, [_entry("used", ["A1", "B1"], "PreTest-01")])
     editor = _editor(percents=("0", "10"), times=(0,), replicates=2)
     editor.set_source_record(record, "lee")
-    editor.update_additive(source_plate="SOLVENT-01", source_well="A1")
+    editor.update_additive(source_plate="SOLVENT-01", source_well="")
+    assert editor.design.additives[0].source_wells == ("C1",)
+    assert not editor.previous_button.isEnabled()
 
+    # C1 has dust in it: skip it.
     editor.skip_button.click()
-    assert editor.skip_well_input.text() == "A1"
-    editor.skip_reason_input.setCurrentText("Dust or debris")
-    assert editor.skip_well()
-    (skipped,) = record.entries("SOLVENT-01")
-    assert (skipped.kind, skipped.wells, skipped.user, skipped.reason) == (
-        "skipped", ("A1",), "lee", "Dust or debris"
-    )
-    assert editor.design.additives[0].source_wells == ("B1",)
-    assert editor.record_note_label.text() == "SOLVENT-01 A1 skipped: Dust or debris."
+    assert editor.design.additives[0].source_wells == ("D1",)
+    assert editor.record_note_label.text() == "C1 skipped."
+    assert editor.previous_button.isEnabled()
+    editor.skip_button.click()
+    assert editor.design.additives[0].source_wells == ("E1",)
 
+    editor.previous_button.click()
+    editor.previous_button.click()
+    assert editor.design.additives[0].source_wells == ("C1",)
+    # Never before the plate's first free well.
+    assert not editor.previous_button.isEnabled()
+    assert not editor.use_previous_well()
 
-def test_a_skip_waits_for_the_worksheets_when_the_shared_record_is_unreachable(tmp_path) -> None:
-    from xtalflow.infrastructure.source_plate_record import SourcePlateRecord, record_directory
-
-    record = SourcePlateRecord(record_directory(tmp_path / "missing" / "echo650"))
-    editor = _editor(percents=("0", "10"), times=(0,), replicates=2)
-    editor.set_source_record(record, "lee")
-    editor.update_additive(source_plate="SOLVENT-01", source_well="A1")
-    assert "cannot be reached" in editor.record_note_label.text()
-
-    editor.skip_well_input.setText("A1")
-    assert editor.skip_well()
-    assert [entry.wells for entry in editor.pending_skips["SOLVENT-01"]] == [("A1",)]
-    assert editor.record_note_label.text() == (
-        "SOLVENT-01 A1 skipped: Dust or debris. It will be recorded when worksheets are saved."
-    )
-    assert editor.design.additives[0].source_wells == ("B1",)
+    # Nothing is recorded until worksheets are saved.
+    assert [entry.wells for entry in record.entries("SOLVENT-01")] == [("A1", "B1")]
 
 
 def _plate_entry(wells, plate_type="1536LDV_DMSO"):

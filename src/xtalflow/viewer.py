@@ -2171,10 +2171,9 @@ class ViewerWindow(QMainWindow):
             else "instrument folders"
         )
         try:
-            skipped = dict(getattr(editor, "pending_skips", {}))
             result = self._run_in_background(
                 f"Saving worksheets to {destination}…",
-                lambda: service.deliver(plan, revision.experiment_id, alternate_root, skipped),
+                lambda: service.deliver(plan, revision.experiment_id, alternate_root),
             )
         except WorksheetDestinationUnavailable as error:
             self._record_worksheet_export(
@@ -2189,8 +2188,7 @@ class ViewerWindow(QMainWindow):
                 f"Experiment ID: {result.experiment_id} · Saved as {result.file_stem}"
             )
             if isinstance(editor, ConditionTestEditor) and alternate_root is None:
-                # Its wells and skips are on the shared record now.
-                editor.pending_skips = {}
+                # Its wells are on the shared record now.
                 editor.refresh_plate_records()
             self.status_message_label.show_message(
                 f"Worksheets saved for {result.experiment_id}", 5000

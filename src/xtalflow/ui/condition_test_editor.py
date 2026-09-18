@@ -6,7 +6,6 @@ import html
 import re
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
@@ -57,15 +56,12 @@ from xtalflow.domain.condition_test import (
 )
 from xtalflow.domain.crystal_workflow import AssignmentOrder
 from xtalflow.domain.echo_source import (
-    SKIP_REASONS,
-    SKIPPED,
     SOURCE_PLATE_TYPES,
     PlateRecordEntry,
     PlateSummary,
     allocate_source_wells,
     next_free_wells,
     ul_text,
-    normalize_well,
     parse_wells,
     source_plate_type,
 )
@@ -288,30 +284,17 @@ class ConditionTestEditor(PlanEditorBase):
         self._plate_records: dict[str, tuple[PlateRecordEntry, ...] | None] = {}
         # Additives whose wells were filled in by the rule rather than typed.
         self._auto_wells: set[str] = set()
-        # Skips that could not be recorded yet; they are recorded with the worksheets.
-        self.pending_skips: dict[str, list[PlateRecordEntry]] = {}
         # The shared plates as last listed; None if they could not be read.
         self._plate_list: tuple[PlateSummary, ...] | None = None
         # Read once, then again only when the list is opened or the record changes.
         self._plate_list_read = False
-        self.next_wells_button = QPushButton("Use next wells")
-        self.next_wells_button.setObjectName("LinkButton")
-        self.next_wells_button.setToolTip(
-            "Fill in the wells after the last one used on this shared plate, as many as needed."
-        )
-        self.skip_button = QPushButton("Skip a well")
+        # Wells skipped past the rule's first free well, per additive (e.g. a dusty well).
+        # Nothing is recorded for them: others start after the last used well anyway.
+        self._well_offsets: dict[str, int] = {}
+        self.skip_button = QPushButton("Skip well")
         self.skip_button.setObjectName("LinkButton")
-        self.skip_button.setToolTip(
-            "Record a well nobody should use, e.g. one with dust in it. The record is shared."
-        )
-        self.skip_row = QWidget()
-        self.skip_row.hide()
-        self.skip_well_input = QLineEdit()
-        self.skip_well_input.setPlaceholderText("Well")
-        self.skip_well_input.setMaximumWidth(80)
-        self.skip_reason_input = QComboBox()
-        self.skip_reason_input.addItems(SKIP_REASONS)
-        self.skip_confirm_button = QPushButton("Skip")
+        self.previous_button = QPushButton("Use previous well")
+        self.previous_button.setObjectName("LinkButton")
         self.record_note_label = QLabel()
         self.record_note_label.setObjectName("Muted")
         self.record_note_label.setWordWrap(True)
@@ -460,9 +443,8 @@ class ConditionTestEditor(PlanEditorBase):
                 source_plate_type=self.source_type_input.currentData()
             )
         )
-        self.next_wells_button.clicked.connect(self.use_next_wells)
-        self.skip_button.clicked.connect(self._toggle_skip_row)
-        self.skip_confirm_button.clicked.connect(self.skip_well)
+        self.skip_button.clicked.connect(self.skip_well)
+        self.previous_button.clicked.connect(self.use_previous_well)
         self.smiles_input.editingFinished.connect(
             lambda: self.update_additive(smiles=self.smiles_input.text())
         )
@@ -565,19 +547,9 @@ class ConditionTestEditor(PlanEditorBase):
         wells.setSpacing(theme.SPACING_M)
         wells.addWidget(_field_label("Wells"))
         wells.addWidget(self.source_well_input)
-        wells.addWidget(self.next_wells_button)
         wells.addWidget(self.skip_button)
+        wells.addWidget(self.previous_button)
         wells.addStretch()
-        skip = QHBoxLayout()
-        skip.setContentsMargins(0, 0, 0, 0)
-        skip.setSpacing(theme.SPACING_M)
-        skip.addWidget(_field_label("Skip well"))
-        skip.addWidget(self.skip_well_input)
-        skip.addWidget(_field_label("because"))
-        skip.addWidget(self.skip_reason_input)
-        skip.addWidget(self.skip_confirm_button)
-        skip.addStretch()
-        self.skip_row.setLayout(skip)
         source = QVBoxLayout()
         source.setContentsMargins(theme.SPACING_L, theme.SPACING_M, theme.SPACING_L, theme.SPACING_M)
         source.setSpacing(theme.SPACING_S)
@@ -586,7 +558,6 @@ class ConditionTestEditor(PlanEditorBase):
         source.addSpacing(theme.SPACING_S)
         source.addLayout(fields)
         source.addLayout(wells)
-        source.addWidget(self.skip_row)
         source.addWidget(self.source_message_label)
         source.addWidget(self.record_note_label)
         self.source_box.setLayout(source)
@@ -959,9 +930,8 @@ class ConditionTestEditor(PlanEditorBase):
             if not plate or not additive.source_plate_type or plate in records:
                 continue
             entries = self._plate_entries(plate) or ()
-            records[plate] = (
-                *(entry for entry in entries if not own or entry.experiment_id != own),
-                *self.pending_skips.get(plate, ()),
+            records[plate] = tuple(
+                entry for entry in entries if not own or entry.experiment_id != own
             )
         return records
 
@@ -1154,7 +1124,8 @@ class ConditionTestEditor(PlanEditorBase):
             if item.id != additive.id and item.source_plate.strip() == plate
             for well in item.source_wells
         }
-        wells = next_free_wells(plate_type.well_format, entries, needed, others)
+        offset = self._well_offsets.get(additive.id, 0)
+        wells = next_free_wells(plate_type.well_format, entries, needed + offset, others)[offset:]
         if len(wells) < needed:
             _show_message(
                 self.record_note_label,
@@ -1169,6 +1140,10 @@ class ConditionTestEditor(PlanEditorBase):
         if not additive.source_plate.strip() or not additive.source_plate_type:
             _show_message(self.record_note_label, "Choose the plate type and enter the plate first.")
             return False
+        self._well_offsets.pop(additive.id, None)
+        return self._apply_rule_wells(additive)
+
+    def _apply_rule_wells(self, additive) -> bool:
         wells = self._next_wells_for(additive, fresh=True)
         if wells is None:
             return False
@@ -1212,52 +1187,30 @@ class ConditionTestEditor(PlanEditorBase):
         if changed:
             self._load_design_inputs()
 
-    def _toggle_skip_row(self) -> None:
-        visible = not self.skip_row.isVisible()
-        self.skip_row.setVisible(visible)
-        if visible:
-            additive = self.design.additive(self._series.additive_id)
-            self.skip_well_input.setText(additive.source_wells[0] if additive.source_wells else "")
-            self.skip_well_input.setFocus(Qt.OtherFocusReason)
-
     def skip_well(self) -> bool:
-        """Record a well nobody should use; a skipped well that was entered is replaced."""
+        """Don't use the first well given, e.g. one with dust in it; the next one is used."""
         additive = self.design.additive(self._series.additive_id)
-        plate = additive.source_plate.strip()
-        if not plate or not additive.source_plate_type:
-            _show_message(self.record_note_label, "Choose the plate type and enter the plate first.")
+        if not additive.source_wells:
             return False
-        plate_type = source_plate_type(additive.source_plate_type)
-        try:
-            well = normalize_well(self.skip_well_input.text(), plate_type.well_format)
-        except ValueError as error:
-            _show_message(self.record_note_label, _sentence(error))
+        skipped = additive.source_wells[0]
+        self._well_offsets[additive.id] = self._well_offsets.get(additive.id, 0) + 1
+        if not self._apply_rule_wells(additive):
+            self._well_offsets[additive.id] -= 1
             return False
-        reason = self.skip_reason_input.currentText()
-        entry = PlateRecordEntry(
-            SKIPPED, (well,), self._username, datetime.now(timezone.utc), "", additive.name, reason,
-            additive.source_plate_type,
-        )
-        recorded = False
-        if self._source_record is not None:
-            try:
-                self._source_record.append(plate, (entry,))
-                recorded = True
-            except SourcePlateRecordUnavailable:
-                pass
-        if recorded:
-            self._plate_entries(plate, fresh=True)
-        else:
-            self.pending_skips.setdefault(plate, []).append(entry)
-        self.skip_row.hide()
-        if well in additive.source_wells:
-            self.use_next_wells()
-        _show_message(
-            self.record_note_label,
-            f"{plate} {well} skipped: {reason}."
-            + ("" if recorded else " It will be recorded when worksheets are saved."),
-        )
-        self.refresh_plan()
+        _show_message(self.record_note_label, f"{skipped} skipped.")
+        return True
+
+    def use_previous_well(self) -> bool:
+        """Take back a skip: start one well earlier, never before the plate's first free well."""
+        additive = self.design.additive(self._series.additive_id)
+        offset = self._well_offsets.get(additive.id, 0)
+        if not offset:
+            return False
+        self._well_offsets[additive.id] = offset - 1
+        if not self._apply_rule_wells(additive):
+            self._well_offsets[additive.id] = offset
+            return False
+        _show_message(self.record_note_label, "")
         return True
 
     def _source_wells_edited(self) -> None:
@@ -1768,6 +1721,16 @@ class ConditionTestEditor(PlanEditorBase):
         _set_flag(self.source_message_label, "attention", attention)
         _set_flag(self.source_box, "missing", attention)
         _show_message(self.source_message_label, message)
+        rule_ready = bool(
+            additive.source_wells and additive.source_plate.strip() and additive.source_plate_type
+        )
+        self.skip_button.setEnabled(rule_ready)
+        self.skip_button.setToolTip(
+            f"Don't use {additive.source_wells[0]}, e.g. if it has dust in it; use the next well."
+            if rule_ready else "Choose the plate first."
+        )
+        self.previous_button.setEnabled(rule_ready and self._well_offsets.get(additive.id, 0) > 0)
+        self.previous_button.setToolTip("Go back one well, undoing the last skip.")
         drop_missing = self.design.drop_volume_nl is None
         _set_flag(self.drop_volume_input, "missing", drop_missing)
         _set_flag(self.conditions_drop_input, "missing", drop_missing)

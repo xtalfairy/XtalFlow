@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol, Union
@@ -63,7 +62,6 @@ class WorksheetExportService:
         plan: WorksheetPlan,
         experiment_id: str,
         alternate_root: Path | None = None,
-        skipped: Mapping[str, Sequence[PlateRecordEntry]] | None = None,
     ):
         """Save the worksheets; a condition test also records the source wells it takes.
 
@@ -78,9 +76,7 @@ class WorksheetExportService:
         ):
             return publish()
         now = datetime.now(timezone.utc)
-        entries: dict[str, list[PlateRecordEntry]] = {
-            plate: list(items) for plate, items in (skipped or {}).items()
-        }
+        entries: dict[str, list[PlateRecordEntry]] = {}
         for plate, additive, wells in plan.source_wells_used():
             entries.setdefault(plate, []).append(
                 PlateRecordEntry(

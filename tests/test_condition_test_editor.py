@@ -37,7 +37,7 @@ def _editor(percents=("0", "10"), times=(0, 60), replicates=2, drop="100"):
     from xtalflow.ui.condition_test_editor import ConditionTestEditor
 
     _app()
-    dmso = Additive("dmso", "DMSO", Decimal("100"), "CS(=O)C", "LDV-1", "A1")
+    dmso = Additive("dmso", "DMSO", Decimal("100"), "CS(=O)C", "LDV-1", "A1", "384PP_DMSO2")
     series = new_series(dmso.id, tuple(Decimal(value) for value in percents), times, replicates)
     editor = ConditionTestEditor(ConditionTestDesign((dmso,), (series,), Decimal(drop)))
     # Held: the page owns the fields, and an unreferenced page is deleted.
@@ -207,7 +207,7 @@ def test_invalid_earlier_treatment_time_is_not_saved_as_zero() -> None:
     from xtalflow.ui.condition_test_editor import ConditionTestEditor
 
     _app()
-    dmso = Additive("dmso", "DMSO", Decimal("100"), "", "LDV-1", "A1")
+    dmso = Additive("dmso", "DMSO", Decimal("100"), "", "LDV-1", "A1", "384PP_DMSO2")
     glycerol = Additive("gly", "Glycerol", Decimal("50"), "", "LDV-1", "B1")
     design = ConditionTestDesign(
         (dmso, glycerol),
@@ -348,7 +348,9 @@ def test_missing_source_and_drop_volume_are_marked_where_they_are_entered() -> N
     editor.source_plate_input.setText("LDV-1")
     editor.source_plate_input.editingFinished.emit()
     assert not editor.source_plate_input.property("missing")
-    assert editor.source_message_label.text() == "Enter the source well; the ECHO worksheet needs it."
+    assert editor.source_message_label.text() == (
+        "Enter the source plate type and wells; the ECHO worksheet needs them."
+    )
 
 
 def test_draft_restores_the_design_selection_and_condition_ids() -> None:
@@ -432,3 +434,51 @@ def test_each_solvent_chip_removes_that_solvent_after_asking(monkeypatch) -> Non
     (chip,) = editor.series_group.buttons()
     assert chip.text() == "Solvent 2"
     assert not chip.findChild(QToolButton, "ChipClose").isEnabled()
+
+
+
+def test_source_box_comes_last_and_says_how_to_fill_the_source_wells() -> None:
+    editor = _editor(percents=("0", "10"), times=(0, 60), replicates=2)
+    page = editor.page.widget()
+    items = [page.layout().itemAt(index) for index in range(page.layout().count())]
+    placed = [item.layout() for item in items if item.layout() is not None]
+    last = placed[-1]
+    assert last.itemAt(0).widget() is editor.source_box
+
+    # 4 transfers of 10 nL from a 384PP well: 15 µL dead volume + 0.04 µL + 10 %.
+    assert editor.source_message_label.text() == (
+        "Fill A1 with 15.1 µL — 15 µL dead volume + 0.04 µL to transfer + 10 % margin."
+    )
+    assert not editor.source_message_label.property("attention")
+
+    editor.update_additive(source_plate_type="")
+    assert editor.design_error == "Choose the source plate type for DMSO."
+    assert editor.source_type_input.property("missing")
+    assert not editor.design_error_label.isVisibleTo(editor.page)  # said in the source box
+
+
+def test_several_source_wells_are_asked_for_when_one_is_not_enough() -> None:
+    # 90 % of 100 nL from a 100 % stock is 900 nL; a 1536LDV well gives four of them.
+    editor = _editor(percents=("90",), times=(0, 60), replicates=3)
+    editor.source_type_input.setCurrentIndex(editor.source_type_input.findData("1536LDV_DMSO"))
+    editor.source_type_input.activated.emit(editor.source_type_input.currentIndex())
+    assert editor.source_message_label.text() == (
+        "DMSO needs 2 source wells; 1 entered. Add 1 more, e.g. A2."
+    )
+    assert editor.source_message_label.property("attention")
+    assert editor.design_error == "DMSO needs 2 source wells; 1 entered. Add 1 more, e.g. A2."
+
+    editor.source_well_input.setText("a1, AF48")
+    editor.source_well_input.editingFinished.emit()
+    assert editor.design.additives[0].source_wells == ("A1", "AF48")
+    assert editor.design_error is None
+    assert editor.source_message_label.text() == (
+        "Needs 2 wells: A1 5 µL · AF48 3 µL (1 µL dead volume + transfers + 10 % margin each)."
+    )
+
+    # A well that is not on the plate is refused where it was typed.
+    editor.source_well_input.setText("A1, AG1")
+    editor.source_well_input.editingFinished.emit()
+    assert editor.source_well_input.property("invalid")
+    assert editor.source_message_label.text() == "'AG1' is not a well on a 1536-well plate."
+    assert editor.design.additives[0].source_wells == ("A1", "AF48")

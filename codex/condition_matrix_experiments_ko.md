@@ -180,3 +180,22 @@ T+1 h    ECHO round 2   Glycerol(복합 2단계)       PreTest-…-01_R2.csv
 | JSON | `default_replicates`, `kind`는 기본값이 아닐 때만 기록해 기존 확정본 snapshot이 바이트 단위로 같게 유지 |
 
 미결정: 허용 오차/장비 최소 부피(현재 2.5 nL 단위 반올림만 있음), 진짜 대조군 정의, 0 min의 실행 의미와 템플릿의 0 min 행 유지 여부, soaking 시작 기준(현재 전체 첫 분주 시작 = T+0, well별 분주 시각은 반영하지 않음).
+
+## 13. Dispensing source: plate 종류, dead volume, 준비할 well (2026-09-18)
+
+Dispensing source 상자는 Conditions 화면 맨 아래에 있다. 위의 조건이 정해져야 source에 무엇을 얼마나 넣을지 정해지기 때문이다.
+
+| plate | calibration | 작업 범위 µL (하한 = dead volume) |
+|---|---|---|
+| 384PP (PP-0200, Beckman 001-14555) | 384PP_DMSO2 | 15–65 |
+| 384PP | 384PP_AQ_GP3 (buffer, glycerol 보관 용액) | 15–65 |
+| 384PP | 384PP_AQ_CP (MPD, PEG 등 결정화 시약) | 20–50 |
+| 1536LDV (LP-0400, Beckman 001-6969) | 1536LDV_DMSO | 1–5.5 |
+
+출처: HKU CPOS Echo650 SOP Table 1, Beckman Echo Qualified Consumables 브로셔(384PP 20–65 µL, 1536LDV 1–5.5 µL, "fluid class에 따라 조금 다를 수 있음"). 1536LDV의 수용액·glycerol 범위는 찾지 못해 DMSO만 제공한다.
+
+- 한 well이 줄 수 있는 양 = (최대 − dead volume) / 1.1. 채울 양 = dead volume + 줄 양 × 1.1(10 % 여유), 0.1 µL 단위 올림, 최대를 넘지 않음. 여유분은 안내 문구에 항상 적는다.
+- transfer는 순서대로 첫 well부터 뽑고, 다음 transfer가 dead volume 아래로 내려가게 하면 다음 well로 넘어간다. 한 transfer는 나누지 않으며, 한 dose를 position에 나눈 행은 같은 well에서 뽑는다.
+- well이 부족하면 "DMSO needs 2 source wells; 1 entered. Add 1 more, e.g. A2."처럼 추가할 주소를 제안하고 진행을 막는다. 필요 이상 입력한 well은 "not needed"로 알린다. plate에 없는 주소(384: A1–P24, 1536: A1–AF48), 다른 첨가제와 같은 well은 거절한다.
+- 새 실험은 plate 종류가 필수. plate 종류가 없는 이전 설계·확정본은 예전처럼 한 well, 부피 검사 없음이며 저장 형식과 worksheet가 바이트 단위로 같다.
+- Review의 Source use, Worksheets 단계의 "Prepare the source plate before dispensing"에 well별 채울 양을 보여 준다.

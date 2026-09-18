@@ -1600,9 +1600,18 @@ class ViewerWindow(QMainWindow):
             for minute, group in plan.harvest_groups:
                 schedule.append((minute, f"harvest {', '.join(item.selected_well.well_address for item in group)}"))
         schedule.sort(key=lambda item: item[0])
-        editor.worksheets_step.show_schedule(tuple(
-            f"T+{format_minutes(minute)} · {action}" for minute, action in schedule
-        ))
+        preparation = ()
+        if isinstance(plan, ConditionTestPlan):
+            allocations = plan.source_allocations()
+            preparation = tuple(
+                f"{additive.name} · {additive.source_plate} {allocations[additive.id].fills_text()} "
+                f"({allocations[additive.id].fill_note})"
+                for additive in plan.design.additives if additive.id in allocations
+            )
+        editor.worksheets_step.show_schedule(
+            tuple(f"T+{format_minutes(minute)} · {action}" for minute, action in schedule),
+            preparation,
+        )
         if latest is None:
             # Not finalized yet: the footer names that and disables saving.
             editor.worksheets_step.show_result("", "muted")

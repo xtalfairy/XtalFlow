@@ -256,3 +256,81 @@ def test_typed_lists_are_read_without_guessing_and_corrections_keep_condition_id
     assert corrected.percents == (Decimal("0"), Decimal("12.5"))
     with pytest.raises(ValueError, match="already a column"):
         series.with_percent_changed(Decimal("10"), Decimal("0"))
+
+
+def _sourced(plate_type="1536LDV_DMSO", wells=("A1",), percents=("20",), replicates=4):
+    design = _design(drop="100", percents=percents, times=(0,), replicates=replicates)
+    (dmso,) = design.additives
+    dmso = replace(
+        dmso, source_well=wells[0], extra_source_wells=tuple(wells[1:]),
+        source_plate_type=plate_type,
+    )
+    return replace(design, additives=(dmso,))
+
+
+def test_source_wells_are_planned_from_the_design_and_match_the_plan() -> None:
+    from xtalflow.domain.condition_test import additive_transfers, source_statuses
+    from xtalflow.domain.worksheets import build_condition_echo_rounds
+
+    # 20 % of 100 nL needs 25 nL each; a 1536LDV well gives 4.09 µL, so 8 × 25 nL fits in one.
+    design = _sourced(replicates=8)
+    (status,) = source_statuses(design, additive_transfers(design), require_plate_type=True)
+    assert status.problem is None
+    assert status.allocation.instruction() == (
+        "Fill A1 with 1.3 µL — 1 µL dead volume + 0.2 µL to transfer + 10 % margin."
+    )
+    plan = build_condition_test_plan(design, _selection(8, positions=2))
+    assert plan.source_allocations()["dmso"] == status.allocation
+    ((_minute, rows),) = build_condition_echo_rounds(plan)
+    assert {row.source_well for row in rows} == {"A1"}
+    assert len(rows) == 16  # each dose split over two positions, from the same well
+
+
+def test_transfers_continue_in_the_next_source_well_and_shortages_name_the_wells_to_add() -> None:
+    from xtalflow.domain.condition_test import additive_transfers, source_statuses
+    from xtalflow.domain.worksheets import build_condition_echo_rounds
+
+    # 90 % of 100 nL from a 100 % stock is 900 nL: four per 1536LDV well.
+    design = _sourced(percents=("90",), replicates=6)
+    (status,) = source_statuses(design, additive_transfers(design), require_plate_type=True)
+    assert status.problem == "DMSO needs 2 source wells; 1 entered. Add 1 more, e.g. A2."
+    with pytest.raises(ValueError, match="DMSO needs 2 source wells"):
+        build_condition_test_plan(design, _selection(6))
+
+    design = _sourced(percents=("90",), replicates=6, wells=("A1", "A2"))
+    plan = build_condition_test_plan(design, _selection(6))
+    ((_minute, rows),) = build_condition_echo_rounds(plan)
+    assert [row.source_well for row in rows] == ["A1"] * 4 + ["A2"] * 2
+
+
+def test_source_wells_must_be_on_the_plate_and_not_shared() -> None:
+    from xtalflow.domain.condition_test import additive_transfers, source_statuses
+
+    design = _sourced(plate_type="384PP_DMSO2", wells=("A30",))
+    (status,) = source_statuses(design, additive_transfers(design), require_plate_type=True)
+    assert status.problem == "DMSO: 'A30' is not a well on a 384-well plate."
+
+    glycerol = Additive("gly", "Glycerol", Decimal("50"), "", "LDV-1", "A1", "384PP_AQ_GP3")
+    base = _sourced(plate_type="384PP_DMSO2")
+    series = new_series(glycerol.id, (Decimal("10"),), (0,), 1)
+    shared = replace(base, additives=(*base.additives, glycerol), series=(*base.series, series))
+    statuses = source_statuses(shared, additive_transfers(shared), require_plate_type=True)
+    assert statuses[1].problem == "DMSO and Glycerol use the same source well on LDV-1."
+
+
+def test_tests_without_a_plate_type_keep_their_saved_form_and_worksheets() -> None:
+    from xtalflow.domain.condition_test import additive_transfers, source_statuses
+    from xtalflow.domain.worksheets import build_condition_echo_rounds
+
+    design = _design(percents=("0", "10"), times=(0,), replicates=1)
+    assert "source_plate_type" not in design.to_json()
+    assert "extra_source_wells" not in design.to_json()
+    (status,) = source_statuses(design, additive_transfers(design), require_plate_type=False)
+    assert (status.allocation, status.problem) == (None, None)
+    (required,) = source_statuses(design, additive_transfers(design), require_plate_type=True)
+    assert required.problem == "Choose the source plate type for DMSO."
+    plan = build_condition_test_plan(design, _selection(2))
+    ((_minute, rows),) = build_condition_echo_rounds(plan)
+    assert [(row.source_plate, row.source_well) for row in rows] == [("LDV-1", "A1")]
+    sourced = _sourced(wells=("A1", "A2"))
+    assert ConditionTestDesign.from_json(sourced.to_json()) == sourced

@@ -136,7 +136,12 @@ def build_echo_worksheet(plan: FragmentScreenPlan) -> tuple[EchoWorksheetRow, ..
 def build_condition_echo_rounds(
     plan: ConditionTestPlan,
 ) -> tuple[tuple[int, tuple[EchoWorksheetRow, ...]], ...]:
-    """One ECHO run per dispense time: every addition due at that minute."""
+    """One ECHO run per dispense time: every addition due at that minute.
+
+    Each dose is drawn from the source well the plan allocated to it, so no well
+    is taken below its dead volume; a dose split between positions stays in one well.
+    """
+    source_wells = plan.source_wells_by_dose()
     rounds = []
     for minute, additions in plan.dispense_rounds:
         rows: list[EchoWorksheetRow] = []
@@ -152,7 +157,9 @@ def build_condition_echo_rounds(
                 rows.append(
                     EchoWorksheetRow(
                         additive.source_plate,
-                        additive.source_well,
+                        source_wells[
+                            (selected_well.image_key, dose.additive_id, dose.start_minutes)
+                        ],
                         per_position,
                         selected_well.plate_code,
                         selected_well.well_address,

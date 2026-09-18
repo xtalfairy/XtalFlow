@@ -2369,8 +2369,12 @@ def test_solvent_test_runs_from_conditions_to_saved_worksheets_and_reopens(
     assert editor.design_error == "Enter the source plate and well for DMSO."
     assert "Enter the source plate" in page.footer_status_label.text()
     assert editor.source_box.property("missing")
-    assert editor.source_message_label.text() == "Enter the source plate and well; the ECHO worksheet needs it."
+    assert editor.source_message_label.text() == (
+        "Enter the source plate type, plate and wells; the ECHO worksheet needs them."
+    )
     editor.update_additive(source_plate="LDV-1", source_well="a1")
+    assert editor.design_error == "Choose the source plate type for DMSO."
+    editor.update_additive(source_plate_type="384PP_DMSO2")
     assert editor.design_error is None
     assert not editor.source_box.property("missing")
     assert editor.source_well_input.text() == "A1"
@@ -2424,7 +2428,11 @@ def test_solvent_test_runs_from_conditions_to_saved_worksheets_and_reopens(
     assert editor.current_plan is not None
     assert window._finalize_plan(editor).experiment_id.startswith("PreTest-")
     window.go_to_step(WorkflowStep.WORKSHEETS)
-    assert editor.worksheets_step.schedule_label.text().splitlines()[:3] == [
+    preparation, schedule = editor.worksheets_step.schedule_label.text().split("\n\n")
+    assert preparation.splitlines()[0] == "Prepare the source plate before dispensing"
+    assert preparation.splitlines()[1].startswith("DMSO · LDV-1 A1 ")
+    assert preparation.splitlines()[1].endswith("(15 µL dead volume + transfers + 10 % margin)")
+    assert schedule.splitlines()[:3] == [
         "Planned schedule · relative to the start of dispensing (T+0)",
         "T+0 min · dispense with the ECHO file (11 wells)",
         "T+0 min · harvest A01a, A02a, A03a, A04a",

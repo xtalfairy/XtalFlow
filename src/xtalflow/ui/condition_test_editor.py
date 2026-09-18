@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import replace
 from decimal import Decimal, InvalidOperation
@@ -37,6 +38,8 @@ from PyQt5.QtWidgets import (
 
 from xtalflow.domain.condition_test import (
     Additive,
+    additive_transfers,
+    source_statuses,
     Condition,
     ConditionTestDesign,
     ConditionTestPlan,
@@ -51,6 +54,7 @@ from xtalflow.domain.condition_test import (
     parse_percent_list,
 )
 from xtalflow.domain.crystal_workflow import AssignmentOrder
+from xtalflow.domain.echo_source import SOURCE_PLATE_TYPES, parse_wells, source_plate_type
 from xtalflow.domain.labwork import build_condition_test_labworks
 from xtalflow.domain.plan_lifecycle import PlanningDraft
 from xtalflow.domain.worksheets import ECHO_HEADER, build_condition_echo_rounds, build_shifter_worksheet
@@ -93,6 +97,8 @@ QPushButton#LinkButton:disabled {{ color: {theme.TEXT_TERTIARY}; }}
 QFrame#SourceBox, QFrame#ConditionPanel {{ border: 1px solid {theme.BORDER};
     border-radius: 10px; background: {theme.SIDEBAR}; }}
 QFrame#SourceBox[missing="true"] {{ border-color: {theme.ATTENTION}; }}
+QLabel#SourceMessage {{ color: {theme.TEXT}; }}
+QLabel#SourceMessage[attention="true"] {{ color: {theme.ATTENTION}; }}
 QFrame#SourceBox QLabel, QFrame#ConditionPanel QLabel, QFrame#ConditionPanel QCheckBox {{
     background: transparent; }}
 QLineEdit[missing="true"], QDoubleSpinBox[missing="true"] {{
@@ -206,13 +212,35 @@ class ConditionTestEditor(PlanEditorBase):
 
         self.source_box = QFrame()
         self.source_box.setObjectName("SourceBox")
+        self.source_type_input = QComboBox()
+        self.source_type_input.addItem("Choose plate type", "")
+        for plate_type in SOURCE_PLATE_TYPES:
+            self.source_type_input.addItem(
+                f"{plate_type.label} ({_percent(plate_type.dead_ul)}–{_percent(plate_type.max_ul)} µL)",
+                plate_type.id,
+            )
+            self.source_type_input.setItemData(
+                self.source_type_input.count() - 1,
+                f"{plate_type.part_number} · calibration {plate_type.id}. The lower end is the "
+                "dead volume a well cannot give, the upper end its maximum fill.",
+                Qt.ToolTipRole,
+            )
+        # Wide enough for its longest name, so the working range is never cut off.
+        self.source_type_input.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         self.source_plate_input = QLineEdit()
         self.source_plate_input.setPlaceholderText("Plate, e.g. LDV-01")
-        self.source_plate_input.setMaximumWidth(160)
+        self.source_plate_input.setMaximumWidth(130)
         self.source_well_input = QLineEdit()
-        self.source_well_input.setPlaceholderText("Well, e.g. A1")
-        self.source_well_input.setMaximumWidth(100)
-        self.source_message_label = _message_label("FieldAttention")
+        self.source_well_input.setPlaceholderText("Wells, e.g. A1 or A1, A2")
+        self.source_well_input.setMinimumWidth(130)
+        self.source_well_input.setMaximumWidth(170)
+        self.source_message_label = QLabel()
+        self.source_message_label.setObjectName("SourceMessage")
+        self.source_message_label.setWordWrap(True)
+        self.source_message_label.hide()
+        # A problem shown in the source box, so it is not repeated above the table.
+        self._source_problem: str | None = None
+        self._source_well_error: str | None = None
 
         self.advanced_button = QToolButton()
         self.advanced_button.setCheckable(True)
@@ -351,8 +379,11 @@ class ConditionTestEditor(PlanEditorBase):
         self.source_plate_input.editingFinished.connect(
             lambda: self.update_additive(source_plate=self.source_plate_input.text())
         )
-        self.source_well_input.editingFinished.connect(
-            lambda: self.update_additive(source_well=self.source_well_input.text())
+        self.source_well_input.editingFinished.connect(self._source_wells_edited)
+        self.source_type_input.activated.connect(
+            lambda _index: self.update_additive(
+                source_plate_type=self.source_type_input.currentData()
+            )
         )
         self.smiles_input.editingFinished.connect(
             lambda: self.update_additive(smiles=self.smiles_input.text())
@@ -439,19 +470,23 @@ class ConditionTestEditor(PlanEditorBase):
             inputs.addSpacing(theme.SPACING_L)
         inputs.addStretch()
 
-        source = QHBoxLayout()
-        source.setContentsMargins(theme.SPACING_L, theme.SPACING_M, theme.SPACING_L, theme.SPACING_M)
-        source.setSpacing(theme.SPACING_M)
+        fields = QHBoxLayout()
+        fields.setSpacing(theme.SPACING_M)
         source_title = QLabel("Dispensing source")
         source_title.setStyleSheet("font-weight: 500;")
-        source.addWidget(source_title)
-        source.addSpacing(theme.SPACING_M)
-        source.addWidget(_field_label("Plate"))
-        source.addWidget(self.source_plate_input)
-        source.addWidget(_field_label("Well"))
-        source.addWidget(self.source_well_input)
-        source.addSpacing(theme.SPACING_M)
-        source.addWidget(self.source_message_label, 1)
+        fields.addWidget(source_title)
+        fields.addSpacing(theme.SPACING_M)
+        fields.addWidget(_field_label("Plate type"))
+        fields.addWidget(self.source_type_input)
+        fields.addWidget(_field_label("Plate"))
+        fields.addWidget(self.source_plate_input)
+        fields.addWidget(_field_label("Wells"))
+        fields.addWidget(self.source_well_input)
+        source = QVBoxLayout()
+        source.setContentsMargins(theme.SPACING_L, theme.SPACING_M, theme.SPACING_L, theme.SPACING_M)
+        source.setSpacing(theme.SPACING_S)
+        source.addLayout(fields)
+        source.addWidget(self.source_message_label)
         self.source_box.setLayout(source)
         source_row = QHBoxLayout()
         source_row.addWidget(self.source_box)
@@ -507,12 +542,14 @@ class ConditionTestEditor(PlanEditorBase):
         layout.addLayout(chips)
         layout.addLayout(inputs)
         layout.addWidget(self.name_error_label)
-        layout.addLayout(source_row)
         layout.addWidget(self.advanced_button, 0, Qt.AlignLeft)
         layout.addWidget(self.advanced_box)
         layout.addWidget(self.design_error_label)
         layout.addSpacing(theme.SPACING_S)
         layout.addLayout(matrix)
+        # Last: what to put in the source plate follows from everything above.
+        layout.addSpacing(theme.SPACING_M)
+        layout.addLayout(source_row)
         layout.addStretch()
         widget.setLayout(layout)
         # Small windows scroll the page instead of squeezing the table and panel.
@@ -611,13 +648,16 @@ class ConditionTestEditor(PlanEditorBase):
         texts = (
             (self.additive_name_input, additive.name),
             (self.source_plate_input, additive.source_plate),
-            (self.source_well_input, additive.source_well),
+            (self.source_well_input, ", ".join(additive.source_wells)),
             (self.smiles_input, additive.smiles),
         )
         for widget, text in texts:
             if not widget.property("invalid") and widget.text() != text:
                 widget.setText(text)
                 widget.setCursorPosition(0)
+        self.source_type_input.setCurrentIndex(
+            max(0, self.source_type_input.findData(additive.source_plate_type))
+        )
         self._load_earlier_treatment()
         self._render_chips()
 
@@ -700,6 +740,8 @@ class ConditionTestEditor(PlanEditorBase):
             _set_flag(widget, "invalid", False)
         for label in (self.before_error_label, self.name_error_label):
             _show_message(label, "")
+        self._source_well_error = None
+        _set_flag(self.source_well_input, "invalid", False)
         self._close_axis_editor()
 
     def _series_changed(self, index: int) -> None:
@@ -775,6 +817,28 @@ class ConditionTestEditor(PlanEditorBase):
         _show_message(self.name_error_label, f"Enter the {self._noun} name." if invalid else "")
         if not invalid:
             self.update_additive(name=name)
+
+    def _source_wells_edited(self) -> None:
+        """Wells as typed, "A1" or "A1, A2"; one not on the chosen plate changes nothing."""
+        current = self.design.additive(self._series.additive_id)
+        text = self.source_well_input.text()
+        try:
+            if current.source_plate_type:
+                plate_type = source_plate_type(current.source_plate_type)
+                wells = parse_wells(text, plate_type.well_format)
+            else:
+                wells = tuple(dict.fromkeys(item.upper() for item in re.split(r"[,\s]+", text) if item))
+        except ValueError as error:
+            self._source_well_error = _sentence(error)
+            _set_flag(self.source_well_input, "invalid", True)
+            self._render_source()
+            return
+        self._source_well_error = None
+        _set_flag(self.source_well_input, "invalid", False)
+        self.update_additive(
+            source_well=wells[0] if wells else "", extra_source_wells=tuple(wells[1:])
+        )
+        self._render_source()
 
     def update_additive(self, *, before=None, **changes) -> None:
         """Apply edits to the current additive; text fields are trimmed, wells upper-cased."""
@@ -1214,19 +1278,49 @@ class ConditionTestEditor(PlanEditorBase):
     # -- Rendering -------------------------------------------------------------------
 
     def _render_source(self) -> None:
+        """What is missing from the source, or how many wells to fill and with how much."""
         additive = self.design.additive(self._series.additive_id)
-        plate_missing = not additive.source_plate
-        well_missing = not additive.source_well
-        _set_flag(self.source_plate_input, "missing", plate_missing)
-        _set_flag(self.source_well_input, "missing", well_missing)
-        _set_flag(self.source_box, "missing", plate_missing or well_missing)
-        missing = " and ".join(
-            name for name, absent in (("plate", plate_missing), ("well", well_missing)) if absent
-        )
-        _show_message(
-            self.source_message_label,
-            f"Enter the source {missing}; the ECHO worksheet needs it." if missing else "",
-        )
+        absent = {
+            "plate type": not additive.source_plate_type,
+            "plate": not additive.source_plate,
+            "wells": not additive.source_well,
+        }
+        for field, name in (
+            (self.source_type_input, "plate type"), (self.source_plate_input, "plate"),
+            (self.source_well_input, "wells"),
+        ):
+            _set_flag(field, "missing", absent[name])
+        missing = [name for name, gone in absent.items() if gone]
+        status = None
+        try:
+            transfers = additive_transfers(self.design)
+        except ValueError:
+            transfers = None
+        else:
+            status = next(
+                (
+                    item for item in source_statuses(self.design, transfers, require_plate_type=True)
+                    if item.additive.id == additive.id
+                ),
+                None,
+            )
+        self._source_problem = status.problem if status is not None else None
+        if self._source_well_error:
+            message, attention = self._source_well_error, True
+        elif missing:
+            names = ", ".join(missing[:-1]) + (" and " if len(missing) > 1 else "") + missing[-1]
+            message, attention = f"Enter the source {names}; the ECHO worksheet needs them.", True
+        elif transfers is None:
+            message, attention = "Enter the initial drop volume to see how much to prepare.", False
+        elif status is None:
+            message, attention = "Nothing is transferred from this source.", False
+        elif status.problem:
+            message, attention = status.problem, True
+        else:
+            message, attention = status.allocation.instruction(), False
+        _set_flag(self.source_message_label, "attention", attention)
+        _set_flag(self.source_box, "missing", attention)
+        _show_message(self.source_message_label, message)
         drop_missing = self.design.drop_volume_nl is None
         _set_flag(self.drop_volume_input, "missing", drop_missing)
         _set_flag(self.conditions_drop_input, "missing", drop_missing)
@@ -1404,28 +1498,27 @@ class ConditionTestEditor(PlanEditorBase):
         conditions = self.design.conditions()
         if not conditions:
             return "Include at least one condition."
-        for condition in conditions:
-            try:
-                doses = compute_doses(self.design, condition)
-            except ValueError as error:
-                return str(error)
-            for dose in doses:
-                additive = self.design.additive(dose.additive_id)
-                if not additive.source_plate or not additive.source_well:
-                    return f"Enter the source plate and well for {additive.name}."
-        return None
+        try:
+            transfers = additive_transfers(self.design)
+        except ValueError as error:
+            return str(error)
+        # New tests must say which source plate they use, so its volumes can be checked.
+        return next(
+            (
+                status.problem
+                for status in source_statuses(self.design, transfers, require_plate_type=True)
+                if status.problem
+            ),
+            None,
+        )
 
     def refresh_plan(self) -> None:
         self._render_source()
         self._render_matrix()
         self._render_condition_panel()
         self.design_error = self._check_design()
-        current = self.design.additive(self._series.additive_id)
         # Problems already marked at their field are not repeated above the table.
-        shown_in_place = (
-            f"Enter the source plate and well for {current.name}.",
-            "Enter the initial drop volume.",
-        )
+        shown_in_place = (self._source_problem, "Enter the initial drop volume.")
         self._show_design_error(
             "" if self.design_error in shown_in_place else self.design_error or ""
         )
@@ -1499,8 +1592,13 @@ class ConditionTestEditor(PlanEditorBase):
         ]
         plan = self.current_plan
         if isinstance(plan, ConditionTestPlan):
+            allocations = plan.source_allocations()
             totals = ", ".join(
-                f"{additive.name} {total.normalize():f} nL from {additive.source_plate} {additive.source_well}"
+                f"{additive.name} · {additive.source_plate} {allocations[additive.id].fills_text()} "
+                f"({allocations[additive.id].fill_note})"
+                if additive.id in allocations
+                else f"{additive.name} {total.normalize():f} nL from {additive.source_plate} "
+                f"{additive.source_well}"
                 for additive, total in plan.additive_totals()
             )
             if totals:

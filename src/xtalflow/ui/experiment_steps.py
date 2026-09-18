@@ -190,12 +190,17 @@ class WorksheetsStep(QWidget):
         self._copy_text = copy_text
         self.copy_paths_button.setVisible(bool(copy_text))
 
-    def show_schedule(self, lines: tuple[str, ...]) -> None:
-        self.schedule_label.setText(
-            "Planned schedule · relative to the start of dispensing (T+0)\n" + "\n".join(lines)
-            if lines else ""
-        )
-        self.schedule_label.setVisible(bool(lines))
+    def show_schedule(self, lines: tuple[str, ...], preparation: tuple[str, ...] = ()) -> None:
+        """Source wells to fill first, then the planned times."""
+        blocks = []
+        if preparation:
+            blocks.append("Prepare the source plate before dispensing\n" + "\n".join(preparation))
+        if lines:
+            blocks.append(
+                "Planned schedule · relative to the start of dispensing (T+0)\n" + "\n".join(lines)
+            )
+        self.schedule_label.setText("\n\n".join(blocks))
+        self.schedule_label.setVisible(bool(blocks))
 
     def _toggle_mxlive(self, visible: bool) -> None:
         self.mxlive_table.setVisible(visible)

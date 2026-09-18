@@ -16,6 +16,13 @@ from uuid import uuid4
 
 from .crystal_selection import CrystalSelection, SelectedWell, order_selected_wells
 from .crystal_workflow import AssignmentOrder
+from .echo_source import (
+    SourceAllocation,
+    allocate_source_wells,
+    normalize_well,
+    source_plate_type,
+    suggest_wells,
+)
 from .fragment_screening import TRANSFER_INCREMENT_NL
 
 HUNDRED = Decimal("100")
@@ -98,12 +105,20 @@ class Additive:
     smiles: str = ""
     source_plate: str = ""
     source_well: str = ""
+    # ECHO calibration of the source plate (see echo_source); "" for tests set up before it.
+    source_plate_type: str = ""
+    # Further wells used once the first cannot give more without going below its dead volume.
+    extra_source_wells: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ValueError("additive name must not be empty")
         if not 0 < self.stock_percent <= HUNDRED:
             raise ValueError(f"{self.name} stock must be above 0% and at most 100%")
+
+    @property
+    def source_wells(self) -> tuple[str, ...]:
+        return tuple(well for well in (self.source_well, *self.extra_source_wells) if well)
 
 
 @dataclass(frozen=True)
@@ -297,14 +312,7 @@ class ConditionTestDesign:
                 ),
                 "purpose": self.purpose,
                 "available_crystals": self.available_crystals,
-                "additives": [
-                    {
-                        "id": item.id, "name": item.name,
-                        "stock_percent": str(item.stock_percent), "smiles": item.smiles,
-                        "source_plate": item.source_plate, "source_well": item.source_well,
-                    }
-                    for item in self.additives
-                ],
+                "additives": [_additive_payload(item) for item in self.additives],
                 "series": [
                     {
                         "id": series.id,
@@ -336,7 +344,8 @@ class ConditionTestDesign:
                 Additive(
                     item["id"], item["name"], Decimal(item["stock_percent"]),
                     item.get("smiles", ""), item.get("source_plate", ""),
-                    item.get("source_well", ""),
+                    item.get("source_well", ""), item.get("source_plate_type", ""),
+                    tuple(item.get("extra_source_wells", ())),
                 )
                 for item in data["additives"]
             ),
@@ -372,6 +381,20 @@ def _treatment_payload(treatment: Treatment) -> dict:
         "final_percent": str(treatment.final_percent),
         "minutes": treatment.minutes,
     }
+
+
+def _additive_payload(item: Additive) -> dict:
+    payload = {
+        "id": item.id, "name": item.name,
+        "stock_percent": str(item.stock_percent), "smiles": item.smiles,
+        "source_plate": item.source_plate, "source_well": item.source_well,
+    }
+    # Written only when set, so tests finalized before plate types keep identical snapshots.
+    if item.source_plate_type:
+        payload["source_plate_type"] = item.source_plate_type
+    if item.extra_source_wells:
+        payload["extra_source_wells"] = list(item.extra_source_wells)
+    return payload
 
 
 def _treatment_from_payload(item: dict) -> Treatment:
@@ -465,6 +488,88 @@ def compute_doses(design: ConditionTestDesign, condition: Condition) -> tuple[Do
     return tuple(doses)
 
 
+def additive_transfers(design: ConditionTestDesign) -> dict[str, tuple[Decimal, ...]]:
+    """Every transfer each additive makes, in the order the plan gives conditions their wells."""
+    transfers: dict[str, list[Decimal]] = {}
+    for condition in design.conditions():
+        doses = compute_doses(design, condition)
+        for _replicate in range(condition.replicates):
+            for dose in doses:
+                transfers.setdefault(dose.additive_id, []).append(dose.volume_nl)
+    return {additive_id: tuple(volumes) for additive_id, volumes in transfers.items()}
+
+
+@dataclass(frozen=True)
+class SourceStatus:
+    """One dosed additive's source: its well plan, or the first thing to fix."""
+
+    additive: Additive
+    allocation: SourceAllocation | None
+    problem: str | None
+
+
+def source_statuses(
+    design: ConditionTestDesign,
+    transfers: dict[str, tuple[Decimal, ...]],
+    require_plate_type: bool,
+) -> tuple[SourceStatus, ...]:
+    """Check each dosed additive's source plate and wells against what it must give.
+
+    Tests set up before plate types existed have none; they keep one well and no
+    volume check unless a plate type is required.
+    """
+    statuses = []
+    taken: dict[tuple[str, str], str] = {}
+    # Every well any additive names, so suggestions never point at one already in use.
+    occupied = {
+        (item.source_plate.strip(), well.strip().upper())
+        for item in design.additives for well in item.source_wells
+    }
+    for additive in design.additives:
+        if additive.id not in transfers:
+            continue
+        name = additive.name
+        plate = additive.source_plate.strip()
+        if not plate or not additive.source_well.strip():
+            missing = " and ".join(
+                part for part, absent in (("plate", not plate), ("well", not additive.source_well.strip()))
+                if absent
+            )
+            statuses.append(SourceStatus(additive, None, f"Enter the source {missing} for {name}."))
+            continue
+        if not additive.source_plate_type:
+            problem = f"Choose the source plate type for {name}." if require_plate_type else None
+            statuses.append(SourceStatus(additive, None, problem))
+            continue
+        try:
+            plate_type = source_plate_type(additive.source_plate_type)
+            wells = tuple(normalize_well(well, plate_type.well_format) for well in additive.source_wells)
+            allocation = allocate_source_wells(plate_type, transfers[additive.id], wells)
+        except ValueError as error:
+            statuses.append(SourceStatus(additive, None, f"{name}: {error}."))
+            continue
+        shared = next(
+            (taken[(plate, well)] for well in wells if (plate, well) in taken), None
+        )
+        for well in wells:
+            taken.setdefault((plate, well), name)
+        if shared is not None:
+            problem = f"{shared} and {name} use the same source well on {plate}."
+        elif allocation.missing:
+            suggested = suggest_wells(
+                plate_type.well_format, wells[-1], allocation.missing,
+                (well for (other_plate, well) in occupied if other_plate == plate),
+            )
+            problem = (
+                f"{name} needs {allocation.wells_needed} source wells; {len(wells)} entered. "
+                f"Add {allocation.missing} more, e.g. {', '.join(suggested)}."
+            )
+        else:
+            problem = None
+        statuses.append(SourceStatus(additive, allocation, problem))
+    return tuple(statuses)
+
+
 @dataclass(frozen=True)
 class ConditionAssignment:
     selected_well: SelectedWell
@@ -505,6 +610,40 @@ class ConditionTestPlan:
             groups.setdefault(assignment.harvest_minutes, []).append(assignment)
         return tuple((minute, tuple(groups[minute])) for minute in sorted(groups))
 
+    def source_allocations(self) -> dict[str, SourceAllocation]:
+        """Which source well each transfer is drawn from, for additives with a plate type."""
+        transfers: dict[str, list[Decimal]] = {}
+        for assignment in self.assignments:
+            for dose in assignment.doses:
+                transfers.setdefault(dose.additive_id, []).append(dose.volume_nl)
+        allocations = {}
+        for additive in self.design.additives:
+            if additive.id in transfers and additive.source_plate_type:
+                plate_type = source_plate_type(additive.source_plate_type)
+                wells = tuple(
+                    normalize_well(well, plate_type.well_format) for well in additive.source_wells
+                )
+                allocations[additive.id] = allocate_source_wells(
+                    plate_type, transfers[additive.id], wells
+                )
+        return allocations
+
+    def source_wells_by_dose(self) -> dict[tuple[str, str, int], str]:
+        """Source well per (selected well, additive, dispense minute)."""
+        allocations = self.source_allocations()
+        cursor = {additive_id: 0 for additive_id in allocations}
+        wells = {}
+        for assignment in self.assignments:
+            for dose in assignment.doses:
+                key = (assignment.selected_well.image_key, dose.additive_id, dose.start_minutes)
+                if dose.additive_id in allocations:
+                    allocation = allocations[dose.additive_id]
+                    wells[key] = allocation.transfer_wells[cursor[dose.additive_id]]
+                    cursor[dose.additive_id] += 1
+                else:
+                    wells[key] = self.design.additive(dose.additive_id).source_well
+        return wells
+
     def additive_totals(self) -> tuple[tuple[Additive, Decimal], ...]:
         """How much of each additive the source wells must hold, before dead volume."""
         totals: dict[str, Decimal] = {}
@@ -527,11 +666,9 @@ def build_condition_test_plan(
     if not conditions:
         raise ValueError("Include at least one condition.")
     doses_by_condition = {condition.id: compute_doses(design, condition) for condition in conditions}
-    for condition in conditions:
-        for dose in doses_by_condition[condition.id]:
-            additive = design.additive(dose.additive_id)
-            if not additive.source_plate.strip() or not additive.source_well.strip():
-                raise ValueError(f"Enter the source plate and well for {additive.name}.")
+    for status in source_statuses(design, additive_transfers(design), require_plate_type=False):
+        if status.problem:
+            raise ValueError(status.problem)
     slots = [
         (condition, replicate)
         for condition in conditions

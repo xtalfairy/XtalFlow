@@ -115,7 +115,7 @@ QLabel#SourceMessage {{ color: {theme.TEXT}; }}
 QLabel#SourceMessage[attention="true"] {{ color: {theme.ATTENTION}; }}
 QFrame#SourceBox QLabel, QFrame#ConditionPanel QLabel, QFrame#ConditionPanel QCheckBox {{
     background: transparent; }}
-QLineEdit[missing="true"], QDoubleSpinBox[missing="true"] {{
+QLineEdit[missing="true"], QDoubleSpinBox[missing="true"], QComboBox[missing="true"] {{
     border-color: {theme.ATTENTION}; background: {theme.ATTENTION_SOFT}; }}
 QLineEdit[invalid="true"] {{ border-color: {theme.ERROR}; background: {theme.ERROR_SOFT}; }}
 QLabel#AxisCaption {{ color: {theme.TEXT_MUTED}; font-weight: 500; background: transparent; }}
@@ -276,6 +276,8 @@ class ConditionTestEditor(PlanEditorBase):
         )
         # Set when the user asked for a new plate, so its new name is not questioned.
         self._new_plate_intent = False
+        # The shared plates as last listed; None until read.
+        self._plate_list: tuple[PlateSummary, ...] | None = None
         self.next_wells_button = QPushButton("Use next wells")
         self.next_wells_button.setObjectName("LinkButton")
         self.next_wells_button.setToolTip(
@@ -906,11 +908,13 @@ class ConditionTestEditor(PlanEditorBase):
         self._source_record = record
         self._username = username
         self._plate_records = {}
+        self._plate_list = None
         self.refresh_plan()
 
     def refresh_plate_records(self) -> None:
         """Read the shared records again, e.g. after this experiment's wells were recorded."""
         self._plate_records = {}
+        self._plate_list = None
         self.refresh_plan()
 
     def _plate_entries(self, plate: str, fresh: bool = False) -> tuple[PlateRecordEntry, ...] | None:
@@ -952,9 +956,24 @@ class ConditionTestEditor(PlanEditorBase):
             _show_message(self.record_note_label, f"{_sentence(error)} {RECHECK_NOTE}")
             return None
 
+    def _shared_plate_hint(self) -> str:
+        """Where the shared plates are, said while no plate is chosen, so the menu is found."""
+        if self._source_record is None:
+            return ""
+        if self._plate_list is None:
+            self._plate_list = self._shared_plates() or ()
+        count = len(self._plate_list)
+        if not count:
+            return " No shared plates yet: start one with Shared plates ▾ → New plate…"
+        return (
+            f" Choose one of {count} shared plate{'' if count == 1 else 's'} from Shared plates ▾, "
+            "or start a new one there."
+        )
+
     def _fill_plate_menu(self) -> None:
         self.plate_menu.clear()
         plates = self._shared_plates()
+        self._plate_list = plates
         if plates is None:
             self.plate_menu.addAction("The shared record cannot be read now").setEnabled(False)
         elif not plates:
@@ -1620,6 +1639,8 @@ class ConditionTestEditor(PlanEditorBase):
         elif missing:
             names = ", ".join(missing[:-1]) + (" and " if len(missing) > 1 else "") + missing[-1]
             message, attention = f"Enter the source {names}; the ECHO worksheet needs them.", True
+            if "plate" in missing:
+                message += self._shared_plate_hint()
         elif transfers is None:
             message, attention = "Enter the initial drop volume to see how much to prepare.", False
         elif status is None:

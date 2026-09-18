@@ -2370,7 +2370,8 @@ def test_solvent_test_runs_from_conditions_to_saved_worksheets_and_reopens(
     assert "Enter the source plate" in page.footer_status_label.text()
     assert editor.source_box.property("missing")
     assert editor.source_message_label.text() == (
-        "Enter the source plate type, plate and wells; the ECHO worksheet needs them."
+        "Enter the source plate type, plate and wells; the ECHO worksheet needs them. "
+        "No shared plates yet: start one with Shared plates ▾ → New plate…"
     )
     editor.update_additive(source_plate="LDV-1", source_well="a1")
     assert editor.design_error == "Choose the source plate type for DMSO."

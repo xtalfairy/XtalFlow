@@ -632,3 +632,20 @@ def test_a_plate_type_that_does_not_match_the_shared_plate_is_refused(tmp_path) 
     assert editor.design_error == (
         "SOLVENT-01 is a 1536LDV plate; choose a 1536LDV plate type for DMSO."
     )
+
+
+
+def test_while_no_plate_is_chosen_the_source_box_says_where_shared_plates_are(tmp_path) -> None:
+    record = _shared_plate(tmp_path)
+    editor = _editor(percents=("0", "10"), times=(0,), replicates=2)
+    editor.update_additive(source_plate="", source_well="")
+    editor.set_source_record(record, "lee")
+    assert editor.source_message_label.text().endswith(
+        "No shared plates yet: start one with Shared plates ▾ → New plate…"
+    )
+
+    record.append("SOLVENT-01", [_plate_entry(["A1"])])
+    editor.refresh_plate_records()
+    assert editor.source_message_label.text().endswith(
+        "Choose one of 1 shared plate from Shared plates ▾, or start a new one there."
+    )

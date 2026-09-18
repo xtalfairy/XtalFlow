@@ -10,7 +10,7 @@ from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
 from PyQt5 import sip
-from PyQt5.QtCore import QEvent, QPoint, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QEvent, QPoint, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QCursor
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -258,12 +258,8 @@ class ConditionTestEditor(PlanEditorBase):
         self.source_plate_input = _PlateChoice()
         self.source_plate_input.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         self.source_plate_input.setMinimumWidth(200)
-        self.new_plate_input = QLineEdit()
-        self.new_plate_input.setPlaceholderText("New plate name")
-        self.new_plate_input.setToolTip("e.g. SOLVENT-02. A name already shared continues that plate.")
-        self.new_plate_input.setMinimumWidth(200)
-        self.new_plate_input.hide()
-        self.new_plate_input.installEventFilter(self)
+        # True while the Plate field takes a new plate's name typed into it.
+        self._naming_plate = False
         self.new_plate_cancel_button = QPushButton("Cancel")
         self.new_plate_cancel_button.setObjectName("LinkButton")
         self.new_plate_cancel_button.hide()
@@ -448,7 +444,6 @@ class ConditionTestEditor(PlanEditorBase):
         self.replicates_input.valueChanged.connect(self._default_replicates_changed)
         self.source_plate_input.opening.connect(lambda: self._fill_plate_choices(fresh=True))
         self.source_plate_input.activated.connect(self._plate_chosen)
-        self.new_plate_input.editingFinished.connect(self._new_plate_named)
         self.new_plate_cancel_button.clicked.connect(self._end_new_plate)
         self.source_well_input.editingFinished.connect(self._source_wells_edited)
         self.source_type_input.activated.connect(
@@ -552,7 +547,6 @@ class ConditionTestEditor(PlanEditorBase):
         fields.setSpacing(theme.SPACING_M)
         fields.addWidget(_field_label("Plate"))
         fields.addWidget(self.source_plate_input)
-        fields.addWidget(self.new_plate_input)
         fields.addWidget(self.new_plate_cancel_button)
         fields.addSpacing(theme.SPACING_L)
         fields.addWidget(_field_label("Plate type"))
@@ -990,6 +984,8 @@ class ConditionTestEditor(PlanEditorBase):
 
     def _fill_plate_choices(self, fresh: bool = False) -> None:
         """Plate list: shared plates with how far they are used, this plate, New plate…."""
+        if self._naming_plate:
+            return  # Rebuilding the list would wipe the name being typed.
         self._read_plate_list(fresh)
         combo = self.source_plate_input
         current = self.design.additive(self._series.additive_id).source_plate.strip()
@@ -1016,8 +1012,11 @@ class ConditionTestEditor(PlanEditorBase):
     def _plate_chosen(self, index: int) -> None:
         data = self.source_plate_input.itemData(index)
         if data == NEW_PLATE:
-            self._begin_new_plate()
+            if not self._naming_plate:
+                self._begin_new_plate()
             return
+        if self._naming_plate:
+            self._end_new_plate()
         if not data:
             return
         summary = next((item for item in self._plate_list or () if item.name == data), None)
@@ -1034,38 +1033,51 @@ class ConditionTestEditor(PlanEditorBase):
         self._source_plate_edited(**changes)
 
     def _begin_new_plate(self) -> None:
-        """The Plate field turns into a field for the new plate's name, ready for typing."""
-        self.source_plate_input.hide()
-        self.new_plate_input.clear()
-        self.new_plate_input.show()
+        """The Plate field itself takes the new plate's name.
+
+        Typing goes where the list was, so the focus never has to move to another
+        field, from which closing the list could take it away.
+        """
+        combo = self.source_plate_input
+        self._naming_plate = True
+        combo.setEditable(True)
+        combo.setInsertPolicy(QComboBox.NoInsert)
+        # No completion: typing "S" must not turn into a shared plate's whole label.
+        combo.setCompleter(None)
+        line = combo.lineEdit()
+        line.setPlaceholderText("New plate name")
+        line.setToolTip("e.g. SOLVENT-02. A name already shared continues that plate.")
+        line.returnPressed.connect(self._new_plate_named)
+        # Escape reaches the combo, which holds the focus, or its text field.
+        line.installEventFilter(self)
+        combo.installEventFilter(self)
+        combo.setEditText("")
         self.new_plate_cancel_button.show()
         _show_message(self.record_note_label, "Name the new plate; its wells start at A1.")
-        # After the list has closed; closing it would otherwise take the focus back.
-        QTimer.singleShot(0, lambda: self.new_plate_input.setFocus(Qt.OtherFocusReason))
+        combo.setFocus(Qt.OtherFocusReason)
 
     def _end_new_plate(self) -> None:
-        self.new_plate_input.hide()
+        combo = self.source_plate_input
+        if self._naming_plate:
+            self._naming_plate = False
+            combo.setEditable(False)
         self.new_plate_cancel_button.hide()
-        self.source_plate_input.show()
         self._fill_plate_choices()
         if self.record_note_label.text() == "Name the new plate; its wells start at A1.":
             _show_message(self.record_note_label, "")
 
     def enter_new_plate(self, name: str) -> None:
         self._begin_new_plate()
-        self.new_plate_input.setText(name)
+        self.source_plate_input.setEditText(name)
         self._new_plate_named()
 
     def _new_plate_named(self) -> None:
         """A new plate starts at its first well; a name already shared continues that plate."""
-        if not self.new_plate_input.isVisibleTo(self.source_box):
-            return  # A late signal from the field as it closes.
-        name = self.new_plate_input.text().strip()
-        if not name:
-            if not self.new_plate_input.hasFocus():
-                self._end_new_plate()  # Left empty: back to the list.
+        if not self._naming_plate:
             return
-        self.new_plate_input.clear()
+        name = self.source_plate_input.currentText().strip()
+        if not name:
+            return  # Still to be typed; Cancel or Escape goes back to the list.
         self._end_new_plate()
         self._read_plate_list(fresh=True)
         known = {summary.name.casefold(): summary for summary in self._plate_list or ()}
@@ -1548,10 +1560,10 @@ class ConditionTestEditor(PlanEditorBase):
         if watched is table.verticalHeader().viewport():
             return self._header_event(False, event) or super().eventFilter(watched, event)
         if (
-            watched is self.new_plate_input and event.type() == QEvent.KeyPress
-            and event.key() == Qt.Key_Escape
+            self._naming_plate
+            and watched in (self.source_plate_input, self.source_plate_input.lineEdit())
+            and event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape
         ):
-            self.new_plate_input.clear()
             self._end_new_plate()
             return True
         if watched is self.axis_editor and event.type() == QEvent.KeyPress:

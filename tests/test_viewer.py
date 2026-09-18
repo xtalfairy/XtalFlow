@@ -2375,7 +2375,8 @@ def test_solvent_test_runs_from_conditions_to_saved_worksheets_and_reopens(
     assert not editor.source_box.property("missing")
     assert editor.source_well_input.text() == "A1"
     assert editor.matrix_table.horizontalHeaderItem(2).text() == "10 %"
-    assert "10 % → 10 nL (9.1 %)" in editor.dose_label.text()
+    editor.select_condition(0, 2)
+    assert (editor.transfer_label.text(), editor.actual_label.text()) == ("10 nL", "9.1 % DMSO")
     assert page.footer_status_label.text() == "✓ 16 conditions · 32 wells required"
     assert page.footer_notes_label.text() == "No wells selected yet"
     assert page.primary_button.text() == "Select 32 wells"

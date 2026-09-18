@@ -64,7 +64,6 @@ MATRIX_MAX_HEIGHT = 360
 PANEL_WIDTH = 300
 ROW_AXIS_WIDTH = 200
 # Beyond this many concentrations the per-column transfer line would wrap into a paragraph.
-DOSE_LINE_COLUMNS = 6
 DURATION_HINT = "Minutes or hours: 30, 45 min, 1 h, 1.5 h, 1 h 30 min."
 MAX_WELLS_PER_CONDITION = 24
 
@@ -266,9 +265,6 @@ class ConditionTestEditor(PlanEditorBase):
         vertical.setDefaultSectionSize(CELL_HEIGHT)
         vertical.setDefaultAlignment(Qt.AlignRight | Qt.AlignVCenter)
         vertical.setHighlightSections(False)
-        self.dose_label = QLabel()
-        self.dose_label.setWordWrap(True)
-        self.dose_label.setObjectName("Muted")
 
         # The selected condition, edited beside the table.
         self.condition_panel = QFrame()
@@ -307,12 +303,6 @@ class ConditionTestEditor(PlanEditorBase):
         self.remove_time_button.setToolTip("Remove this soaking duration row")
         self.remove_time_button.setObjectName("LinkButton")
 
-        self.available_input = QSpinBox()
-        self.available_input.setRange(0, 9999)
-        self.available_input.setSpecialValueText("—")
-        self.available_input.setMaximumWidth(90)
-        self.budget_label = QLabel()
-        self.budget_label.setObjectName("Muted")
         self.design_error_label = QLabel()
         self.design_error_label.setWordWrap(True)
         self.design_error_label.setStyleSheet(theme.status_style("attention"))
@@ -368,7 +358,6 @@ class ConditionTestEditor(PlanEditorBase):
         self.condition_include_input.toggled.connect(self._condition_include_changed)
         self.remove_percent_button.clicked.connect(lambda: self._remove_selected_axis(columns=True))
         self.remove_time_button.clicked.connect(lambda: self._remove_selected_axis(columns=False))
-        self.available_input.valueChanged.connect(self._available_changed)
         self.order_input.currentIndexChanged.connect(self.refresh_plan)
         self._load_design_inputs()
         self.refresh_plan()
@@ -497,23 +486,15 @@ class ConditionTestEditor(PlanEditorBase):
         grid.setHorizontalSpacing(theme.SPACING_L)
         grid.setVerticalSpacing(theme.SPACING_S)
         grid.addLayout(column_axis_box, 0, 1)
-        grid.addWidget(row_axis_widget, 1, 0, 3, 1, Qt.AlignTop)
+        grid.addWidget(row_axis_widget, 1, 0, 2, 1, Qt.AlignTop)
         grid.addWidget(self.matrix_table, 1, 1)
-        grid.addWidget(self.dose_label, 2, 1)
         grid.setColumnStretch(1, 1)
-        grid.setRowStretch(3, 1)
+        grid.setRowStretch(2, 1)
 
         matrix = QHBoxLayout()
         matrix.setSpacing(theme.SPACING_XL)
         matrix.addLayout(grid, 1)
         matrix.addWidget(self.condition_panel, 0, Qt.AlignTop)
-
-        budget = QHBoxLayout()
-        budget.setSpacing(theme.SPACING_M)
-        budget.addWidget(_field_label("Crystals on hand (estimate)"))
-        budget.addWidget(self.available_input)
-        budget.addWidget(self.budget_label)
-        budget.addStretch()
 
         widget = QWidget()
         widget.setObjectName("ConditionsPage")
@@ -531,8 +512,6 @@ class ConditionTestEditor(PlanEditorBase):
         layout.addWidget(self.design_error_label)
         layout.addSpacing(theme.SPACING_S)
         layout.addLayout(matrix)
-        layout.addSpacing(theme.SPACING_S)
-        layout.addLayout(budget)
         layout.addStretch()
         widget.setLayout(layout)
         # Small windows scroll the page instead of squeezing the table and panel.
@@ -632,7 +611,6 @@ class ConditionTestEditor(PlanEditorBase):
         values = (
             (self.drop_volume_input, float(self.design.drop_volume_nl or 0)),
             (self.conditions_drop_input, float(self.design.drop_volume_nl or 0)),
-            (self.available_input, self.design.available_crystals or 0),
             (self.stock_input, float(additive.stock_percent)),
             (self.replicates_input, self.design.default_replicates),
         )
@@ -883,10 +861,6 @@ class ConditionTestEditor(PlanEditorBase):
             self.design, drop_volume_nl=Decimal(str(value)) if value > 0 else None
         )
         self._load_design_inputs()
-        self.refresh_plan()
-
-    def _available_changed(self, value: int) -> None:
-        self.design = replace(self.design, available_crystals=value or None)
         self.refresh_plan()
 
     def _default_replicates_changed(self, value: int) -> None:
@@ -1263,45 +1237,6 @@ class ConditionTestEditor(PlanEditorBase):
         else:
             self.harvest_label.setText(f"T+{format_minutes(harvest)} after dispensing")
 
-    def _render_doses(self) -> None:
-        series = self._series
-        parts = []
-        for percent in series.percents:
-            if percent == 0:
-                continue
-            # Doses do not depend on soaking time, so one probe per column is enough.
-            probe = Condition(
-                "probe", series.id,
-                (*series.before, Treatment(series.additive_id, percent, 0)), 1,
-            )
-            try:
-                dose = compute_doses(self.design, probe)[-1]
-            except ValueError:
-                continue
-            parts.append(
-                f"{_percent(percent)} % → {dose.volume_nl.normalize():f} nL ({dose.actual_percent} %)"
-            )
-        if self.design.drop_volume_nl is None:
-            self.dose_label.setText("Enter the initial drop volume to see transfer volumes.")
-        elif len(parts) > DOSE_LINE_COLUMNS:
-            self.dose_label.setText("Select a condition to see its transfer volume and actual concentration.")
-        elif parts:
-            self.dose_label.setText("Transfer / well (actual): " + " · ".join(parts))
-        else:
-            self.dose_label.setText("")
-
-    def _update_budget(self) -> None:
-        needed = self.design.required_crystals
-        available = self.design.available_crystals
-        if not available:
-            self.budget_label.setText("")
-        elif needed > available:
-            self.budget_label.setText(f"{needed - available} fewer than the {_wells(needed)} required")
-        elif needed < available:
-            self.budget_label.setText(f"{available - needed} more than the {_wells(needed)} required")
-        else:
-            self.budget_label.setText(f"Matches the {_wells(needed)} required")
-
     def _check_design(self) -> str | None:
         conditions = self.design.conditions()
         if not conditions:
@@ -1321,8 +1256,6 @@ class ConditionTestEditor(PlanEditorBase):
         self._render_source()
         self._render_matrix()
         self._render_condition_panel()
-        self._render_doses()
-        self._update_budget()
         self.design_error = self._check_design()
         current = self.design.additive(self._series.additive_id)
         # Problems already marked at their field are not repeated above the table.

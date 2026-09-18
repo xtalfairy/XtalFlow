@@ -174,7 +174,7 @@ T+1 h    ECHO round 2   Glycerol(복합 2단계)       PreTest-…-01_R2.csv
 | 앞 처리·SMILES·추가 solvent | `Advanced` 접힘 영역으로 이동, 팝업(AdditiveDialog) 제거. 앞 처리 시간은 검증 후에만 적용 |
 | solvent 칩 | 한 종만 있어도 탭처럼 칩이 보이고, 그 오른쪽에 `+ Add solvent`. 칩마다 작은 × 로 그 solvent를 지운다(마지막 것만이 아니라 아무거나, 마지막 하나는 지울 수 없음). 조건이 있으면 몇 개 조건·well이 사라지는지 묻고 지운다. 열려 있던 solvent는 그대로 열려 있다 |
 | 하단 | 상태 `16 conditions · 32 wells required`, 옆에 실제 선택 `Selected 20 wells · 2 will remain unused` / `… more needed` / `No wells selected yet`. 버튼 `Select 32 wells`, `Select 5 more wells`, 충분하면 `Review assignments`(Review로 이동) |
-| 제거 | 미리보기 없이 모든 반복을 1로 바꾸던 "Use 1 crystal each" 버튼. Crystals on hand는 추정값으로만 표시 |
+| 제거 | 미리보기 없이 모든 반복을 1로 바꾸던 "Use 1 crystal each" 버튼. 표 아래 분주량 요약 줄과 Crystals on hand 입력칸(우측 상자·하단 요약과 숫자가 겹쳐서). `available_crystals` 값은 데이터에만 남는다 |
 | 일정 표현 | Review 탭 `Planned schedule`, Worksheets `Planned schedule · relative to the start of dispensing (T+0)`. Review의 순서 선택은 `Assign wells in`(재배정임을 도움말로 명시) |
 | JSON | `default_replicates`, `kind`는 기본값이 아닐 때만 기록해 기존 확정본 snapshot이 바이트 단위로 같게 유지 |
 

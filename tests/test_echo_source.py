@@ -73,10 +73,36 @@ def test_wells_are_checked_against_the_plate_they_are_on() -> None:
         with pytest.raises(ValueError, match=f"is not a well on a {well_format}-well plate"):
             normalize_well(address, well_format)
     assert parse_wells("a1, A2 a1", 384) == ("A1", "A2")
-    assert suggest_wells(384, "A23", 3, taken={"B1"}) == ("A24", "B2", "B3")
+    # Wells are used down each column: A1 → P1, then A2.
+    assert suggest_wells(384, "O1", 3, taken={"A2"}) == ("P1", "B2", "C2")
 
 
 def test_wells_entered_beyond_what_is_needed_are_named_as_not_needed() -> None:
     allocation = allocate_source_wells(PP_DMSO, [Decimal("10")], ["A1", "A2", "A3"])
     assert allocation.unused_wells == ("A2", "A3")
     assert allocation.instruction().endswith("10 % margin. A2 and A3 are not needed.")
+
+
+
+def test_next_free_wells_continue_after_the_last_used_well_and_skip_recorded_ones() -> None:
+    from datetime import datetime, timezone
+
+    from xtalflow.domain.echo_source import PlateRecordEntry, next_free_wells, well_history
+
+    now = datetime(2026, 9, 18, tzinfo=timezone.utc)
+    entries = (
+        PlateRecordEntry("used", ("A1", "B1", "C1"), "kim", now, "PreTest-202609-BRD4-01", "DMSO"),
+        PlateRecordEntry("skipped", ("E1",), "lee", now, reason="Dust or debris"),
+        PlateRecordEntry("skipped", ("P1",), "lee", now, reason="Damaged"),
+    )
+    # Gaps before the last used well are not gone back to; skipped wells are passed over.
+    assert next_free_wells(384, entries, 4) == ("D1", "F1", "G1", "H1")
+    assert next_free_wells(384, entries, 2, exclude={"D1"}) == ("F1", "G1")
+    assert next_free_wells(384, (), 2) == ("A1", "B1")
+    history = well_history(entries)
+    assert history["B1"].describe("B1", "SOLVENT-01") == (
+        "SOLVENT-01 B1 was used by kim on 2026-09-18 (PreTest-202609-BRD4-01)"
+    )
+    assert history["E1"].describe("E1", "SOLVENT-01") == (
+        "SOLVENT-01 E1 was skipped by lee on 2026-09-18: Dust or debris"
+    )

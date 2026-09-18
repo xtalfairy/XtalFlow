@@ -10,18 +10,23 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from uuid import uuid4
 
 from .crystal_selection import CrystalSelection, SelectedWell, order_selected_wells
 from .crystal_workflow import AssignmentOrder
 from .echo_source import (
+    USED,
+    PlateRecordEntry,
     SourceAllocation,
     allocate_source_wells,
+    next_free_wells,
     normalize_well,
     source_plate_type,
-    suggest_wells,
+    well_history,
 )
 from .fragment_screening import TRANSFER_INCREMENT_NL
 
@@ -512,11 +517,14 @@ def source_statuses(
     design: ConditionTestDesign,
     transfers: dict[str, tuple[Decimal, ...]],
     require_plate_type: bool,
+    plate_records: Mapping[str, Iterable[PlateRecordEntry]] | None = None,
 ) -> tuple[SourceStatus, ...]:
     """Check each dosed additive's source plate and wells against what it must give.
 
     Tests set up before plate types existed have none; they keep one well and no
-    volume check unless a plate type is required.
+    volume check unless a plate type is required. ``plate_records`` are shared
+    plates' records, without this experiment's own entries: a well in them was
+    used or skipped by someone else.
     """
     statuses = []
     taken: dict[tuple[str, str], str] = {}
@@ -553,11 +561,21 @@ def source_statuses(
         )
         for well in wells:
             taken.setdefault((plate, well), name)
+        records = tuple((plate_records or {}).get(plate, ()))
+        history = well_history(records)
+        recorded = next((well for well in wells if well in history), None)
         if shared is not None:
             problem = f"{shared} and {name} use the same source well on {plate}."
+        elif recorded is not None:
+            problem = (
+                f"{history[recorded].describe(recorded, plate)}. "
+                "Use next wells picks free ones."
+            )
         elif allocation.missing:
-            suggested = suggest_wells(
-                plate_type.well_format, wells[-1], allocation.missing,
+            # Continue after both the plate's record and the wells already entered.
+            entered = PlateRecordEntry(USED, wells, "", datetime.min)
+            suggested = next_free_wells(
+                plate_type.well_format, (*records, entered), allocation.missing,
                 (well for (other_plate, well) in occupied if other_plate == plate),
             )
             problem = (
@@ -643,6 +661,17 @@ class ConditionTestPlan:
                 else:
                     wells[key] = self.design.additive(dose.additive_id).source_well
         return wells
+
+    def source_wells_used(self) -> tuple[tuple[str, Additive, tuple[str, ...]], ...]:
+        """(plate, additive, wells) this plan draws from, to record on shared plates."""
+        allocations = self.source_allocations()
+        return tuple(
+            (
+                additive.source_plate.strip(), additive,
+                tuple(well.address for well in allocations[additive.id].wells if well.address),
+            )
+            for additive in self.design.additives if additive.id in allocations
+        )
 
     def additive_totals(self) -> tuple[tuple[Additive, Decimal], ...]:
         """How much of each additive the source wells must hold, before dead volume."""

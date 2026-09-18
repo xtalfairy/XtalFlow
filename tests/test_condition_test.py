@@ -293,7 +293,7 @@ def test_transfers_continue_in_the_next_source_well_and_shortages_name_the_wells
     # 90 % of 100 nL from a 100 % stock is 900 nL: four per 1536LDV well.
     design = _sourced(percents=("90",), replicates=6)
     (status,) = source_statuses(design, additive_transfers(design), require_plate_type=True)
-    assert status.problem == "DMSO needs 2 source wells; 1 entered. Add 1 more, e.g. A2."
+    assert status.problem == "DMSO needs 2 source wells; 1 entered. Add 1 more, e.g. B1."
     with pytest.raises(ValueError, match="DMSO needs 2 source wells"):
         build_condition_test_plan(design, _selection(6))
 

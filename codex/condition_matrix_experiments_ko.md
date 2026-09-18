@@ -200,3 +200,14 @@ Dispensing source 상자는 Conditions 화면 맨 아래에 있다. 위의 조�
 - well이 부족하면 "DMSO needs 2 source wells; 1 entered. Add 1 more, e.g. A2."처럼 추가할 주소를 제안하고 진행을 막는다. 필요 이상 입력한 well은 "not needed"로 알린다. plate에 없는 주소(384: A1–P24, 1536: A1–AF48), 다른 첨가제와 같은 well은 거절한다.
 - 새 실험은 plate 종류가 필수. plate 종류가 없는 이전 설계·확정본은 예전처럼 한 well, 부피 검사 없음이며 저장 형식과 worksheet가 바이트 단위로 같다.
 - Review의 Source use, Worksheets 단계의 "Prepare the source plate before dispensing"에 well별 채울 양을 보여 준다.
+
+## 14. 공용 source plate 사용 기록 (2026-09-18)
+
+ECHO 옆 공용 solvent test plate를 여러 사용자가 계정과 관계없이 같이 쓴다. well은 재사용하지 않는다.
+
+- 기록 위치: 모든 사용자가 worksheet를 저장하는 ECHO 폴더의 `source-plates/<plate 이름>.log`. plate 이름은 대소문자를 구분하지 않는다. 한 줄에 JSON 하나로 시각·plate·종류(used / skipped)·well·사용자·실험 ID·첨가제·이유를 적고, 덧붙이기만 한다. 네트워크 공유에서 잠금이 불안정한 SQLite는 쓰지 않는다.
+- well 순서: 열 방향(A1→P1, A2…; 1536은 A1→AF1, A2…). 다음 well은 마지막으로 **사용된** well 다음부터이고, 기록된 well(사용·건너뜀)과 같은 설계의 다른 첨가제 well은 건너뛴다. 중간 빈 칸으로 되돌아가지 않는다.
+- Conditions: plate 이름과 종류를 정하면 필요한 수만큼 다음 빈 well이 자동으로 들어간다(plate나 종류를 바꾸면 다시 고름). `Use next wells`로 다시 고를 수 있고, 기록된 well을 직접 입력하면 누가 언제 썼는지 알리고 받지 않는다.
+- `Skip a well`: well과 이유(Dust or debris, Damaged, Used outside XtalFlow, Other)를 골라 즉시 공용 기록에 남긴다. 쓰려던 well이면 다음 빈 well로 바뀐다. 기록을 쓸 수 없으면 이 실험에 보관했다가 worksheet 저장 때 함께 기록한다(앱을 닫으면 사라짐). 되돌리기는 없다.
+- worksheet 저장: plate별 잠금 파일(배타적 생성, 120초 넘은 잠금은 비정상 종료로 보고 제거)을 잡고 기록을 다시 읽어, 그사이 다른 사람이 가져간 well이 있으면 저장하지 않고 알린다. 없으면 worksheet를 게시한 뒤 사용 기록을 덧붙인다. 같은 실험을 다시 저장해도 두 번 기록하지 않는다. `Save elsewhere`로 저장한 사본은 ECHO가 실행하는 파일이 아니므로 기록하지 않는다.
+- 공용 폴더에 접근할 수 없으면 worksheet 저장도 원래 실패하므로 새 실패 경우는 없다. 계획 단계에서는 "저장할 때 다시 확인한다"고 안내한다.

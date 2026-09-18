@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import ROUND_CEILING, Decimal
 
 # Added to the volume each well gives, so pipetting losses do not reach the dead volume.
@@ -125,14 +126,73 @@ def parse_wells(text: str, well_format: int) -> tuple[str, ...]:
     return tuple(wells)
 
 
+def plate_order(well_format: int) -> tuple[str, ...]:
+    """The order wells are used in: down each column, A1 → P1, then A2."""
+    rows, columns = _layout(well_format)
+    return tuple(f"{_row_name(row)}{column}" for column in range(1, columns + 1) for row in range(rows))
+
+
 def suggest_wells(
     well_format: int, after: str | None, count: int, taken: Iterable[str] = ()
 ) -> tuple[str, ...]:
-    """The next free wells along the plate, row by row, after the last one entered."""
-    rows, columns = _layout(well_format)
-    order = [f"{_row_name(row)}{column}" for row in range(rows) for column in range(1, columns + 1)]
+    """The next free wells in plate order after the last one entered."""
+    order = plate_order(well_format)
     start = order.index(after) + 1 if after in order else 0
     unavailable = set(taken)
+    return tuple(well for well in order[start:] if well not in unavailable)[:count]
+
+
+USED = "used"
+SKIPPED = "skipped"
+SKIP_REASONS = ("Dust or debris", "Damaged", "Used outside XtalFlow", "Other")
+
+
+@dataclass(frozen=True)
+class PlateRecordEntry:
+    """One line of a shared source plate's record: wells used by an experiment, or skipped."""
+
+    kind: str
+    wells: tuple[str, ...]
+    user: str
+    time: datetime
+    experiment_id: str = ""
+    additive: str = ""
+    reason: str = ""
+
+    def describe(self, well: str, plate: str) -> str:
+        when = f"{self.time:%Y-%m-%d}"
+        if self.kind == SKIPPED:
+            return f"{plate} {well} was skipped by {self.user} on {when}: {self.reason or 'no reason'}"
+        return (
+            f"{plate} {well} was used by {self.user} on {when}"
+            + (f" ({self.experiment_id})" if self.experiment_id else "")
+        )
+
+
+def well_history(entries: Iterable[PlateRecordEntry]) -> dict[str, PlateRecordEntry]:
+    """Why each recorded well is no longer free; the first record of a well wins."""
+    history: dict[str, PlateRecordEntry] = {}
+    for entry in entries:
+        for well in entry.wells:
+            history.setdefault(well, entry)
+    return history
+
+
+def next_free_wells(
+    well_format: int,
+    entries: Iterable[PlateRecordEntry],
+    count: int,
+    exclude: Iterable[str] = (),
+) -> tuple[str, ...]:
+    """Wells after the last one used on the plate, skipping any recorded or excluded."""
+    entries = tuple(entries)
+    order = plate_order(well_format)
+    positions = [
+        order.index(well) for entry in entries if entry.kind == USED
+        for well in entry.wells if well in order
+    ]
+    start = max(positions) + 1 if positions else 0
+    unavailable = set(well_history(entries)) | set(exclude)
     return tuple(well for well in order[start:] if well not in unavailable)[:count]
 
 

@@ -144,6 +144,7 @@ from xtalflow.infrastructure.worksheet_exporter import (
     WorksheetExporter,
     worksheets_for,
 )
+from xtalflow.infrastructure.source_plate_record import SourcePlateRecord, record_directory
 from xtalflow.infrastructure.workspace_store import WORKSPACE_REVIEW
 from xtalflow.infrastructure.mxlive_config import (
     MxLiveConfigurationError,
@@ -1066,6 +1067,7 @@ class ViewerWindow(QMainWindow):
             editor = ConditionTestEditor(
                 CONDITION_TEMPLATES[template or "solvent"](), self.editor_holder
             )
+            editor.set_source_record(self._source_plate_record(), getpass.getuser())
         else:
             raise ValueError(f"{plan_type.value} experiments are not available yet")
         editor.hide()
@@ -2166,9 +2168,10 @@ class ViewerWindow(QMainWindow):
             else "instrument folders"
         )
         try:
+            skipped = dict(getattr(editor, "pending_skips", {}))
             result = self._run_in_background(
                 f"Saving worksheets to {destination}…",
-                lambda: service.deliver(plan, revision.experiment_id, alternate_root),
+                lambda: service.deliver(plan, revision.experiment_id, alternate_root, skipped),
             )
         except WorksheetDestinationUnavailable as error:
             self._record_worksheet_export(
@@ -2182,6 +2185,10 @@ class ViewerWindow(QMainWindow):
             editor.experiment_id_label.setText(
                 f"Experiment ID: {result.experiment_id} · Saved as {result.file_stem}"
             )
+            if isinstance(editor, ConditionTestEditor) and alternate_root is None:
+                # Its wells and skips are on the shared record now.
+                editor.pending_skips = {}
+                editor.refresh_plate_records()
             self.status_message_label.show_message(
                 f"Worksheets saved for {result.experiment_id}", 5000
             )
@@ -2204,6 +2211,20 @@ class ViewerWindow(QMainWindow):
             WorksheetExporter(self.settings, getpass.getuser()),
             self.review_store.audit if self.review_store is not None else None,
             getpass.getuser(),
+            self._source_plate_record(),
+        )
+
+    def _source_plate_record(self) -> SourcePlateRecord | None:
+        """Shared source plates' well records, kept with the ECHO worksheets everyone saves."""
+        echo = next(
+            (item for item in self.settings.instruments if item.worksheet is WorksheetKind.ECHO),
+            None,
+        )
+        if echo is None:
+            return None
+        return SourcePlateRecord(
+            record_directory(echo.output_directory),
+            create_root=self.settings.create_missing_instrument_roots,
         )
 
     def _record_worksheet_export(

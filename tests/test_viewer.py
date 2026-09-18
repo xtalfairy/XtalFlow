@@ -2439,8 +2439,17 @@ def test_solvent_test_runs_from_conditions_to_saved_worksheets_and_reopens(
     ]
     page.primary_button.click()
     (export,) = store.audit.list_worksheet_exports(editor.last_revision.id)
-    assert export.status == "succeeded"
+    assert export.status == "succeeded", export.error_message
     assert Path(export.path_for("echo650")).is_file()
+    # The source wells are now on the shared plate record, for everyone planning next.
+    from xtalflow.infrastructure.source_plate_record import SourcePlateRecord, record_directory
+
+    (used,) = SourcePlateRecord(record_directory(tmp_path / "echo650")).entries("LDV-1")
+    assert (used.kind, used.wells, used.experiment_id) == (
+        "used", ("A1",), editor.last_revision.experiment_id
+    )
+    # This experiment's own wells are not someone else's.
+    assert editor.design_error is None
 
     plan_id, workspace_id = editor.plan_id, editor.project_id
     window.show_home()

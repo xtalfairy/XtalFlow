@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
@@ -54,7 +55,18 @@ from xtalflow.domain.condition_test import (
     parse_percent_list,
 )
 from xtalflow.domain.crystal_workflow import AssignmentOrder
-from xtalflow.domain.echo_source import SOURCE_PLATE_TYPES, parse_wells, source_plate_type
+from xtalflow.domain.echo_source import (
+    SKIP_REASONS,
+    SKIPPED,
+    SOURCE_PLATE_TYPES,
+    PlateRecordEntry,
+    allocate_source_wells,
+    next_free_wells,
+    normalize_well,
+    parse_wells,
+    source_plate_type,
+)
+from xtalflow.infrastructure.source_plate_record import SourcePlateRecordUnavailable
 from xtalflow.domain.labwork import build_condition_test_labworks
 from xtalflow.domain.plan_lifecycle import PlanningDraft
 from xtalflow.domain.worksheets import ECHO_HEADER, build_condition_echo_rounds, build_shifter_worksheet
@@ -73,6 +85,7 @@ ADD_ROW_HEIGHT = 26
 ADD_EDITOR_WIDTH = CELL_WIDTH
 DURATION_HINT = "Minutes or hours: 30, 45 min, 1 h, 1.5 h, 1 h 30 min."
 MAX_WELLS_PER_CONDITION = 24
+RECHECK_NOTE = "Wells are checked again when worksheets are saved."
 
 CONDITIONS_STYLE = f"""
 QLabel#ConditionsTitle {{ font-weight: 600; }}
@@ -243,6 +256,35 @@ class ConditionTestEditor(PlanEditorBase):
         # A problem shown in the source box, so it is not repeated above the table.
         self._source_problem: str | None = None
         self._source_well_error: str | None = None
+        # The shared source plates' records (see infrastructure.source_plate_record).
+        self._source_record = None
+        self._username = ""
+        # None for a plate whose record could not be read; it is read again when asked afresh.
+        self._plate_records: dict[str, tuple[PlateRecordEntry, ...] | None] = {}
+        # Skips that could not be recorded yet; they are recorded with the worksheets.
+        self.pending_skips: dict[str, list[PlateRecordEntry]] = {}
+        self.next_wells_button = QPushButton("Use next wells")
+        self.next_wells_button.setObjectName("LinkButton")
+        self.next_wells_button.setToolTip(
+            "Fill in the wells after the last one used on this shared plate, as many as needed."
+        )
+        self.skip_button = QPushButton("Skip a well")
+        self.skip_button.setObjectName("LinkButton")
+        self.skip_button.setToolTip(
+            "Record a well nobody should use, e.g. one with dust in it. The record is shared."
+        )
+        self.skip_row = QWidget()
+        self.skip_row.hide()
+        self.skip_well_input = QLineEdit()
+        self.skip_well_input.setPlaceholderText("Well")
+        self.skip_well_input.setMaximumWidth(80)
+        self.skip_reason_input = QComboBox()
+        self.skip_reason_input.addItems(SKIP_REASONS)
+        self.skip_confirm_button = QPushButton("Skip")
+        self.record_note_label = QLabel()
+        self.record_note_label.setObjectName("Muted")
+        self.record_note_label.setWordWrap(True)
+        self.record_note_label.hide()
 
         self.advanced_button = QToolButton()
         self.advanced_button.setCheckable(True)
@@ -379,14 +421,17 @@ class ConditionTestEditor(PlanEditorBase):
         )
         self.replicates_input.valueChanged.connect(self._default_replicates_changed)
         self.source_plate_input.editingFinished.connect(
-            lambda: self.update_additive(source_plate=self.source_plate_input.text())
+            lambda: self._source_plate_edited(source_plate=self.source_plate_input.text())
         )
         self.source_well_input.editingFinished.connect(self._source_wells_edited)
         self.source_type_input.activated.connect(
-            lambda _index: self.update_additive(
+            lambda _index: self._source_plate_edited(
                 source_plate_type=self.source_type_input.currentData()
             )
         )
+        self.next_wells_button.clicked.connect(self.use_next_wells)
+        self.skip_button.clicked.connect(self._toggle_skip_row)
+        self.skip_confirm_button.clicked.connect(self.skip_well)
         self.smiles_input.editingFinished.connect(
             lambda: self.update_additive(smiles=self.smiles_input.text())
         )
@@ -483,12 +528,26 @@ class ConditionTestEditor(PlanEditorBase):
         fields.addWidget(self.source_plate_input)
         fields.addWidget(_field_label("Wells"))
         fields.addWidget(self.source_well_input)
+        fields.addWidget(self.next_wells_button)
+        fields.addWidget(self.skip_button)
+        skip = QHBoxLayout()
+        skip.setContentsMargins(0, 0, 0, 0)
+        skip.setSpacing(theme.SPACING_M)
+        skip.addWidget(_field_label("Skip well"))
+        skip.addWidget(self.skip_well_input)
+        skip.addWidget(_field_label("because"))
+        skip.addWidget(self.skip_reason_input)
+        skip.addWidget(self.skip_confirm_button)
+        skip.addStretch()
+        self.skip_row.setLayout(skip)
         source = QVBoxLayout()
         source.setContentsMargins(theme.SPACING_L, theme.SPACING_M, theme.SPACING_L, theme.SPACING_M)
         source.setSpacing(theme.SPACING_S)
         source.addWidget(source_title)
         source.addLayout(fields)
+        source.addWidget(self.skip_row)
         source.addWidget(self.source_message_label)
+        source.addWidget(self.record_note_label)
         self.source_box.setLayout(source)
         source_row = QHBoxLayout()
         source_row.addWidget(self.source_box)
@@ -819,6 +878,152 @@ class ConditionTestEditor(PlanEditorBase):
         _show_message(self.name_error_label, f"Enter the {self._noun} name." if invalid else "")
         if not invalid:
             self.update_additive(name=name)
+
+    # -- Shared source plates ----------------------------------------------------------
+
+    def set_source_record(self, record, username: str) -> None:
+        """The shared record of source plate wells; None where no ECHO folder is set."""
+        self._source_record = record
+        self._username = username
+        self._plate_records = {}
+        self.refresh_plan()
+
+    def refresh_plate_records(self) -> None:
+        """Read the shared records again, e.g. after this experiment's wells were recorded."""
+        self._plate_records = {}
+        self.refresh_plan()
+
+    def _plate_entries(self, plate: str, fresh: bool = False) -> tuple[PlateRecordEntry, ...] | None:
+        """A plate's record, read once per plate unless ``fresh``; None if it cannot be read."""
+        if self._source_record is None or not plate:
+            return None
+        if fresh or plate not in self._plate_records:
+            try:
+                self._plate_records[plate] = self._source_record.entries(plate)
+                if self.record_note_label.text().endswith(RECHECK_NOTE):
+                    _show_message(self.record_note_label, "")
+            except SourcePlateRecordUnavailable as error:
+                self._plate_records[plate] = None
+                _show_message(self.record_note_label, f"{_sentence(error)} {RECHECK_NOTE}")
+        return self._plate_records[plate]
+
+    def _records_for_checks(self) -> dict[str, tuple[PlateRecordEntry, ...]]:
+        """Other experiments' entries for each plate named here, with skips not yet recorded."""
+        own = self.assigned_experiment_id
+        records = {}
+        for additive in self.design.additives:
+            plate = additive.source_plate.strip()
+            if not plate or not additive.source_plate_type or plate in records:
+                continue
+            entries = self._plate_entries(plate) or ()
+            records[plate] = (
+                *(entry for entry in entries if not own or entry.experiment_id != own),
+                *self.pending_skips.get(plate, ()),
+            )
+        return records
+
+    def _source_plate_edited(self, **changes) -> None:
+        """A new plate or plate type: its wells are that plate's next free ones.
+
+        Wells belong to a plate, so with a shared record they are picked again; without
+        one, wells already typed are kept.
+        """
+        before = self.design.additive(self._series.additive_id)
+        self.update_additive(**changes)
+        current = self.design.additive(self._series.additive_id)
+        changed = (before.source_plate, before.source_plate_type) != (
+            current.source_plate, current.source_plate_type
+        )
+        if (
+            current.source_plate and current.source_plate_type
+            and (not current.source_wells or (changed and self._source_record is not None))
+        ):
+            self.use_next_wells()
+
+    def use_next_wells(self) -> bool:
+        """Enter as many wells as the transfers need, after the last one used on the plate."""
+        additive = self.design.additive(self._series.additive_id)
+        plate = additive.source_plate.strip()
+        if not plate or not additive.source_plate_type:
+            _show_message(self.record_note_label, "Choose the plate type and enter the plate first.")
+            return False
+        plate_type = source_plate_type(additive.source_plate_type)
+        try:
+            transfers = additive_transfers(self.design).get(additive.id, ())
+            needed = allocate_source_wells(plate_type, transfers, ()).wells_needed
+        except ValueError:
+            return False  # The source box already says what to fix.
+        if not needed:
+            _show_message(self.record_note_label, "Nothing is transferred from this source.")
+            return False
+        self._plate_entries(plate, fresh=True)
+        entries = self._records_for_checks().get(plate, ())
+        others = {
+            well for item in self.design.additives
+            if item.id != additive.id and item.source_plate.strip() == plate
+            for well in item.source_wells
+        }
+        wells = next_free_wells(plate_type.well_format, entries, needed, others)
+        if len(wells) < needed:
+            _show_message(
+                self.record_note_label,
+                f"Only {len(wells)} free wells are left on {plate}; start a new plate with a new name.",
+            )
+            return False
+        if self._source_record is not None and plate in self._plate_records:
+            _show_message(self.record_note_label, "")
+        self._source_well_error = None
+        _set_flag(self.source_well_input, "invalid", False)
+        self.update_additive(source_well=wells[0], extra_source_wells=tuple(wells[1:]))
+        self._load_design_inputs()
+        return True
+
+    def _toggle_skip_row(self) -> None:
+        visible = not self.skip_row.isVisible()
+        self.skip_row.setVisible(visible)
+        if visible:
+            additive = self.design.additive(self._series.additive_id)
+            self.skip_well_input.setText(additive.source_wells[0] if additive.source_wells else "")
+            self.skip_well_input.setFocus(Qt.OtherFocusReason)
+
+    def skip_well(self) -> bool:
+        """Record a well nobody should use; a skipped well that was entered is replaced."""
+        additive = self.design.additive(self._series.additive_id)
+        plate = additive.source_plate.strip()
+        if not plate or not additive.source_plate_type:
+            _show_message(self.record_note_label, "Choose the plate type and enter the plate first.")
+            return False
+        plate_type = source_plate_type(additive.source_plate_type)
+        try:
+            well = normalize_well(self.skip_well_input.text(), plate_type.well_format)
+        except ValueError as error:
+            _show_message(self.record_note_label, _sentence(error))
+            return False
+        reason = self.skip_reason_input.currentText()
+        entry = PlateRecordEntry(
+            SKIPPED, (well,), self._username, datetime.now(timezone.utc), "", additive.name, reason
+        )
+        recorded = False
+        if self._source_record is not None:
+            try:
+                self._source_record.append(plate, (entry,))
+                recorded = True
+            except SourcePlateRecordUnavailable:
+                pass
+        if recorded:
+            self._plate_entries(plate, fresh=True)
+        else:
+            self.pending_skips.setdefault(plate, []).append(entry)
+        self.skip_row.hide()
+        if well in additive.source_wells:
+            self.use_next_wells()
+        _show_message(
+            self.record_note_label,
+            f"{plate} {well} skipped: {reason}."
+            + ("" if recorded else " It will be recorded when worksheets are saved."),
+        )
+        self.refresh_plan()
+        return True
 
     def _source_wells_edited(self) -> None:
         """Wells as typed, "A1" or "A1, A2"; one not on the chosen plate changes nothing."""
@@ -1301,7 +1506,9 @@ class ConditionTestEditor(PlanEditorBase):
         else:
             status = next(
                 (
-                    item for item in source_statuses(self.design, transfers, require_plate_type=True)
+                    item for item in source_statuses(
+                        self.design, transfers, True, self._records_for_checks()
+                    )
                     if item.additive.id == additive.id
                 ),
                 None,
@@ -1508,7 +1715,9 @@ class ConditionTestEditor(PlanEditorBase):
         return next(
             (
                 status.problem
-                for status in source_statuses(self.design, transfers, require_plate_type=True)
+                for status in source_statuses(
+                    self.design, transfers, True, self._records_for_checks()
+                )
                 if status.problem
             ),
             None,

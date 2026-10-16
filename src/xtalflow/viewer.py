@@ -850,8 +850,7 @@ class ViewerWindow(QMainWindow):
             except (ValueError, ReviewPersistenceError) as error:
                 QMessageBox.warning(self, "Cannot start experiment", str(error))
                 return None
-            self._adopt_active_review()
-            self._sync_project_widgets()
+            self._show_active_review()
         project = self.project_controller.active_project
         editor = self._create_editor(
             plan_type, str(uuid4()),
@@ -906,15 +905,7 @@ class ViewerWindow(QMainWindow):
     def resume_experiment(self, workspace_id: str, plan_id: str):
         active = self.project_controller.active_project
         if active is None or active.id != workspace_id:
-            try:
-                self.project_controller.open_project(workspace_id)
-            except IMAGE_SOURCE_ERRORS as error:
-                self._adopt_active_review()
-                self._sync_project_widgets()
-                self._show_images_unavailable(error)
-            else:
-                self._adopt_active_review()
-                self._sync_project_widgets()
+            self._open_project_and_show(workspace_id)
         editor = self._editors.get(plan_id)
         if editor is None:
             try:
@@ -995,8 +986,7 @@ class ViewerWindow(QMainWindow):
         if self.project_controller.experiment_id == plan_id:
             # Save the open review into its own scope before that scope is removed.
             self.project_controller.open_experiment(WORKSPACE_REVIEW)
-            self._adopt_active_review()
-            self._sync_project_widgets()
+            self._show_active_review()
         if self.review_store is not None:
             self.review_store.planning.delete_planning_draft(plan_id)
             self.review_store.workspace.delete_experiment_positions(plan_id)
@@ -1147,12 +1137,10 @@ class ViewerWindow(QMainWindow):
         try:
             self.project_controller.open_experiment(editor.plan_id)
         except IMAGE_SOURCE_ERRORS as error:
-            self._adopt_active_review()
-            self._sync_project_widgets()
+            self._show_active_review()
             self._show_images_unavailable(error)
         else:
-            self._adopt_active_review()
-            self._sync_project_widgets()
+            self._show_active_review()
         workspace = next(
             (item for item in self.project_controller.projects if item.id == editor.project_id),
             None,
@@ -2284,8 +2272,7 @@ class ViewerWindow(QMainWindow):
                 unavailable = error
         else:
             self.project_controller.create_project("Untitled Workspace")
-        self._adopt_active_review()
-        self._sync_project_widgets()
+        self._show_active_review()
         if unavailable is not None:
             self._show_images_unavailable(unavailable)
 
@@ -2363,17 +2350,10 @@ class ViewerWindow(QMainWindow):
         active = self.project_controller.active_project
         if active is not None and active.id == workspace_id:
             return True
-        try:
-            self.project_controller.open_project(workspace_id)
-        except IMAGE_SOURCE_ERRORS as error:
-            # The workspace is open without its images; experiments can still start.
-            self._adopt_active_review()
-            self._sync_project_widgets()
-            self._show_images_unavailable(error)
-            return self.project_controller.active_project is not None
-        self._adopt_active_review()
-        self._sync_project_widgets()
-        return True
+        if self._open_project_and_show(workspace_id):
+            return True
+        # The workspace is open without its images; experiments can still start.
+        return self.project_controller.active_project is not None
 
     def create_workspace(self, name: str | None = None) -> None:
         names = {project.name for project in self.project_controller.projects}
@@ -2389,8 +2369,7 @@ class ViewerWindow(QMainWindow):
         except (ValueError, ReviewPersistenceError) as error:
             QMessageBox.warning(self, "Cannot create workspace", str(error))
             return
-        self._adopt_active_review()
-        self._sync_project_widgets()
+        self._show_active_review()
         self._home_workspace_id = project.id
         self.show_home()
         self._edit_workspace_name(project.id)
@@ -2454,8 +2433,7 @@ class ViewerWindow(QMainWindow):
             return
         try:
             self.project_controller.activate_image_set(image_set_id)
-            self._adopt_active_review()
-            self._sync_project_widgets()
+            self._show_active_review()
         except IMAGE_SOURCE_ERRORS as error:
             self._sync_project_widgets()
             QMessageBox.warning(self, "Cannot open image set", str(error))
@@ -2479,8 +2457,7 @@ class ViewerWindow(QMainWindow):
             return
         try:
             self.project_controller.activate_image_set(image_sets[destination].id)
-            self._adopt_active_review()
-            self._sync_project_widgets()
+            self._show_active_review()
         except IMAGE_SOURCE_ERRORS as error:
             QMessageBox.warning(self, "Cannot open image set", str(error))
 
@@ -2518,8 +2495,7 @@ class ViewerWindow(QMainWindow):
             return
         try:
             self.project_controller.archive_image_set(image_set_id)
-            self._adopt_active_review()
-            self._sync_project_widgets()
+            self._show_active_review()
         except IMAGE_SOURCE_ERRORS as error:
             QMessageBox.warning(self, "Cannot remove image set", str(error))
 
@@ -2543,10 +2519,25 @@ class ViewerWindow(QMainWindow):
         image_set = archived[labels.index(label)]
         try:
             self.project_controller.restore_image_set(image_set.id)
-            self._adopt_active_review()
-            self._sync_project_widgets()
+            self._show_active_review()
         except IMAGE_SOURCE_ERRORS as error:
             QMessageBox.warning(self, "Cannot restore image set", str(error))
+
+    def _show_active_review(self) -> None:
+        """Take up the review the controller now holds, and redraw around it."""
+        self._adopt_active_review()
+        self._sync_project_widgets()
+
+    def _open_project_and_show(self, project_id: str) -> bool:
+        """Open a workspace and show it; False when its images cannot be read."""
+        try:
+            self.project_controller.open_project(project_id)
+        except IMAGE_SOURCE_ERRORS as error:
+            self._show_active_review()
+            self._show_images_unavailable(error)
+            return False
+        self._show_active_review()
+        return True
 
     def _adopt_active_review(self) -> None:
         self.controller = self.project_controller.review_controller
@@ -2675,15 +2666,13 @@ class ViewerWindow(QMainWindow):
                 )
         except IMAGE_SOURCE_ERRORS as error:
             QMessageBox.warning(self, "Cannot load plates", str(error))
-        self._adopt_active_review()
-        self._sync_project_widgets()
+        self._show_active_review()
 
     def load_plate(
         self, plate_code: str, plate_format: PlateFormat, profile: str = "profileID_1"
     ) -> None:
         self.project_controller.add_latest_image_set(plate_code, plate_format, profile)
-        self._adopt_active_review()
-        self._sync_project_widgets()
+        self._show_active_review()
 
     def _filter_plate_list(self, text: str) -> None:
         query = text.strip().casefold()
@@ -2766,8 +2755,7 @@ class ViewerWindow(QMainWindow):
             ):
                 return
             self.project_controller.set_image_set_plate_format(image_set_id, plate_format)
-            self._adopt_active_review()
-            self._sync_project_widgets()
+            self._show_active_review()
         except IMAGE_SOURCE_ERRORS as error:
             QMessageBox.warning(self, "Cannot set plate format", str(error))
 
@@ -2938,8 +2926,7 @@ class ViewerWindow(QMainWindow):
             return
         try:
             confirmed = self.project_controller.confirm_valid_automatic_calibrations()
-            self._adopt_active_review()
-            self._sync_project_widgets()
+            self._show_active_review()
         except IMAGE_SOURCE_ERRORS as error:
             QMessageBox.warning(self, "Cannot confirm wells", str(error))
             return
@@ -3082,8 +3069,7 @@ class ViewerWindow(QMainWindow):
             return False
         if not moved:
             return False
-        self._adopt_active_review()
-        self._sync_project_widgets()
+        self._show_active_review()
         self.status_message_label.show_message("Moved to another plate", 2000)
         return True
 

@@ -2469,3 +2469,26 @@ def test_solvent_test_runs_from_conditions_to_saved_worksheets_and_reopens(
     assert restored.design.additives[0].source_well == "A1"
     reopened.close()
     app.processEvents()
+
+
+def test_setup_opens_with_the_cursor_in_the_first_blank_field(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store, settings=DEFAULT_SETTINGS)
+    window.resize(1200, 800)
+    window.show()
+    app.processEvents()
+
+    window.workspace_sidebar.start_buttons["fragment_screening"].click()
+    editor = window.current_editor
+    app.processEvents()
+    assert window.focusWidget() is editor.protein_input
+
+    # Both fields are filled in now, so coming back does not move the cursor to one.
+    editor.protein_input.setText("BRD4")
+    window.go_to_step(WorkflowStep.SELECT_WELLS)
+    window.go_to_step(WorkflowStep.SETUP)
+    app.processEvents()
+    assert window.focusWidget() is not editor.name_input
+    window.close()
+    app.processEvents()

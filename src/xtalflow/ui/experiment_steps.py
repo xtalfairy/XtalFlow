@@ -85,6 +85,13 @@ class SetupStep(QWidget):
         editor.protein_input.textChanged.connect(self.refresh)
         self.refresh()
 
+    def focus_first_field(self) -> None:
+        """Put the cursor where the first thing to write goes, if it is still blank."""
+        for field in (self.editor.protein_input, self.editor.name_input):
+            if not field.text().strip():
+                field.setFocus(Qt.OtherFocusReason)
+                return
+
     def refresh(self) -> None:
         editor = self.editor
         protein = editor.protein_input.text().strip()

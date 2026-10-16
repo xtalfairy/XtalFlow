@@ -1220,6 +1220,7 @@ class ViewerWindow(QMainWindow):
             self._refresh_worksheets_step(editor)
         elif step is WorkflowStep.SETUP:
             editor.setup_step.refresh()
+            editor.setup_step.focus_first_field()
         elif step is WorkflowStep.SELECT_WELLS:
             self.image_canvas.setFocus(Qt.OtherFocusReason)
         if editor.workflow_step != step.value:

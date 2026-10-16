@@ -45,14 +45,14 @@ FIXTURE_ROOT = DEFAULT_SETTINGS.rmserver_root
 
 def _start(window, plan_type, crystals, name=None):
     """Start an experiment whose selected wells are the given crystals."""
-    editor = window.start_experiment(plan_type, name)
-    window._sync_editor_selection(editor, crystals)
+    editor = window.experiments.start_experiment(plan_type, name)
+    window.experiments._sync_editor_selection(editor, crystals)
     return editor
 
 
 def _open_select_wells(window, plan_type=PlanType.RAW_CRYSTAL):
-    editor = window.start_experiment(plan_type)
-    window.go_to_step(WorkflowStep.SELECT_WELLS)
+    editor = window.experiments.start_experiment(plan_type)
+    window.experiments.go_to_step(WorkflowStep.SELECT_WELLS)
     return editor
 
 
@@ -360,10 +360,10 @@ def test_main_window_starts_on_home_and_guides_an_experiment(
     assert window.workspace_sidebar.new_workspace_button.toolTip() == "New workspace"
 
     window.workspace_sidebar.start_buttons[PlanType.RAW_CRYSTAL.value].click()
-    editor = window.current_editor
+    editor = window.experiments.current_editor
 
     assert window.pages.currentWidget() is page
-    assert window._current_step is WorkflowStep.SETUP
+    assert window.experiments._current_step is WorkflowStep.SETUP
     assert list(page.stepper.buttons) == [
         WorkflowStep.SETUP, WorkflowStep.SELECT_WELLS,
         WorkflowStep.REVIEW, WorkflowStep.WORKSHEETS,
@@ -384,7 +384,7 @@ def test_main_window_starts_on_home_and_guides_an_experiment(
     assert editor.setup_step.protein_error_label.text() == ""
     page.primary_button.click()
 
-    assert window._current_step is WorkflowStep.SELECT_WELLS
+    assert window.experiments._current_step is WorkflowStep.SELECT_WELLS
     assert page.footer_status_label.text() == "Select at least one well to continue."
     assert not page.primary_button.isEnabled()
     assert window.image_stack.currentWidget() is window.empty_state
@@ -472,7 +472,7 @@ def test_refreshing_libraries_keeps_selected_library_rows(tmp_path: Path) -> Non
     assert editor.rows_input.text() == "1-3"
     editor.rows_input.setText("2-3")
 
-    window._refresh_fragment_library_choices()
+    window.experiments._refresh_fragment_library_choices()
 
     assert editor.library_input.currentIndex() == 1
     assert editor.rows_input.text() == "2-3"
@@ -493,7 +493,7 @@ def test_damaged_saved_plan_does_not_block_other_plans(tmp_path: Path) -> None:
     for protein in ("DAMAGED", "HEALTHY"):
         editor = _start(window, PlanType.RAW_CRYSTAL, (crystal,))
         editor.protein_input.setText(protein)
-        window._persist_draft(editor)
+        window.experiments._persist_draft(editor)
         plan_ids[protein] = editor.plan_id
     window.close()
     app.processEvents()
@@ -506,10 +506,10 @@ def test_damaged_saved_plan_does_not_block_other_plans(tmp_path: Path) -> None:
     connection.close()
 
     restored = ViewerWindow(RockMakerImageRepository(tmp_path), SQLiteReviewStore(database_path))
-    recent = restored._recent_experiments()
+    recent = restored.experiments._recent_experiments()
 
     assert [item.plan_id for item in recent] == [plan_ids["HEALTHY"]]
-    editor = restored.resume_experiment(recent[0].workspace_id, recent[0].plan_id)
+    editor = restored.experiments.resume_experiment(recent[0].workspace_id, recent[0].plan_id)
     assert editor.protein_input.text() == "HEALTHY"
     restored.close()
     app.processEvents()
@@ -535,7 +535,7 @@ def test_raw_crystal_plan_has_shifter_preview_without_echo(tmp_path: Path) -> No
     editor = _start(window, PlanType.RAW_CRYSTAL, (crystal,), name="Harvest A")
     editor.set_crystals((crystal,))
     editor.protein_input.setText("BRD4")
-    window._persist_draft(editor)
+    window.experiments._persist_draft(editor)
 
     assert editor.current_plan is not None
     assert editor.shifter_table.rowCount() == 1
@@ -593,11 +593,11 @@ def test_draft_experiment_can_be_deleted_from_recent_work(
         QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes
     )
 
-    window.delete_experiment(workspace_id, plan_id)
+    window.experiments.delete_experiment(workspace_id, plan_id)
     app.processEvents()
 
     assert window.pages.currentWidget() is window.home_page
-    assert window.current_editor is None
+    assert window.experiments.current_editor is None
     assert window.home_page.recent_table.rowCount() == 0
     assert all(
         draft.id != plan_id
@@ -662,10 +662,10 @@ def test_experiment_selection_follows_its_positions_after_finalizing(
     )
     editor = _start(window, PlanType.RAW_CRYSTAL, (original,))
     editor.protein_input.setText("BRD4")
-    assert window._finalize_plan(editor) is not None
+    assert window.experiments._finalize_plan(editor) is not None
     assert editor.experiment_status.status_of(WorkflowStep.REVIEW).message == "Finalized r1"
 
-    window._sync_editor_selection(editor, (replacement,))
+    window.experiments._sync_editor_selection(editor, (replacement,))
 
     assert editor.selection.wells[0].image_key == "replacement-image"
     owned = store.planning.load_experiment_project(editor.plan_id)
@@ -693,14 +693,14 @@ def test_resuming_an_experiment_returns_to_its_saved_step(
         )
     )
 
-    window.show_home()
+    window.experiments.show_home()
     assert window.home_page.recent_table.item(0, 2).text() == "Draft · Review"
     window.home_page.recent_table.selectRow(0)
     window.home_page.resume_button.click()
-    editor = window.current_editor
+    editor = window.experiments.current_editor
 
     assert editor.plan_id == "saved-draft"
-    assert window._current_step is WorkflowStep.REVIEW
+    assert window.experiments._current_step is WorkflowStep.REVIEW
     assert window.experiment_page.title_label.text() == "Saved Draft"
     assert editor.protein_input.text() == "BRD4"
     assert not window.experiment_page.primary_button.isEnabled()
@@ -728,7 +728,7 @@ def test_only_finalized_raw_revision_can_be_uploaded_and_is_audited(
     )
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
     window = ViewerWindow(RockMakerImageRepository(tmp_path), store, settings=settings)
-    monkeypatch.setattr("xtalflow.viewer.LegacyMxLiveReadClient", _FakeMxLiveReader)
+    monkeypatch.setattr("xtalflow.ui.experiment_coordinator.LegacyMxLiveReadClient", _FakeMxLiveReader)
     crystal = SelectedCrystal(
         "image-key", "1070", "A01a",
         (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
@@ -749,7 +749,7 @@ def test_only_finalized_raw_revision_can_be_uploaded_and_is_audited(
         lambda *args, **kwargs: unexpected_dialogs.append(("critical", args[2])),
     )
 
-    revision = window._finalize_plan(editor)
+    revision = window.experiments._finalize_plan(editor)
     assert revision is not None, unexpected_dialogs
     assert editor.webdb_upload_button.isEnabled()
 
@@ -761,10 +761,10 @@ def test_only_finalized_raw_revision_can_be_uploaded_and_is_audited(
             assert records[0]["plate_imgpath"] == "/rmserver/image.jpg"
             return {"created": len(records)}
 
-    monkeypatch.setattr("xtalflow.viewer.LegacyMxLiveWriteClient", FakeWriter)
+    monkeypatch.setattr("xtalflow.ui.experiment_coordinator.LegacyMxLiveWriteClient", FakeWriter)
     monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
     monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: QMessageBox.Ok)
-    window._upload_plan_labworks(editor)
+    window.experiments._upload_plan_labworks(editor)
 
     events = store.audit.list_webdb_uploads(revision.id)
     assert len(events) == 1
@@ -788,7 +788,7 @@ def _finalized_raw_upload_window(tmp_path: Path, monkeypatch):
     )
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
     window = ViewerWindow(RockMakerImageRepository(tmp_path), store, settings=settings)
-    monkeypatch.setattr("xtalflow.viewer.LegacyMxLiveReadClient", _FakeMxLiveReader)
+    monkeypatch.setattr("xtalflow.ui.experiment_coordinator.LegacyMxLiveReadClient", _FakeMxLiveReader)
     crystal = SelectedCrystal(
         "image-key", "1070", "A01a",
         (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
@@ -804,7 +804,7 @@ def _finalized_raw_upload_window(tmp_path: Path, monkeypatch):
             lambda *args, _name=name, **kwargs: dialogs.append((_name, args[2])),
         )
     monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
-    revision = window._finalize_plan(editor)
+    revision = window.experiments._finalize_plan(editor)
     assert revision is not None, dialogs
     return window, store, editor, revision, dialogs
 
@@ -846,10 +846,10 @@ def test_unknown_upload_result_locks_until_verified_on_mxlive(
         def labworks(self, experiment_id):
             return tuple(stored_records)
 
-    monkeypatch.setattr("xtalflow.viewer.LegacyMxLiveWriteClient", TimeoutWriter)
-    monkeypatch.setattr("xtalflow.viewer.LegacyMxLiveReadClient", FakeReader)
+    monkeypatch.setattr("xtalflow.ui.experiment_coordinator.LegacyMxLiveWriteClient", TimeoutWriter)
+    monkeypatch.setattr("xtalflow.ui.experiment_coordinator.LegacyMxLiveReadClient", FakeReader)
 
-    window._upload_plan_labworks(editor)
+    window.experiments._upload_plan_labworks(editor)
 
     assert [event.status for event in store.audit.list_webdb_uploads(revision.id)] == [
         "unknown"
@@ -857,7 +857,7 @@ def test_unknown_upload_result_locks_until_verified_on_mxlive(
     assert editor.webdb_upload_button.text() == "Verify on MxLive…"
     assert editor.webdb_upload_button.isEnabled()
 
-    window._upload_plan_labworks(editor)
+    window.experiments._upload_plan_labworks(editor)
     assert len(TimeoutWriter.posted) == 1
     assert [event.status for event in store.audit.list_webdb_uploads(revision.id)] == [
         "failed"
@@ -883,10 +883,10 @@ def test_upload_is_not_sent_when_attempt_cannot_be_audited(
     def audit_unavailable(event):
         raise ReviewPersistenceError("database is locked")
 
-    monkeypatch.setattr("xtalflow.viewer.LegacyMxLiveWriteClient", Writer)
+    monkeypatch.setattr("xtalflow.ui.experiment_coordinator.LegacyMxLiveWriteClient", Writer)
     monkeypatch.setattr(store.audit, "record_webdb_upload", audit_unavailable)
 
-    window._upload_plan_labworks(editor)
+    window.experiments._upload_plan_labworks(editor)
 
     assert Writer.posted == []
     assert dialogs[-1] == (
@@ -907,15 +907,15 @@ def test_later_revision_with_uploaded_experiment_id_is_not_uploaded_again(
     class Writer(_RecordingWriter):
         posted = []
 
-    monkeypatch.setattr("xtalflow.viewer.LegacyMxLiveWriteClient", Writer)
-    window._upload_plan_labworks(editor)
+    monkeypatch.setattr("xtalflow.ui.experiment_coordinator.LegacyMxLiveWriteClient", Writer)
+    window.experiments._upload_plan_labworks(editor)
     editor.protein_input.setText("BRD4 variant")
-    second = window._finalize_plan(editor)
+    second = window.experiments._finalize_plan(editor)
 
     assert second is not None and second.revision == 2
     assert not editor.webdb_upload_button.isEnabled()
     assert "Uploaded (earlier revision)" in editor.webdb_status_label.text()
-    window._upload_plan_labworks(editor)
+    window.experiments._upload_plan_labworks(editor)
     assert len(Writer.posted) == 1
     assert dialogs[-1][0] == "information"
     window.close()
@@ -959,7 +959,7 @@ def test_unchecked_experiment_id_requires_confirmation(
     class OfflineReader(_FakeMxLiveReader):
         error = MxLiveReadError("MxLive request failed (ConnectionError)")
 
-    monkeypatch.setattr("xtalflow.viewer.LegacyMxLiveReadClient", OfflineReader)
+    monkeypatch.setattr("xtalflow.ui.experiment_coordinator.LegacyMxLiveReadClient", OfflineReader)
     crystal = SelectedCrystal(
         "image-key", "1070", "A01a",
         (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
@@ -977,11 +977,11 @@ def test_unchecked_experiment_id_requires_confirmation(
         return question
 
     monkeypatch.setattr(QMessageBox, "question", answer(QMessageBox.No))
-    assert window._finalize_plan(editor) is None
+    assert window.experiments._finalize_plan(editor) is None
     assert store.planning.list_plan_revisions(editor.plan_id) == ()
 
     monkeypatch.setattr(QMessageBox, "question", answer(QMessageBox.Yes))
-    assert window._finalize_plan(editor) is not None
+    assert window.experiments._finalize_plan(editor) is not None
     assert questions == ["Experiment ID not checked"] * 2
     window.close()
     app.processEvents()
@@ -1025,11 +1025,11 @@ def test_fragment_worksheets_are_saved_and_audited(tmp_path: Path, monkeypatch) 
     page = window.experiment_page
     monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
 
-    window.go_to_step(WorkflowStep.REVIEW)
+    window.experiments.go_to_step(WorkflowStep.REVIEW)
     assert page.primary_button.text() == "Finalize r1"
     page.primary_button.click()
 
-    assert window._current_step is WorkflowStep.WORKSHEETS
+    assert window.experiments._current_step is WorkflowStep.WORKSHEETS
     table = editor.worksheets_step.instrument_table
     assert [table.item(row, 0).text() for row in range(table.rowCount())] == [
         "ECHO 650", "SHIFTER 1", "SHIFTER 2"
@@ -1050,14 +1050,14 @@ def test_fragment_worksheets_are_saved_and_audited(tmp_path: Path, monkeypatch) 
         status.state is StepState.COMPLETE for status in editor.experiment_status.steps
     )
     editor.protein_input.setText("BRD4-B")
-    window._persist_draft(editor)
+    window.experiments._persist_draft(editor)
     assert editor.lifecycle_label.text() == "Draft changes after r1"
     assert page.primary_button.text() == "Save worksheets"
     assert not page.primary_button.isEnabled()
     assert [event.status for event in exports] == ["succeeded"]
     assert Path(exports[0].path_for("echo650")).is_file()
     assert Path(exports[0].path_for("shifter2")).is_file()
-    window.show_home()
+    window.experiments.show_home()
     assert window.home_page.recent_table.item(0, 2).text() == "Worksheets saved r1"
     window.close()
     app.processEvents()
@@ -1078,7 +1078,7 @@ def test_offer_of_another_folder_says_the_source_wells_stay_free(
         lambda *args, **kwargs: asked.append(args[2]) or QMessageBox.No,
     )
 
-    declined = window._offer_another_location(
+    declined = window.experiments._offer_another_location(
         ConditionTestEditor(solvent_test_template()),
         InstrumentLocationUnavailable(
             "instrument output location is unavailable: /smbmount/echo650"
@@ -1111,7 +1111,7 @@ def test_unavailable_instrument_share_can_use_alternate_root(
     window, store, editor = _fragment_plan_window(tmp_path, settings)
     folders = []
     monkeypatch.setattr(
-        "xtalflow.viewer.QFileDialog.getExistingDirectory",
+        "xtalflow.ui.experiment_coordinator.QFileDialog.getExistingDirectory",
         lambda *args, **kwargs: folders.append(args[2]) or str(tmp_path / "chosen"),
     )
     asked = []
@@ -1120,8 +1120,8 @@ def test_unavailable_instrument_share_can_use_alternate_root(
         QMessageBox, "question",
         lambda *args, **kwargs: asked.append(args[2]) or answer[0],
     )
-    assert window._finalize_plan(editor) is not None
-    window.go_to_step(WorkflowStep.WORKSHEETS)
+    assert window.experiments._finalize_plan(editor) is not None
+    window.experiments.go_to_step(WorkflowStep.WORKSHEETS)
     step = editor.worksheets_step
 
     # Declining the offer leaves the failure on the page and nothing saved.
@@ -1162,7 +1162,7 @@ def test_unavailable_instrument_share_can_use_alternate_root(
     # The folder chosen before is where the next save starts.
     step.choose_location_button.click()
     assert folders[-1] == str(tmp_path / "chosen")
-    window.show_home()
+    window.experiments.show_home()
     assert window.home_page.recent_table.item(0, 2).text() == (
         "Worksheets r1 not in instrument folders"
     )
@@ -1186,9 +1186,9 @@ def test_raw_plan_keeps_experiment_id_across_revisions(
     editor.protein_input.setText("BRD4")
     monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: QMessageBox.Ok)
 
-    first = window._finalize_plan(editor)
+    first = window.experiments._finalize_plan(editor)
     editor.protein_input.setText("BRD4 variant")
-    second = window._finalize_plan(editor)
+    second = window.experiments._finalize_plan(editor)
 
     assert first is not None and second is not None
     assert second.revision == 2
@@ -1223,7 +1223,7 @@ def test_raw_crystal_experiment_runs_from_setup_to_saved_worksheets(
     page = window.experiment_page
 
     window.workspace_sidebar.start_buttons[PlanType.RAW_CRYSTAL.value].click()
-    first = window.current_editor
+    first = window.experiments.current_editor
     first.protein_input.setText("BRD4")
     page.primary_button.click()
     assert window.image_stack.currentWidget() is window.empty_state
@@ -1235,15 +1235,15 @@ def test_raw_crystal_experiment_runs_from_setup_to_saved_worksheets(
     window._auto_detect_calibration()
     window._accept_current_calibration()
     window._handle_image_click(600, 500, Qt.LeftButton)
-    window._sync_current_selection()
+    window.experiments._sync_current_selection()
 
     assert page.footer_status_label.text() == "✓ 1 well · 1 position"
     assert page.primary_button.text() == "Use 1 well"
     page.primary_button.click()
-    assert window._current_step is WorkflowStep.REVIEW
+    assert window.experiments._current_step is WorkflowStep.REVIEW
     assert first.summary_table.rowCount() == 1
     page.primary_button.click()
-    assert window._current_step is WorkflowStep.WORKSHEETS
+    assert window.experiments._current_step is WorkflowStep.WORKSHEETS
     assert first.worksheets_step.instrument_table.rowCount() == 2
     page.primary_button.click()
 
@@ -1254,15 +1254,15 @@ def test_raw_crystal_experiment_runs_from_setup_to_saved_worksheets(
     page.primary_button.click()
     assert window.home_page.recent_table.item(0, 2).text() == "Worksheets saved r1"
 
-    second = window.start_experiment(PlanType.RAW_CRYSTAL)
-    window.go_to_step(WorkflowStep.SELECT_WELLS)
+    second = window.experiments.start_experiment(PlanType.RAW_CRYSTAL)
+    window.experiments.go_to_step(WorkflowStep.SELECT_WELLS)
     assert window.controller.plate.plate_code == "2070"
     assert window.controller.current_targets == ()
     assert f"also used in {first.plan_name}" in window.review_summary_label.text()
     assert second.selected_well_count == 0
 
-    window.resume_experiment(first.project_id, first.plan_id)
-    assert window._current_step is WorkflowStep.WORKSHEETS
+    window.experiments.resume_experiment(first.project_id, first.plan_id)
+    assert window.experiments._current_step is WorkflowStep.WORKSHEETS
     assert first.lifecycle_label.text() == "Finalized r1"
     window.close()
     app.processEvents()
@@ -1350,7 +1350,7 @@ def test_target_summary_uses_hidden_right_dock_and_jumps_to_image(
     assert window.target_summary_table.rowCount() == 2
     assert window.target_summary_table.item(0, 1).text() == "A01a"
     assert window.target_summary_table.item(0, 3).text() != "—"
-    window._review_target_warnings()
+    window.experiments._review_target_warnings()
     assert window.target_summary_filter.currentData() == "warnings"
     assert window.target_summary_dock.isVisible()
     assert window.target_summary_table.rowCount() == 2
@@ -1579,10 +1579,10 @@ def test_live_selection_summary_highlights_counts_and_stays_in_image_review(
     window.target_summary_table.selectAll()
     assert window.remove_targets_button.text() == "Delete Selected (2)"
 
-    window.go_to_step(WorkflowStep.REVIEW)
+    window.experiments.go_to_step(WorkflowStep.REVIEW)
     app.processEvents()
     assert not window.target_summary_dock.isVisible()
-    window.go_to_step(WorkflowStep.SELECT_WELLS)
+    window.experiments.go_to_step(WorkflowStep.SELECT_WELLS)
     app.processEvents()
     assert window.target_summary_dock.isVisible()
     window.close()
@@ -2065,7 +2065,7 @@ def test_reopening_starts_at_home_with_finalized_experiment_status(
     )
     editor = _start(window, PlanType.RAW_CRYSTAL, (crystal,), name="BRD4 harvest")
     editor.protein_input.setText("BRD4")
-    assert window._finalize_plan(editor) is not None
+    assert window.experiments._finalize_plan(editor) is not None
     window.close()
     app.processEvents()
 
@@ -2099,7 +2099,7 @@ def test_offline_library_folder_keeps_draft_library(tmp_path: Path) -> None:
     )
     editor = _start(window, PlanType.FRAGMENT_SCREENING, (crystal,))
     editor.library_input.setCurrentIndex(1)
-    window._persist_draft(editor)
+    window.experiments._persist_draft(editor)
     project_id = editor.project_id
     library_id = editor.library_input.currentData(Qt.UserRole)
     window.close()
@@ -2109,11 +2109,11 @@ def test_offline_library_folder_keeps_draft_library(tmp_path: Path) -> None:
     reopened = ViewerWindow(
         RockMakerImageRepository(tmp_path), SQLiteReviewStore(database_path), settings=offline
     )
-    recent = reopened._recent_experiments()
-    editor = reopened.resume_experiment(recent[0].workspace_id, recent[0].plan_id)
+    recent = reopened.experiments._recent_experiments()
+    editor = reopened.experiments.resume_experiment(recent[0].workspace_id, recent[0].plan_id)
     assert editor.library_input.currentData(Qt.UserRole) == library_id
     assert "Library unavailable" in editor.library_label.text()
-    reopened._persist_draft(editor)
+    reopened.experiments._persist_draft(editor)
     reopened.close()
     app.processEvents()
 
@@ -2241,9 +2241,9 @@ def test_workspace_panel_creates_filters_renames_and_hides_workspaces(
     home = window.home_page
     sidebar = window.workspace_sidebar
     first_id = window.project_controller.active_project.id
-    first = window.start_experiment(PlanType.RAW_CRYSTAL, "First harvest")
+    first = window.experiments.start_experiment(PlanType.RAW_CRYSTAL, "First harvest")
     first.protein_input.setText("BRD4")
-    window.show_home()
+    window.experiments.show_home()
 
     window.create_workspace()
     second_id = window.project_controller.active_project.id
@@ -2257,13 +2257,13 @@ def test_workspace_panel_creates_filters_renames_and_hides_workspaces(
     assert home.title_label.text() == "CypA campaign"
     assert home.recent_empty_label.text() == "No experiments in this workspace yet."
 
-    second = window.start_experiment(PlanType.RAW_CRYSTAL, "CypA harvest")
+    second = window.experiments.start_experiment(PlanType.RAW_CRYSTAL, "CypA harvest")
     second.protein_input.setText("CypA")
     assert window.experiment_page.home_button.text() == "‹ CypA campaign"
     assert sidebar.workspace_list.currentItem().text() == "CypA campaign"
     window.experiment_page.home_button.click()
     assert home.title_label.text() == "CypA campaign"
-    window.resume_experiment(second_id, second.plan_id)
+    window.experiments.resume_experiment(second_id, second.plan_id)
     sidebar.workspace_list.setCurrentRow(0)
     assert window.pages.currentWidget() is home
     assert home.title_label.text() == "All experiments"
@@ -2283,7 +2283,7 @@ def test_workspace_panel_creates_filters_renames_and_hides_workspaces(
     window.hide_workspace(first_id)
     assert sidebar.workspace_list.count() == 2
     assert sidebar.hidden_toggle.text() == "▸ Hidden (1)"
-    assert [row.name for row in window._recent_experiments()] == ["CypA harvest"]
+    assert [row.name for row in window.experiments._recent_experiments()] == ["CypA harvest"]
     information = []
     monkeypatch.setattr(
         QMessageBox, "information", lambda *args, **kwargs: information.append(args[1])
@@ -2338,18 +2338,18 @@ def test_opening_a_new_experiment_saves_no_draft_until_it_has_content(
     window = ViewerWindow(RockMakerImageRepository(tmp_path), store)
     workspace_id = window.project_controller.active_project.id
 
-    looked = window.start_experiment(PlanType.FRAGMENT_SCREENING)
+    looked = window.experiments.start_experiment(PlanType.FRAGMENT_SCREENING)
     assert window.experiment_page.lifecycle_label.text() == "Not saved yet"
     assert "△" not in window.experiment_page.stepper.buttons[WorkflowStep.CONDITIONS].text()
-    window.go_to_step(WorkflowStep.CONDITIONS)
+    window.experiments.go_to_step(WorkflowStep.CONDITIONS)
     assert window.experiment_page.lifecycle_label.text() == "Not saved yet"
     window.experiment_page.home_button.click()
 
     assert store.planning.load_planning_drafts(workspace_id) == ()
     assert window.home_page.recent_table.rowCount() == 0
-    assert looked.plan_id not in window._editors
+    assert looked.plan_id not in window.experiments._editors
 
-    kept = window.start_experiment(PlanType.RAW_CRYSTAL)
+    kept = window.experiments.start_experiment(PlanType.RAW_CRYSTAL)
     kept.protein_input.setText("BRD4")
     window.experiment_page.home_button.click()
     assert [draft.id for draft in store.planning.load_planning_drafts(workspace_id)] == [
@@ -2357,7 +2357,7 @@ def test_opening_a_new_experiment_saves_no_draft_until_it_has_content(
     ]
 
     monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
-    window.resume_experiment(workspace_id, kept.plan_id)
+    window.experiments.resume_experiment(workspace_id, kept.plan_id)
     window.experiment_page.delete_action.trigger()
     assert window.pages.currentWidget() is window.home_page
     assert store.planning.load_planning_drafts(workspace_id) == ()
@@ -2419,7 +2419,7 @@ def test_solvent_test_runs_from_conditions_to_saved_worksheets_and_reopens(
     page = window.experiment_page
 
     window.workspace_sidebar.start_buttons["solvent_test"].click()
-    editor = window.current_editor
+    editor = window.experiments.current_editor
     assert isinstance(editor, ConditionTestEditor)
     assert editor.plan_name.startswith("Solvent Test ")
     assert list(page.stepper.buttons) == [
@@ -2430,7 +2430,7 @@ def test_solvent_test_runs_from_conditions_to_saved_worksheets_and_reopens(
     editor.drop_volume_input.setValue(100)
     assert page.primary_button.text() == "Set conditions"
     page.primary_button.click()
-    assert window._current_step is WorkflowStep.CONDITIONS
+    assert window.experiments._current_step is WorkflowStep.CONDITIONS
     assert editor.title_label.text() == "Compare solvent concentration and soaking time"
     assert editor.conditions_drop_input.value() == 100
     assert editor.design_error == "Enter the source plate and well for DMSO."
@@ -2461,7 +2461,7 @@ def test_solvent_test_runs_from_conditions_to_saved_worksheets_and_reopens(
     assert page.footer_status_label.text() == "✓ 15 conditions · 15 wells required"
     assert page.primary_button.text() == "Select 15 wells"
     page.primary_button.click()
-    assert window._current_step is WorkflowStep.SELECT_WELLS
+    assert window.experiments._current_step is WorkflowStep.SELECT_WELLS
 
     now = datetime.now(timezone.utc)
     crystals = tuple(
@@ -2473,12 +2473,12 @@ def test_solvent_test_runs_from_conditions_to_saved_worksheets_and_reopens(
         for index in range(15)
     )
     # Leaving Select wells re-reads the image review, so inject wells after moving on.
-    window.go_to_step(WorkflowStep.REVIEW)
-    window._sync_editor_selection(editor, crystals[:10])
+    window.experiments.go_to_step(WorkflowStep.REVIEW)
+    window.experiments._sync_editor_selection(editor, crystals[:10])
     assert editor.experiment_status.status_of(WorkflowStep.SELECT_WELLS).message == (
         "10 of 15 wells selected"
     )
-    window.go_to_step(WorkflowStep.CONDITIONS)
+    window.experiments.go_to_step(WorkflowStep.CONDITIONS)
     assert page.footer_notes_label.text() == "Selected 10 wells · 5 more needed"
     assert page.primary_button.text() == "Select 5 more wells"
     extra = SelectedCrystal(
@@ -2486,16 +2486,16 @@ def test_solvent_test_runs_from_conditions_to_saved_worksheets_and_reopens(
         (CrystalTarget("target-extra", Decimal(0), Decimal(0), now + timedelta(seconds=99)),),
         SWISSCI_MIDI_3_LENS.id,
     )
-    window._sync_editor_selection(editor, (*crystals, extra))
-    window._refresh_experiment_status(editor)
+    window.experiments._sync_editor_selection(editor, (*crystals, extra))
+    window.experiments._refresh_experiment_status(editor)
     assert page.footer_notes_label.text() == "Selected 16 wells · 1 will remain unused"
     assert page.primary_button.text() == "Review assignments"
     page.primary_button.click()
-    assert window._current_step is WorkflowStep.REVIEW
-    window._sync_editor_selection(editor, crystals)
+    assert window.experiments._current_step is WorkflowStep.REVIEW
+    window.experiments._sync_editor_selection(editor, crystals)
     assert editor.current_plan is not None
-    assert window._finalize_plan(editor).experiment_id.startswith("PreTest-")
-    window.go_to_step(WorkflowStep.WORKSHEETS)
+    assert window.experiments._finalize_plan(editor).experiment_id.startswith("PreTest-")
+    window.experiments.go_to_step(WorkflowStep.WORKSHEETS)
     preparation, schedule = editor.worksheets_step.schedule_label.text().split("\n\n")
     assert preparation.splitlines()[:2] == [
         "Prepare before dispensing", "Crystal drops · 15, one per well"
@@ -2522,14 +2522,14 @@ def test_solvent_test_runs_from_conditions_to_saved_worksheets_and_reopens(
     assert editor.design_error is None
 
     plan_id, workspace_id = editor.plan_id, editor.project_id
-    window.show_home()
+    window.experiments.show_home()
     window.close()
     app.processEvents()
     reopened = ViewerWindow(
         RockMakerImageRepository(tmp_path), SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
         settings=settings,
     )
-    restored = reopened.resume_experiment(workspace_id, plan_id)
+    restored = reopened.experiments.resume_experiment(workspace_id, plan_id)
     assert isinstance(restored.design, ConditionTestDesign)
     assert restored.design.required_crystals == 15
     assert restored.design.additives[0].source_well == "A1"
@@ -2546,14 +2546,14 @@ def test_setup_opens_with_the_cursor_in_the_first_blank_field(tmp_path: Path) ->
     app.processEvents()
 
     window.workspace_sidebar.start_buttons["fragment_screening"].click()
-    editor = window.current_editor
+    editor = window.experiments.current_editor
     app.processEvents()
     assert window.focusWidget() is editor.protein_input
 
     # Both fields are filled in now, so coming back does not move the cursor to one.
     editor.protein_input.setText("BRD4")
-    window.go_to_step(WorkflowStep.SELECT_WELLS)
-    window.go_to_step(WorkflowStep.SETUP)
+    window.experiments.go_to_step(WorkflowStep.SELECT_WELLS)
+    window.experiments.go_to_step(WorkflowStep.SETUP)
     app.processEvents()
     assert window.focusWidget() is not editor.name_input
     window.close()

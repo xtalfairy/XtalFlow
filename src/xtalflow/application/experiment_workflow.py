@@ -77,6 +77,9 @@ class ExperimentFacts:
     revision_matches_current: bool = False
     worksheets_saved_for_revision: bool = False
     local_save_failed: bool = False
+    # Saved, but to a folder the user chose because an instrument folder could
+    # not be reached: the files still have to reach the instrument.
+    worksheets_saved_elsewhere: bool = False
     # Condition tests: crystals the included conditions need, a one-line summary
     # of them, a problem found only with the chosen wells, and wells left over.
     required_well_count: int = 0
@@ -228,7 +231,13 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
         )
     statuses[WorkflowStep.REVIEW] = review
 
-    if finalized and facts.worksheets_saved_for_revision:
+    if finalized and facts.worksheets_saved_for_revision and facts.worksheets_saved_elsewhere:
+        worksheets = StepStatus(
+            WorkflowStep.WORKSHEETS, StepState.ATTENTION,
+            f"Worksheets r{facts.revision_number} saved to a folder you chose · "
+            "copy them to the instrument folders",
+        )
+    elif finalized and facts.worksheets_saved_for_revision:
         worksheets = StepStatus(
             WorkflowStep.WORKSHEETS, StepState.COMPLETE,
             f"Worksheets saved r{facts.revision_number}",

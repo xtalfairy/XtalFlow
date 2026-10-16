@@ -140,6 +140,7 @@ from xtalflow.infrastructure.fragment_library_csv import (
     load_fragment_library,
 )
 from xtalflow.infrastructure.worksheet_exporter import (
+    InstrumentLocationUnavailable,
     WorksheetDestinationUnavailable,
     WorksheetExporter,
     worksheets_for,
@@ -263,6 +264,7 @@ class ViewerWindow(QMainWindow):
         self.current_editor: FragmentScreeningEditor | RawCrystalEditor | None = None
         self._current_step: WorkflowStep | None = None
         self._target_summary_available = True
+        self._alternate_worksheet_root: Path | None = None
         self.setStyleSheet(theme.APPLICATION_STYLE_SHEET)
         self.setWindowTitle("XtalFlow")
         self.resize(1440, 900)
@@ -819,6 +821,8 @@ class ViewerWindow(QMainWindow):
                 revision = None
         if revision is not None:
             if self._worksheets_saved(revision):
+                if self._worksheets_saved_elsewhere(revision):
+                    return f"Worksheets r{revision.revision} not in instrument folders"
                 return f"Worksheets saved r{revision.revision}"
             return f"Finalized r{revision.revision}"
         try:
@@ -1393,6 +1397,7 @@ class ViewerWindow(QMainWindow):
                 and self._plan_snapshot(editor) == editor.last_revision_snapshot,
                 self._worksheets_saved(revision),
                 editor.save_failed,
+                self._worksheets_saved_elsewhere(revision),
                 required_well_count=design.required_crystals,
                 conditions_summary=(
                     f"{_count(len(design.conditions()), 'condition')} · "
@@ -1424,6 +1429,7 @@ class ViewerWindow(QMainWindow):
             and self._plan_snapshot(editor) == editor.last_revision_snapshot,
             self._worksheets_saved(revision),
             editor.save_failed,
+            self._worksheets_saved_elsewhere(revision),
         )
 
     def _refresh_experiment_status(self, editor) -> None:
@@ -1624,6 +1630,16 @@ class ViewerWindow(QMainWindow):
         if latest is None:
             # Not finalized yet: the footer names that and disables saving.
             editor.worksheets_step.show_result("", "muted")
+        elif latest.status == WORKSHEETS_SUCCEEDED and self._saved_elsewhere(latest):
+            editor.worksheets_step.show_result(
+                f"{theme.SYMBOL_ATTENTION} Saved r{revision.revision} to the folder you "
+                f"chose · {latest.exported_at:%Y-%m-%d %H:%M} · {latest.username} · "
+                "not in the instrument folders; copy the files there, or save again "
+                "once they can be reached",
+                "attention",
+                can_retry=True,
+                copy_text="\n".join(output.path for output in latest.outputs),
+            )
         elif latest.status == WORKSHEETS_SUCCEEDED:
             editor.worksheets_step.show_result(
                 f"{theme.SYMBOL_OK} Saved r{revision.revision} · "
@@ -1648,6 +1664,25 @@ class ViewerWindow(QMainWindow):
     def _worksheets_saved(self, revision) -> bool:
         latest = self._latest_worksheet_export(revision)
         return latest is not None and latest.status == WORKSHEETS_SUCCEEDED
+
+    def _worksheets_saved_elsewhere(self, revision) -> bool:
+        latest = self._latest_worksheet_export(revision)
+        return (
+            latest is not None
+            and latest.status == WORKSHEETS_SUCCEEDED
+            and self._saved_elsewhere(latest)
+        )
+
+    def _saved_elsewhere(self, event) -> bool:
+        """True when a file went to a folder the user chose, not an instrument's own."""
+        for output in event.outputs:
+            destination = self.settings.instrument(output.instrument)
+            if (
+                destination is None
+                or destination.output_directory not in Path(output.path).parents
+            ):
+                return True
+        return False
 
     def _latest_worksheet_export(self, revision):
         if revision is None or self.review_store is None:
@@ -2184,6 +2219,17 @@ class ViewerWindow(QMainWindow):
                 service, revision, WORKSHEETS_FAILED, error=str(error)
             )
             self.status_message_label.show_message("No worksheets were saved", 5000)
+            self._refresh_worksheets_step(editor)
+            self._refresh_experiment_status(editor)
+            # An unreachable instrument folder is nothing the user can fix here,
+            # so offer another place for the files instead of only saying no.
+            if (
+                alternate_root is None
+                and isinstance(error, InstrumentLocationUnavailable)
+                and self._offer_another_location(editor, error)
+            ):
+                self._save_worksheets_elsewhere(editor)
+            return
         else:
             self._record_worksheet_export(
                 service, revision, WORKSHEETS_SUCCEEDED, result=result
@@ -2195,16 +2241,42 @@ class ViewerWindow(QMainWindow):
                 # Its wells are on the shared record now.
                 editor.refresh_plate_records()
             self.status_message_label.show_message(
-                f"Worksheets saved for {result.experiment_id}", 5000
+                f"Worksheets for {result.experiment_id} saved to the folder you chose"
+                if alternate_root is not None
+                else f"Worksheets saved for {result.experiment_id}",
+                5000,
             )
         self._refresh_worksheets_step(editor)
         self._refresh_experiment_status(editor)
 
+    def _offer_another_location(self, editor, error: Exception) -> bool:
+        """Ask whether to save the worksheets elsewhere; True to choose a folder."""
+        message = str(error)
+        reason = (message[:1].upper() + message[1:]).rstrip(".") + "."
+        wells = (
+            " The source plate wells stay free for everyone else until the "
+            "worksheets reach the instrument folders."
+            if isinstance(editor, ConditionTestEditor) else ""
+        )
+        answer = QMessageBox.question(
+            self,
+            "Instrument folders unavailable",
+            f"{reason}\n\nNothing was saved. A copy in another folder is not what "
+            f"the instruments read, so you would have to put the files there "
+            f"yourself.{wells}\n\nSave the worksheets to another folder for now?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        return answer == QMessageBox.Yes
+
     def _save_worksheets_elsewhere(self, editor) -> None:
         selected = QFileDialog.getExistingDirectory(
-            self, "Save worksheets to another folder", str(Path.home())
+            self, "Save worksheets to another folder",
+            str(self._alternate_worksheet_root or Path.home()),
         )
         if selected:
+            # A share that is down keeps everyone saving to the same folder today.
+            self._alternate_worksheet_root = Path(selected)
             self._save_plan_worksheets(editor, Path(selected))
 
     def _instrument_label(self, output: InstrumentOutput) -> str:

@@ -218,3 +218,13 @@ ECHO 옆 공용 solvent test plate를 여러 사용자가 계정과 관계없이
 - Wells 칸은 지시다: plate 이름과 종류가 정해지면(순서 무관) 새 plate는 A1부터, 쓰던 plate는 마지막 사용 칸 다음부터 필요한 수만큼 주소가 채워진다. 이렇게 채워진 wells는 조건이 바뀌어 필요한 수가 달라지면 따라서 다시 채워지고, 사용자가 직접 고쳐 쓴 wells는 그대로 둔다(다시 따르게 하려면 Use next wells). 필요한 well 수와 채울 양은 plate 종류만 정해져도 Preparation에 먼저 나온다.
 - ECHO worksheet는 확정된 revision의 wells를 앞에서부터 차례로 쓰고(dead volume 아래로 내려가기 전에 다음 well), 저장할 때 같은 wells를 공용 plate 기록에 남긴다.
 - 선택한 well이 설계보다 적을 때: 조용히 줄이지 않는다. Review의 `Plan with the N wells selected…`가 조건별로 줄어들 결정 수(예: DMSO 10% · 1 h: 3 → 2)를 먼저 보여 주고, 확인해야 적용한다. 가장 많은 조건부터 하나씩 줄여 고르게 나누며(같으면 뒤 조건부터), 모든 조건은 1개 이상 남는다. 조건 수보다 well이 적으면 반복만으로 맞출 수 없어 Conditions에서 조건을 빼거나 well을 더 고르라고 안내한다. 적용하면 설계의 조건별 수가 실제로 바뀌어 확정본에 그대로 남는다.
+
+## 15. 장비 폴더에 닿지 않을 때 (2026-10-16)
+
+장비와는 네트워크 공유 폴더에 CSV를 떨어뜨리는 방식으로만 연결된다. 공유가 빠져 있으면 폴더는 평범한 빈 디렉터리로 보이므로, 저장 직전에 각 장비 폴더가 있는지와 실제로 네트워크 마운트(cifs, smb3, smbfs, nfs)인지 확인한다. 한 대라도 닿지 않으면 아무 파일도 쓰지 않는다.
+
+- 실패하면 그 자리에서 다른 저장 위치를 물어본다: "Instrument output location is unavailable: … / Save the worksheets to another folder for now?" 예라고 하면 폴더 선택 창이 열리고 `<고른 폴더>/<장비>/<사용자>/<실험 ID>.csv`로 저장한다. 아니라고 하면 Worksheets 화면에 실패 이유와 `Try again` · `Save to another folder…`가 남는다.
+- 사용자가 고른 폴더는 세션 동안 기억해, 공유가 종일 내려가 있어도 다음 저장이 같은 폴더에서 시작한다.
+- 고른 폴더에 저장한 것은 장비가 읽는 파일이 아니므로 완료로 보지 않는다. Worksheets 단계는 주의 상태로 남고(`Worksheets r1 saved to a folder you chose · copy them to the instrument folders`), 화면 아래에도 어디에 저장되었고 무엇을 더 해야 하는지 적는다. 최근 작업 목록에도 `Worksheets r1 not in instrument folders`로 나온다. 공유가 돌아오면 같은 revision을 다시 저장하면 된다.
+- 조건 시험은 사본을 저장해도 공용 source plate에 well을 기록하지 않으므로, 물어볼 때 "그 well은 장비 폴더에 저장될 때까지 다른 사람에게 열려 있다"고 함께 알린다.
+- 다른 사람이 그사이 well을 가져가 실패한 경우(`SourceWellsTaken`)는 다른 폴더로 해결되지 않으므로 물어보지 않고, Conditions로 돌아가라는 안내만 남긴다.

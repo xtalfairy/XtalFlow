@@ -31,6 +31,14 @@ class WorksheetDestinationUnavailable(ReviewPersistenceError):
     pass
 
 
+class InstrumentLocationUnavailable(WorksheetDestinationUnavailable):
+    """An instrument's folder cannot be reached or written to.
+
+    Told apart from the other failures because the files themselves are fine:
+    another folder will hold them until the instrument's own can be reached.
+    """
+
+
 @dataclass(frozen=True)
 class WorksheetExportResult:
     experiment_id: str
@@ -107,7 +115,7 @@ class WorksheetExporter:
                 tuple(item.output_directory for item in destinations)
             )
             if missing and not self.settings.create_missing_instrument_roots:
-                raise WorksheetDestinationUnavailable(
+                raise InstrumentLocationUnavailable(
                     "instrument output location is unavailable: " + ", ".join(missing)
                 )
             directories = tuple(
@@ -123,7 +131,7 @@ class WorksheetExporter:
             for directory in directories:
                 directory.mkdir(parents=True, exist_ok=True)
         except OSError as error:
-            raise WorksheetDestinationUnavailable(f"{failure}: {error}") from error
+            raise InstrumentLocationUnavailable(f"{failure}: {error}") from error
         return self._export_to_directories(
             experiment_id, worksheets, destinations, directories
         )
@@ -190,7 +198,7 @@ class WorksheetExporter:
                 )
                 self._publish(tuple((source, target) for _, source, target in publications))
         except OSError as error:
-            raise WorksheetDestinationUnavailable(
+            raise InstrumentLocationUnavailable(
                 f"could not save worksheets: {error}"
             ) from error
         return WorksheetExportResult(

@@ -1063,6 +1063,37 @@ def test_fragment_worksheets_are_saved_and_audited(tmp_path: Path, monkeypatch) 
     app.processEvents()
 
 
+def test_offer_of_another_folder_says_the_source_wells_stay_free(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from xtalflow.domain.condition_test import solvent_test_template
+    from xtalflow.infrastructure.worksheet_exporter import InstrumentLocationUnavailable
+    from xtalflow.ui.condition_test_editor import ConditionTestEditor
+
+    app = QApplication.instance() or QApplication([])
+    window, _store, _editor = _fragment_plan_window(tmp_path, DEFAULT_SETTINGS)
+    asked = []
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        lambda *args, **kwargs: asked.append(args[2]) or QMessageBox.No,
+    )
+
+    declined = window._offer_another_location(
+        ConditionTestEditor(solvent_test_template()),
+        InstrumentLocationUnavailable(
+            "instrument output location is unavailable: /smbmount/echo650"
+        ),
+    )
+
+    assert declined is False
+    assert asked[0].startswith(
+        "Instrument output location is unavailable: /smbmount/echo650."
+    )
+    assert "source plate wells stay free" in asked[0]
+    window.close()
+    app.processEvents()
+
+
 def test_unavailable_instrument_share_can_use_alternate_root(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1078,28 +1109,63 @@ def test_unavailable_instrument_share_can_use_alternate_root(
         create_missing_instrument_roots=False,
     )
     window, store, editor = _fragment_plan_window(tmp_path, settings)
+    folders = []
     monkeypatch.setattr(
         "xtalflow.viewer.QFileDialog.getExistingDirectory",
-        lambda *args, **kwargs: str(tmp_path / "chosen"),
+        lambda *args, **kwargs: folders.append(args[2]) or str(tmp_path / "chosen"),
+    )
+    asked = []
+    answer = [QMessageBox.No]
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        lambda *args, **kwargs: asked.append(args[2]) or answer[0],
     )
     assert window._finalize_plan(editor) is not None
     window.go_to_step(WorkflowStep.WORKSHEETS)
     step = editor.worksheets_step
 
+    # Declining the offer leaves the failure on the page and nothing saved.
     window.experiment_page.primary_button.click()
 
+    assert "missing-echo" in asked[0]
+    assert "Save the worksheets to another folder for now?" in asked[0]
+    assert folders == []
     assert step.result_label.text().startswith("! No worksheets were saved.")
     assert not step.retry_button.isHidden()
-    assert window.experiment_page.primary_button.text() == "Save worksheets"
-    step.choose_location_button.click()
+    assert [
+        event.status
+        for event in store.audit.list_worksheet_exports(editor.last_revision.id)
+    ] == ["failed"]
 
+    # Accepting it saves to the folder chosen in the dialog that follows.
+    answer[0] = QMessageBox.Yes
+    step.retry_button.click()
+
+    assert folders == [str(Path.home())]
     exports = store.audit.list_worksheet_exports(editor.last_revision.id)
-    assert [event.status for event in exports] == ["failed", "succeeded"]
-    assert exports[1].path_for("echo650").startswith(str(tmp_path / "chosen" / "echo650"))
-    assert step.retry_button.isHidden()
+    assert [event.status for event in exports] == ["failed", "failed", "succeeded"]
+    assert exports[-1].path_for("echo650").startswith(str(tmp_path / "chosen" / "echo650"))
+    # Saved, but not where the instruments read: the step still asks for attention.
+    result = step.result_label.text()
+    assert "Saved r1 to the folder you chose" in result
+    assert "not in the instrument folders" in result
+    assert window.experiment_page.primary_button.text() == "Save worksheets"
+    assert (
+        editor.experiment_status.status_of(WorkflowStep.WORKSHEETS).state
+        is StepState.ATTENTION
+    )
+    assert not step.retry_button.isHidden()
     assert not step.copy_paths_button.isHidden()
     step.copy_paths_button.click()
-    assert QApplication.clipboard().text().splitlines()[0] == exports[1].path_for("echo650")
+    assert QApplication.clipboard().text().splitlines()[0] == exports[-1].path_for("echo650")
+
+    # The folder chosen before is where the next save starts.
+    step.choose_location_button.click()
+    assert folders[-1] == str(tmp_path / "chosen")
+    window.show_home()
+    assert window.home_page.recent_table.item(0, 2).text() == (
+        "Worksheets r1 not in instrument folders"
+    )
     window.close()
     app.processEvents()
 

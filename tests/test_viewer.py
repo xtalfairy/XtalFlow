@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PyQt5.QtCore import QPoint, Qt
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
@@ -296,6 +296,29 @@ def test_viewer_starts_when_workspace_images_are_unavailable(tmp_path: Path) -> 
     app.processEvents()
 
 
+def _share_with_one_plate(root: Path, plate_code: str = "1070") -> Path:
+    """The RockMaker folder layout with a single readable image."""
+    shard = RockMakerImageRepository.shard_for(plate_code)
+    well = root / shard / f"plateID_{plate_code}" / "batchID_5947" / "wellNum_1"
+    profile = well / "profileID_1"
+    profile.mkdir(parents=True, exist_ok=True)
+    image = QImage(16, 16, QImage.Format_RGB32)
+    image.fill(0xFF808080)
+    assert image.save(str(profile / "d1_r1_ef.jpg"), "JPEG")
+    return root
+
+
+def _answers(*replies):
+    """A dialog stub that records what it was shown and never loops forever."""
+    shown = []
+
+    def answer(*args, **kwargs):
+        shown.append(args[2])
+        return replies[min(len(shown), len(replies)) - 1]
+
+    return shown, answer
+
+
 def test_load_plates_offers_to_look_again_while_the_share_is_down(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -315,12 +338,11 @@ def test_load_plates_offers_to_look_again_while_the_share_is_down(
                 )
             return super().load_plate_batch(*args, **kwargs)
 
-    window = ViewerWindow(FlakyRepository(FIXTURE_ROOT), store)
-    asked = []
-    monkeypatch.setattr(
-        QMessageBox, "warning",
-        lambda *args, **kwargs: asked.append(args[2]) or QMessageBox.Retry,
-    )
+    share = _share_with_one_plate(tmp_path / "share")
+    window = ViewerWindow(FlakyRepository(share), store)
+    # Two refusals, then Retry succeeds; a third answer would end the loop.
+    asked, answer = _answers(QMessageBox.Retry, QMessageBox.Retry, QMessageBox.Cancel)
+    monkeypatch.setattr(QMessageBox, "warning", answer)
     window.load_plates_form.plate_codes_input.setText("1070")
 
     window.load_plates_form.load_button.click()
@@ -348,7 +370,8 @@ def test_cancelling_the_share_dialog_loads_nothing(tmp_path: Path, monkeypatch) 
             OfflineRepository.reads += 1
             raise ImageSourceUnavailable(Path("/smbmount/rmserver"), "Host is down")
 
-    window = ViewerWindow(OfflineRepository(FIXTURE_ROOT), store)
+    share = _share_with_one_plate(tmp_path / "share")
+    window = ViewerWindow(OfflineRepository(share), store)
     monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: QMessageBox.Cancel)
     window.load_plates_form.plate_codes_input.setText("1070")
 
@@ -364,13 +387,12 @@ def test_a_plate_that_is_not_on_the_share_is_not_a_share_problem(
     tmp_path: Path, monkeypatch
 ) -> None:
     app = QApplication.instance() or QApplication([])
+    share = _share_with_one_plate(tmp_path / "share")
     window = ViewerWindow(
-        RockMakerImageRepository(FIXTURE_ROOT), SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+        RockMakerImageRepository(share), SQLiteReviewStore(tmp_path / "reviews.sqlite3")
     )
-    asked = []
-    monkeypatch.setattr(
-        QMessageBox, "warning", lambda *args, **kwargs: asked.append(args[2]) or QMessageBox.Ok
-    )
+    asked, answer = _answers(QMessageBox.Ok)
+    monkeypatch.setattr(QMessageBox, "warning", answer)
     window.load_plates_form.plate_codes_input.setText("9999")
 
     window.load_plates_form.load_button.click()
@@ -387,7 +409,7 @@ def test_an_experiment_says_when_its_wells_cannot_be_read(
 ) -> None:
     app = QApplication.instance() or QApplication([])
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
-    window = ViewerWindow(RockMakerImageRepository(FIXTURE_ROOT), store)
+    window = ViewerWindow(RockMakerImageRepository(tmp_path / "share"), store)
     editor = window.experiments.start_experiment(PlanType.RAW_CRYSTAL)
     editor.protein_input.setText("BRD4")
 

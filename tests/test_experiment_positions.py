@@ -232,8 +232,24 @@ def test_schema18_database_gains_hidden_workspaces_and_keeps_projects(tmp_path: 
     project, _ = _workspace(store)
     store.close()
     connection = sqlite3.connect(database_path)
-    connection.execute("ALTER TABLE project DROP COLUMN hidden_at")
-    connection.execute("PRAGMA user_version = 18")
+    connection.executescript(
+        """
+        PRAGMA legacy_alter_table = ON;
+        ALTER TABLE project RENAME TO project_before_18;
+        CREATE TABLE project (
+            project_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            active_image_set_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        INSERT INTO project
+            SELECT project_id, name, active_image_set_id, created_at, updated_at
+            FROM project_before_18;
+        DROP TABLE project_before_18;
+        PRAGMA user_version = 18;
+        """
+    )
     connection.commit()
     connection.close()
 
@@ -283,7 +299,29 @@ def test_schema19_database_keys_worksheet_outputs_by_order_and_keeps_rows(tmp_pa
         );
         INSERT INTO worksheet_export_output SELECT * FROM output_new;
         DROP TABLE output_new;
-        ALTER TABLE planning_draft DROP COLUMN details_json;
+        PRAGMA legacy_alter_table = ON;
+        ALTER TABLE planning_draft RENAME TO draft_before_19;
+        CREATE TABLE planning_draft (
+            plan_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES project(project_id) ON DELETE CASCADE,
+            plan_type TEXT NOT NULL,
+            name TEXT NOT NULL,
+            library_id TEXT,
+            library_rows TEXT NOT NULL,
+            protein TEXT NOT NULL,
+            volume_nl TEXT NOT NULL,
+            assignment_order TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            experiment_id TEXT,
+            workflow_step TEXT
+        );
+        INSERT INTO planning_draft
+            SELECT plan_id, project_id, plan_type, name, library_id, library_rows,
+                   protein, volume_nl, assignment_order, created_at, updated_at,
+                   experiment_id, workflow_step
+            FROM draft_before_19;
+        DROP TABLE draft_before_19;
         PRAGMA user_version = 19;
         """
     )

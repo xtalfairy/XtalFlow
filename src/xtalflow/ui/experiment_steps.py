@@ -6,7 +6,6 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QApplication,
-    QFormLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -19,6 +18,10 @@ from PyQt5.QtWidgets import (
 
 from xtalflow.ui import theme
 from xtalflow.ui.forms import form_layout
+
+
+# Wide enough for the longest field and message, so the centred form never resizes.
+SETUP_WIDTH = 620
 
 
 def _section_title(text: str) -> QLabel:
@@ -70,9 +73,13 @@ class SetupStep(QWidget):
             form.addRow(label, field)
         form.addRow("Type", self.type_label)
         form.addRow("Workspace", self.workspace_label)
+        # A box of its own width, centred: messages inside it move nothing.
+        box = QWidget()
+        box.setFixedWidth(SETUP_WIDTH)
+        box.setLayout(form)
         layout = QVBoxLayout()
         layout.setContentsMargins(0, theme.SPACING_L, 0, 0)
-        layout.addLayout(form)
+        layout.addWidget(box, 0, Qt.AlignHCenter)
         layout.addStretch()
         self.setLayout(layout)
         editor.protein_input.textChanged.connect(self.refresh)

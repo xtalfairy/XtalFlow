@@ -71,6 +71,7 @@ from xtalflow.domain.labwork import build_condition_test_labworks
 from xtalflow.domain.plan_lifecycle import PlanningDraft
 from xtalflow.domain.worksheets import ECHO_HEADER, build_condition_echo_rounds, build_shifter_worksheet
 from xtalflow.ui import theme
+from xtalflow.ui.forms import form_layout
 from xtalflow.ui.help_button import HelpButton
 from xtalflow.ui.plan_editors import PlanEditorBase, _plural, _preview_table
 
@@ -651,7 +652,7 @@ class ConditionTestEditor(PlanEditorBase):
     def _build_condition_panel(self) -> None:
         # What this one well gets. Concentrations and durations belong to the whole
         # column or row, so they are named here but changed at the axis.
-        facts = QFormLayout()
+        facts = form_layout()
         facts.setLabelAlignment(Qt.AlignLeft)
         facts.setHorizontalSpacing(theme.SPACING_L)
         facts.setVerticalSpacing(theme.SPACING_S)

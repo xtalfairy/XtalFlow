@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
 )
 
 from xtalflow.ui import theme
+from xtalflow.ui.forms import form_layout
 
 
 def _section_title(text: str) -> QLabel:
@@ -59,7 +60,7 @@ class SetupStep(QWidget):
         protein_field.setSpacing(2)
         protein_field.addLayout(protein_row)
         protein_field.addLayout(note_row)
-        form = QFormLayout()
+        form = form_layout()
         form.setLabelAlignment(Qt.AlignLeft)
         form.setVerticalSpacing(theme.SPACING_L)
         form.setHorizontalSpacing(theme.SPACING_XL)

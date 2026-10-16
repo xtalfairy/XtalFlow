@@ -27,6 +27,7 @@ from xtalflow.infrastructure import (
     natural_name_key,
 )
 from xtalflow.ui import theme
+from xtalflow.ui.forms import form_layout
 
 
 @dataclass(frozen=True)
@@ -82,7 +83,7 @@ class LoadPlatesForm(QWidget):
         self.load_button.setObjectName("Primary")
         self.load_button.setEnabled(False)
 
-        form = QFormLayout()
+        form = form_layout()
         form.addRow("Plate type", self.plate_format_input)
         form.addRow("Plate codes", self.plate_codes_input)
         layout = QVBoxLayout()

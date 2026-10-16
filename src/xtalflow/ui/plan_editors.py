@@ -60,6 +60,7 @@ from xtalflow.domain.worksheets import (
 )
 from xtalflow.infrastructure.mxlive_config import MxLiveAccount
 from xtalflow.ui import theme
+from xtalflow.ui.forms import form_layout
 from xtalflow.ui.help_button import HelpButton
 
 
@@ -424,7 +425,7 @@ class FragmentScreeningEditor(PlanEditorBase):
             )
         )
         volume_row.addStretch()
-        form = QFormLayout()
+        form = form_layout()
         # Fields take the column width so a note under an input wraps instead of clipping.
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         form.setVerticalSpacing(theme.SPACING_M)

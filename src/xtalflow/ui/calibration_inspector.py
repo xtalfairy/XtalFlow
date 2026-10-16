@@ -19,6 +19,7 @@ from PyQt5.QtWidgets import (
 
 from xtalflow.domain import CalibrationMethod, ImageCalibration
 from xtalflow.ui import theme
+from xtalflow.ui.forms import form_layout
 
 
 def calibration_status(
@@ -78,7 +79,7 @@ class CalibrationInspector(QFrame):
 
         title = QLabel("Well calibration")
         title.setObjectName("PrimaryHeading")
-        facts = QFormLayout()
+        facts = form_layout()
         facts.addRow("Method", self.method_label)
         facts.addRow("Detection score", self.score_label)
         facts.addRow("Diameter", self.diameter_label)

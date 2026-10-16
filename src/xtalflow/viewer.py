@@ -109,7 +109,7 @@ from xtalflow.ui.home_page import (
 )
 from xtalflow.ui import theme
 from xtalflow.ui.experiment_coordinator import ExperimentCoordinator
-from xtalflow.ui.image_errors import IMAGE_SOURCE_ERRORS
+from xtalflow.ui.errors import IMAGE_SOURCE_ERRORS, STORE_ERRORS
 from xtalflow.ui.calibration_inspector import CalibrationInspector, calibration_status
 from xtalflow.ui.load_plates_dialog import LoadPlatesDialog, LoadPlatesForm, PlateSource
 from xtalflow.ui.plate_list import PlateCardDelegate
@@ -799,7 +799,7 @@ class ViewerWindow(QMainWindow):
             if self.controller is not None:
                 self.controller.checkpoint_current()
             project = self.project_controller.create_project(name)
-        except (ValueError, ReviewPersistenceError) as error:
+        except STORE_ERRORS as error:
             QMessageBox.warning(self, "Cannot create workspace", str(error))
             return
         self._show_active_review()
@@ -810,7 +810,7 @@ class ViewerWindow(QMainWindow):
     def rename_workspace(self, workspace_id: str, name: str) -> None:
         try:
             self.project_controller.rename_project(workspace_id, name)
-        except (ValueError, ReviewPersistenceError) as error:
+        except STORE_ERRORS as error:
             QMessageBox.warning(self, "Cannot rename workspace", str(error))
         self._refresh_home_workspaces()
 
@@ -841,7 +841,7 @@ class ViewerWindow(QMainWindow):
             return
         try:
             self.project_controller.hide_project(workspace_id)
-        except (ValueError, ReviewPersistenceError) as error:
+        except STORE_ERRORS as error:
             QMessageBox.warning(self, "Cannot hide workspace", str(error))
             return
         if self._home_workspace_id == workspace_id:
@@ -854,7 +854,7 @@ class ViewerWindow(QMainWindow):
     def restore_workspace(self, workspace_id: str) -> None:
         try:
             self.project_controller.restore_project(workspace_id)
-        except (ValueError, ReviewPersistenceError) as error:
+        except STORE_ERRORS as error:
             QMessageBox.warning(self, "Cannot show workspace", str(error))
             return
         self._home_workspace_id = workspace_id
@@ -901,7 +901,7 @@ class ViewerWindow(QMainWindow):
         try:
             self.project_controller.move_image_set(image_set_id, offset)
             self._sync_project_widgets()
-        except (ValueError, ReviewPersistenceError) as error:
+        except STORE_ERRORS as error:
             QMessageBox.warning(self, "Cannot reorder image set", str(error))
 
     def _archive_selected_image_set(self) -> None:
@@ -1420,7 +1420,7 @@ class ViewerWindow(QMainWindow):
             return
         try:
             removed = self.project_controller.remove_project_targets(target_ids)
-        except (ValueError, ReviewPersistenceError) as error:
+        except STORE_ERRORS as error:
             QMessageBox.warning(self, "Cannot remove targets", str(error))
             return
         if self.controller is not None:
@@ -1760,7 +1760,7 @@ class ViewerWindow(QMainWindow):
             calibration = self.calibration_service.save_manual_three_point(
                 self.controller.current_image, points
             )
-        except (ValueError, ReviewPersistenceError) as error:
+        except STORE_ERRORS as error:
             QMessageBox.warning(self, "Cannot calibrate well", str(error))
             self._cancel_manual_calibration()
             return
@@ -1848,7 +1848,7 @@ class ViewerWindow(QMainWindow):
             return
         try:
             moved = self.controller.move_to(image_index)
-        except (ValueError, ReviewPersistenceError) as error:
+        except STORE_ERRORS as error:
             QMessageBox.warning(self, "Cannot go to well", str(error))
             return
         if moved:

@@ -101,7 +101,7 @@ from xtalflow.ui.home_page import (
     RecentExperiment,
 )
 from xtalflow.ui import theme
-from xtalflow.ui.image_errors import IMAGE_SOURCE_ERRORS
+from xtalflow.ui.errors import IMAGE_SOURCE_ERRORS, STORE_ERRORS
 
 
 STEP_HINTS = {
@@ -268,7 +268,7 @@ class ExperimentCoordinator:
         if self.window.project_controller.active_project is None:
             try:
                 self.window.project_controller.create_project("Untitled Workspace")
-            except (ValueError, ReviewPersistenceError) as error:
+            except STORE_ERRORS as error:
                 QMessageBox.warning(self.window, "Cannot start experiment", str(error))
                 return None
             self.window._show_active_review()
@@ -320,7 +320,7 @@ class ExperimentCoordinator:
             return
         try:
             workspace.adopt_workspace_positions(editor.project_id, editor.plan_id)
-        except (ValueError, ReviewPersistenceError) as error:
+        except STORE_ERRORS as error:
             QMessageBox.warning(self.window, "Positions were not copied", str(error))
 
     def resume_experiment(self, workspace_id: str, plan_id: str):
@@ -347,7 +347,7 @@ class ExperimentCoordinator:
                 editor = self._create_editor(
                     PlanType(draft.plan_type), draft.id, draft.name, workspace_id, draft
                 )
-            except (ValueError, ReviewPersistenceError) as error:
+            except STORE_ERRORS as error:
                 QMessageBox.warning(self.window, "Cannot open experiment", str(error))
                 self.show_home()
                 return None
@@ -385,7 +385,7 @@ class ExperimentCoordinator:
             return
         try:
             self._remove_experiment(plan_id)
-        except (ValueError, ReviewPersistenceError, *IMAGE_SOURCE_ERRORS) as error:
+        except IMAGE_SOURCE_ERRORS as error:
             QMessageBox.warning(self.window, "Cannot delete experiment", str(error))
             return
         self._refresh_project_well_usage()
@@ -440,7 +440,7 @@ class ExperimentCoordinator:
             return
         try:
             self._remove_experiment(editor.plan_id)
-        except (ValueError, ReviewPersistenceError, *IMAGE_SOURCE_ERRORS):
+        except IMAGE_SOURCE_ERRORS:
             # Nothing was saved for it; leftover review marks are harmless.
             self._editors.pop(editor.plan_id, None)
 
@@ -1179,7 +1179,7 @@ class ExperimentCoordinator:
                 snapshot, editor.assigned_experiment_id, getpass.getuser(),
                 self._mxlive_experiment_ids,
             )
-        except (ValueError, ReviewPersistenceError) as error:
+        except STORE_ERRORS as error:
             QMessageBox.warning(self.window, "Cannot finalize plan", str(error))
             return None
         editor.last_revision = revision

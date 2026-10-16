@@ -1754,7 +1754,16 @@ def test_existing_targets_do_not_define_auto_advance_setting(tmp_path: Path) -> 
         for coordinate in (10, 20, 30)
     )
     store = SQLiteReviewStore(database_path)
-    store.workspace.save_image(image.image_key, targets)
+    with store._connection:
+        store._connection.executemany(
+            "INSERT INTO target_point(target_id, image_key, x_px, y_px, selected_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                (target.id, target.image_key, target.x_px, target.y_px,
+                 target.selected_at.isoformat())
+                for target in targets
+            ),
+        )
     store.close()
 
     window = ViewerWindow(
@@ -1893,8 +1902,6 @@ def test_failed_checkpoint_does_not_move_and_shows_failed_state(
     )
     window.load_plate("1070", SWISSCI_MIDI_3_LENS)
     window._handle_image_click(100, 120, Qt.LeftButton)
-    original_checkpoint = window.controller.store.workspace.save_checkpoint
-
     def fail_checkpoint(*args) -> None:
         raise ReviewPersistenceError("test storage failure")
 
@@ -1904,7 +1911,6 @@ def test_failed_checkpoint_does_not_move_and_shows_failed_state(
 
     assert window.controller.image_index == 0
     assert window.save_status_label.text() == "! Save failed"
-    monkeypatch.setattr(window.controller.store, "save_checkpoint", original_checkpoint)
     window.close()
     app.processEvents()
 
@@ -1920,7 +1926,6 @@ def test_cancel_close_after_save_failure_keeps_window_and_store_open(
         SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
     )
     window.load_plate("1070", SWISSCI_MIDI_3_LENS)
-    original_checkpoint = window.controller.store.workspace.save_checkpoint
 
     def fail_checkpoint(*args) -> None:
         raise ReviewPersistenceError("test storage failure")
@@ -1939,7 +1944,7 @@ def test_cancel_close_after_save_failure_keeps_window_and_store_open(
     assert event.ignored
     assert not window.review_store._closed
     assert window.save_status_label.text() == "! Save failed"
-    monkeypatch.setattr(window.controller.store, "save_checkpoint", original_checkpoint)
+    monkeypatch.undo()
     window.close()
     app.processEvents()
 

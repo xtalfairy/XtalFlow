@@ -8,7 +8,6 @@ from pathlib import Path
 
 from xtalflow.application import ReviewPersistenceError
 from xtalflow.infrastructure.delivery_audit_store import SQLiteDeliveryAuditStore
-from xtalflow.infrastructure.fragment_library_store import SQLiteFragmentLibraryStore
 from xtalflow.infrastructure.planning_store import SQLitePlanningStore
 from xtalflow.infrastructure.review_migrations import (
     ReviewDatabaseTooNewError,
@@ -23,8 +22,8 @@ class SQLiteReviewStore:
     """One SQLite database shared by focused repositories.
 
     Callers depend on the repository they need: ``workspace`` for image review,
-    ``planning`` for experiment plans, ``audit`` for deliveries outside
-    XtalFlow, and ``fragment_libraries`` for imported library catalogs.
+    ``planning`` for experiment plans, and ``audit`` for deliveries outside
+    XtalFlow. Fragment libraries are read from their CSV files, not from here.
     """
 
     def __init__(self, database_path: Path | str) -> None:
@@ -41,7 +40,6 @@ class SQLiteReviewStore:
             self.workspace = SQLiteWorkspaceStore(self._connection)
             self.planning = SQLitePlanningStore(self._connection)
             self.audit = SQLiteDeliveryAuditStore(self._connection)
-            self.fragment_libraries = SQLiteFragmentLibraryStore(self._connection)
             self.planning_project_migration = (
                 self.planning.migrate_finalized_planning_projects()
             )

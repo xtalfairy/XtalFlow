@@ -29,29 +29,40 @@ from xtalflow.domain.plan_lifecycle import (
 )
 
 
+def _scoped(store: SQLiteReviewStore, image_key: str = "image"):
+    """One image set in one workspace, the scope every review is saved in."""
+    project = Project.create("Workspace")
+    image_set = project.add_image_set("1070", 5947, "profileID_1", image_key)
+    store.workspace.save_project(project)
+    return store.workspace.scoped_to(image_set.id)
+
+
 def test_sqlite_store_replaces_and_restores_image_snapshot(tmp_path: Path) -> None:
     image = CrystalImage("1070", 5947, 1, 1, "profileID_1", Path("image.jpg"))
     session = ReviewSession()
     first = session.add_target(image, 10, 20, 100, 100)
     second = session.add_target(image, 30, 40, 100, 100)
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    scoped = _scoped(store, image.image_key)
+    progress = ReviewProgress.create("1070", 5947, "profileID_1", image.image_key)
 
-    store.workspace.save_image(image.image_key, (first, second))
-    assert store.workspace.load_images((image.image_key,)) == (first, second)
+    scoped.save_checkpoint(image.image_key, (first, second), progress, ReviewPreferences(1))
+    assert scoped.load_images((image.image_key,)) == (first, second)
 
-    store.workspace.save_image(image.image_key, (second,))
-    assert store.workspace.load_images((image.image_key,)) == (second,)
+    scoped.save_checkpoint(image.image_key, (second,), progress, ReviewPreferences(1))
+    assert scoped.load_images((image.image_key,)) == (second,)
     store.close()
 
 
 def test_sqlite_store_restores_review_state(tmp_path: Path) -> None:
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    scoped = _scoped(store, "first")
     progress = ReviewProgress.create("1070", 5947, "profileID_1", "first")
     preferences = ReviewPreferences(3)
     progress.move_to("second")
 
-    store.workspace.save_review_state(progress, preferences)
-    restored = store.workspace.load_review_state(progress.plan_key)
+    scoped.save_review_state(progress, preferences)
+    restored = scoped.load_review_state(progress.plan_key)
 
     assert restored is not None
     restored_progress, restored_preferences = restored
@@ -207,34 +218,14 @@ def test_old_required_count_column_is_migrated_to_auto_advance(tmp_path: Path) -
     connection.close()
 
     store = SQLiteReviewStore(database_path)
-    restored = store.workspace.load_review_state("1070:5947:profileID_1")
+    row = store._connection.execute(
+        "SELECT auto_advance_target_count FROM review_plan WHERE plan_key = ?",
+        ("1070:5947:profileID_1",),
+    ).fetchone()
 
-    assert restored[1].auto_advance_target_count == 10
+    assert row[0] == 10
     version = store._connection.execute("PRAGMA user_version").fetchone()[0]
     assert version == LATEST_SCHEMA_VERSION
-    store.close()
-
-
-def test_fragment_library_import_is_content_deduplicated_and_reloadable(
-    tmp_path: Path,
-) -> None:
-    csv_path = tmp_path / "library.csv"
-    csv_path.write_text(
-        "Vendor,Library,No,ID,Formula,MW,Smile,Conc_mM,Solvent,Plate_ID,Plate_well\n"
-        "Vendor,Lib,8,CMP-8,C2H6O,46.07,CCO,100,DMSO,SRC-1,A01\n",
-        encoding="utf-8",
-    )
-    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
-
-    first = store.fragment_libraries.import_fragment_library(csv_path)
-    second = store.fragment_libraries.import_fragment_library(csv_path)
-    restored = store.fragment_libraries.load_fragment_library(first.id)
-
-    assert first == second
-    assert len(store.fragment_libraries.list_fragment_libraries()) == 1
-    assert first.display_name == "library.csv · 1 rows"
-    assert restored.fragments[0].number == "8"
-    assert restored.fragments[0].compound_id == "CMP-8"
     store.close()
 
 
@@ -400,10 +391,11 @@ def test_checkpoint_rolls_back_targets_when_progress_write_fails(tmp_path: Path)
     )
     preferences = ReviewPreferences(3)
     store = SQLiteReviewStore(database_path)
-    store.workspace.save_checkpoint(image.image_key, (original,), progress, preferences)
+    scoped = _scoped(store, image.image_key)
+    scoped.save_checkpoint(image.image_key, (original,), progress, preferences)
     store._connection.execute(
         """
-        CREATE TRIGGER reject_review_update BEFORE UPDATE ON review_plan
+        CREATE TRIGGER reject_review_update BEFORE UPDATE ON image_set_review_state
         BEGIN SELECT RAISE(ABORT, 'test failure'); END
         """
     )
@@ -411,11 +403,9 @@ def test_checkpoint_rolls_back_targets_when_progress_write_fails(tmp_path: Path)
     from xtalflow.application import ReviewPersistenceError
 
     with pytest.raises(ReviewPersistenceError):
-        store.workspace.save_checkpoint(
-            image.image_key, (replacement,), progress, preferences
-        )
+        scoped.save_checkpoint(image.image_key, (replacement,), progress, preferences)
 
-    assert store.workspace.load_images((image.image_key,)) == (original,)
+    assert scoped.load_images((image.image_key,)) == (original,)
     store.close()
 
 
@@ -619,8 +609,11 @@ def test_interrupted_migration_leaves_database_unchanged(
     assert _schema(database_path) == before
     monkeypatch.undo()
     store = SQLiteReviewStore(database_path)
-    _, preferences = store.workspace.load_review_state("1070:5947:profileID_1")
-    assert preferences.auto_advance_target_count == 3
+    row = store._connection.execute(
+        "SELECT auto_advance_target_count FROM review_plan WHERE plan_key = ?",
+        ("1070:5947:profileID_1",),
+    ).fetchone()
+    assert row[0] == 3
     store.close()
 
 

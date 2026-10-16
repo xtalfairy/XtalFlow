@@ -60,6 +60,7 @@ class ApplicationSettings:
     instruments: tuple[InstrumentDestination, ...]
     create_missing_instrument_roots: bool
     require_network_instrument_mounts: bool = False
+    require_network_image_root: bool = False
     review_database_filename: str = "reviews.sqlite3"
     mxlive_base_url: str | None = None
     mxlive_beamline: str = "BL-5C"
@@ -120,6 +121,7 @@ OPERATING_SERVER_SETTINGS = ApplicationSettings(
     ),
     create_missing_instrument_roots=False,
     require_network_instrument_mounts=True,
+    require_network_image_root=True,
     mxlive_base_url="https://mxlive.postech.ac.kr",
     mxlive_ca_bundle=Path("/etc/pki/tls/certs/ca-bundle.crt"),
     mxlive_config_path=Path("/etc/xtalflow/xtalflow.toml"),
@@ -133,31 +135,36 @@ OPERATING_SERVER_SETTINGS = ApplicationSettings(
 DEFAULT_SETTINGS = DEVELOPMENT_SETTINGS
 
 
-def with_instrument_output_policy(
-    settings: ApplicationSettings, allow_local_instrument_directories: bool = False
+def with_network_path_policy(
+    settings: ApplicationSettings,
+    allow_local_instrument_directories: bool = False,
+    allow_local_image_root: bool = False,
 ) -> ApplicationSettings:
-    """Treat instrument folders outside this repository as real network shares.
+    """Treat folders outside this repository as real network shares.
 
-    Development defaults create missing folders under ``tests/runtime``.  Keeping
-    that behavior for operating paths given on the command line would silently
-    write worksheets to local disk when a share is not mounted.
+    Development defaults create missing folders under ``tests/runtime`` and read
+    images from a fixture folder. Keeping that for operating paths given on the
+    command line would write worksheets to local disk when a share is not
+    mounted, and would call a dropped image share a missing plate.
     """
     if allow_local_instrument_directories:
-        return replace(
+        settings = replace(
             settings,
             create_missing_instrument_roots=True,
             require_network_instrument_mounts=False,
         )
-    if all(
+    elif not all(
         _is_within_project(destination.output_directory)
         for destination in settings.instruments
     ):
-        return settings
-    return replace(
-        settings,
-        create_missing_instrument_roots=False,
-        require_network_instrument_mounts=True,
-    )
+        settings = replace(
+            settings,
+            create_missing_instrument_roots=False,
+            require_network_instrument_mounts=True,
+        )
+    if not allow_local_image_root and not _is_within_project(settings.rmserver_root):
+        settings = replace(settings, require_network_image_root=True)
+    return settings
 
 
 def _is_within_project(path: Path) -> bool:

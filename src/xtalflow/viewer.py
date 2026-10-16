@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import socket
 import threading
 import traceback
 from collections.abc import Callable
@@ -68,6 +69,7 @@ from xtalflow.domain import (
     ImageCalibration,
     ImageFilter,
     PlateFormat,
+    PlateImages,
     plate_format_by_id,
 )
 from xtalflow.domain.instruments import (
@@ -79,6 +81,7 @@ from xtalflow.application.experiment_workflow import (
     WorkflowStep,
 )
 from xtalflow.infrastructure import (
+    ImageSourceUnavailable,
     OpenCVWellDetector,
     RockMakerImageRepository,
     SQLiteReviewStore,
@@ -90,7 +93,7 @@ from xtalflow.presentation import ProjectImageSetListModel
 from xtalflow.settings import (
     ApplicationSettings,
     DEFAULT_SETTINGS,
-    with_instrument_output_policy,
+    with_network_path_policy,
 )
 from xtalflow.text import counted
 from xtalflow.ui.review_widgets import (
@@ -111,7 +114,13 @@ from xtalflow.ui import theme
 from xtalflow.ui.experiment_coordinator import ExperimentCoordinator
 from xtalflow.ui.errors import IMAGE_SOURCE_ERRORS, STORE_ERRORS
 from xtalflow.ui.calibration_inspector import CalibrationInspector, calibration_status
-from xtalflow.ui.load_plates_dialog import LoadPlatesDialog, LoadPlatesForm, PlateSource
+from xtalflow.ui.load_plates_dialog import (
+    LoadPlatesDialog,
+    LoadPlatesForm,
+    PlateRequest,
+    PlateSource,
+    resolve_plate_sources,
+)
 from xtalflow.ui.plate_list import PlateCardDelegate
 from xtalflow.ui.shortcuts_dialog import ShortcutsDialog
 
@@ -1073,29 +1082,78 @@ class ViewerWindow(QMainWindow):
         if dialog.exec_() != QDialog.Accepted:
             return
         try:
-            sources = dialog.plate_sources()
+            requests = dialog.form.requested_plates()
         except IMAGE_SOURCE_ERRORS as error:
             QMessageBox.warning(self, "Cannot load plates", str(error))
             return
-        self.load_plates(dialog.plate_format, sources)
+        plates = self._read_plates(requests)
+        if plates is None:
+            return
+        self.load_plates(dialog.plate_format, plates)
 
     def _load_plates_from_form(self) -> None:
+        form = self.load_plates_form
         try:
-            sources = self.load_plates_form.plate_sources()
+            requests = form.requested_plates()
         except IMAGE_SOURCE_ERRORS as error:
-            self.load_plates_form.error_label.setText(str(error))
-            self.load_plates_form.error_label.show()
+            form.error_label.setText(str(error))
+            form.error_label.show()
             return
-        self.load_plates(self.load_plates_form.plate_format, sources)
-        self.load_plates_form.plate_codes_input.clear()
+        plates = self._read_plates(requests, form.error_label)
+        if plates is None:
+            return
+        self.load_plates(form.plate_format, plates)
+        form.plate_codes_input.clear()
+
+    def _read_plates(
+        self, requests: tuple[PlateRequest, ...], error_label: QLabel | None = None
+    ) -> tuple[tuple[PlateSource, PlateImages], ...] | None:
+        """Read the chosen plates from the share, once, off the window's thread.
+
+        None means the user cancelled, or the plate is not on the share; the
+        plates come back with their images so adding them reads nothing again.
+        """
+        def read() -> tuple[tuple[PlateSource, PlateImages], ...]:
+            sources = resolve_plate_sources(self.repository, requests)
+            return tuple(
+                (
+                    source,
+                    self.repository.load_plate_batch(
+                        source.plate_code, source.batch_id, source.profile
+                    ),
+                )
+                for source in sources
+            )
+
+        message = f"Reading {counted(len(requests), 'plate')} from the RockMaker share…"
+        try:
+            return self._read_images(message, read)
+        except IMAGE_SOURCE_ERRORS as error:
+            # Not the share: this plate is not on it, or has no images yet.
+            plate_code = getattr(error, "plate_code", "")
+            if error_label is not None:
+                error_label.setText(
+                    f"No plate {plate_code} on the RockMaker share · check the number"
+                    if plate_code else str(error)
+                )
+                error_label.show()
+            else:
+                QMessageBox.warning(
+                    self, "Cannot load plates",
+                    f"No plate {plate_code} on the RockMaker share.\n\nCheck the "
+                    "number. A plate appears once RockMaker has imaged it."
+                    if plate_code else str(error),
+                )
+            return None
 
     def load_plates(
-        self, plate_format: PlateFormat, sources: tuple[PlateSource, ...]
+        self, plate_format: PlateFormat, plates: tuple[tuple[PlateSource, PlateImages], ...]
     ) -> None:
         try:
-            for source in sources:
+            for source, images in plates:
                 self.project_controller.add_pinned_image_set(
-                    source.plate_code, source.batch_id, source.profile, plate_format
+                    source.plate_code, source.batch_id, source.profile, plate_format,
+                    images,
                 )
         except IMAGE_SOURCE_ERRORS as error:
             QMessageBox.warning(self, "Cannot load plates", str(error))
@@ -1955,6 +2013,42 @@ class ViewerWindow(QMainWindow):
             self.review_store.close()
         super().closeEvent(event)
 
+    def _read_images(self, message: str, task: Callable[[], T]) -> T | None:
+        """Run a read of the image share, offering to look again while it fails.
+
+        None means the user gave up. XtalFlow cannot mount the share itself, so
+        trying again only checks whether it has come back.
+        """
+        attempts = 0
+        while True:
+            try:
+                return self._run_in_background(message, task)
+            except ImageSourceUnavailable as error:
+                attempts += 1
+                if self._ask_to_try_again(error, attempts) != QMessageBox.Retry:
+                    return None
+
+    def _ask_to_try_again(self, error: ImageSourceUnavailable, attempts: int) -> int:
+        reason = error.reason.rstrip(".")
+        text = (
+            "Plate images cannot be read from the RockMaker share.\n\n"
+            f"{error.root}\n{reason[:1].upper() + reason[1:]}.\n\n"
+            "XtalFlow cannot connect the share itself. Try again once it is "
+            "back, or cancel."
+        )
+        if attempts > 1:
+            # The administrator needs to know which computer lost its mount.
+            text += (
+                "\n\nStill unavailable. Ask the administrator to check the "
+                f"RockMaker share on this computer:\n{socket.gethostname()} · "
+                f"{error.root} · {reason}"
+            )
+        return QMessageBox.warning(
+            self, "Plate images unavailable", text,
+            QMessageBox.Retry | QMessageBox.Cancel,
+            QMessageBox.Retry,
+        )
+
     def _show_persistence_error(self, error: ReviewPersistenceError) -> None:
         self._set_save_status("failed")
         self.status_message_label.show_message(f"Not saved: {error}")
@@ -2098,6 +2192,12 @@ def build_parser() -> argparse.ArgumentParser:
         "(testing only; instruments will not see these files)",
     )
     parser.add_argument(
+        "--allow-local-image-root",
+        action="store_true",
+        help="Allow an image root that is not a mounted network share "
+        "(testing only; a local folder stands in for the RockMaker share)",
+    )
+    parser.add_argument(
         "--examples-dir",
         type=Path,
         help="Folder of lab-approved example images, each with a same-named .txt caption",
@@ -2146,7 +2246,9 @@ def settings_from_arguments(args: argparse.Namespace) -> ApplicationSettings:
     ):
         if directory is not None:
             settings = settings.with_instrument_directory(instrument_id, directory)
-    return with_instrument_output_policy(settings, args.allow_local_instrument_dirs)
+    return with_network_path_policy(
+        settings, args.allow_local_instrument_dirs, args.allow_local_image_root
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2171,7 +2273,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"xtalflow-viewer: {error}", file=sys.stderr)
         return 2
     window = ViewerWindow(
-        RockMakerImageRepository(settings.rmserver_root),
+        RockMakerImageRepository(
+            settings.rmserver_root,
+            require_network_mount=settings.require_network_image_root,
+        ),
         review_store,
         settings=settings,
     )

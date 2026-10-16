@@ -118,3 +118,22 @@ def test_condition_test_sets_conditions_before_wells_and_counts_crystals() -> No
     )
     assert split.status_of(WorkflowStep.SELECT_WELLS).state is StepState.ATTENTION
     assert not split.ready_to_finalize
+
+
+def test_unreadable_images_stop_the_steps_instead_of_showing_no_wells() -> None:
+    status = evaluate_experiment(
+        replace(
+            READY_FRAGMENT,
+            images_unavailable="plate images on /smbmount/rmserver cannot be read: "
+            "the network share is not mounted",
+        )
+    )
+
+    assert _states(status)[WorkflowStep.SELECT_WELLS] is StepState.ATTENTION
+    assert status.status_of(WorkflowStep.SELECT_WELLS).message.startswith(
+        "Plate images unavailable · "
+    )
+    assert "the network share is not mounted" in status.status_of(
+        WorkflowStep.SELECT_WELLS
+    ).message
+    assert not status.ready_to_finalize

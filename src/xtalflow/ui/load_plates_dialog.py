@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (
 
 from xtalflow.domain import PlateFormat
 from xtalflow.infrastructure import (
+    ImageSourceUnavailable,
     PlateImagesNotFoundError,
     latest_image_source,
     natural_name_key,
@@ -34,6 +35,32 @@ class PlateSource:
     plate_code: str
     batch_id: int
     profile: str
+
+
+@dataclass(frozen=True)
+class PlateRequest:
+    """A plate the user asked for; batch and profile are chosen or left latest."""
+
+    plate_code: str
+    batch_id: int | None = None
+    profile: str | None = None
+
+
+def resolve_plate_sources(
+    repository, requests: tuple[PlateRequest, ...]
+) -> tuple[PlateSource, ...]:
+    """Fill in the latest batch and profile for each request.
+
+    This reads the image share, so callers run it off the window's thread.
+    """
+    return tuple(
+        PlateSource(request.plate_code, request.batch_id, request.profile)
+        if request.batch_id is not None and request.profile is not None
+        else PlateSource(
+            request.plate_code, *latest_image_source(repository, request.plate_code)
+        )
+        for request in requests
+    )
 
 
 def parse_plate_codes(text: str) -> tuple[str, ...]:
@@ -76,6 +103,11 @@ class LoadPlatesForm(QWidget):
         self.sources_table.hide()
         self.error_label = QLabel()
         self.error_label.setWordWrap(True)
+        # A wrapped label keeps its one-line height here unless it is asked for
+        # the height its width needs, which clips the second line.
+        policy = self.error_label.sizePolicy()
+        policy.setHeightForWidth(True)
+        self.error_label.setSizePolicy(policy)
         self.error_label.setStyleSheet(theme.status_style("error"))
         self.error_label.hide()
         self.load_button = QPushButton("Load plates")
@@ -101,23 +133,24 @@ class LoadPlatesForm(QWidget):
     def plate_format(self) -> PlateFormat:
         return self.plate_format_input.currentData()
 
-    def plate_sources(self) -> tuple[PlateSource, ...]:
-        """Sources to load; raises PlateImagesNotFoundError for unimaged plates."""
+    def requested_plates(self) -> tuple[PlateRequest, ...]:
+        """What the user asked for, read from the form and not from the share."""
         codes = parse_plate_codes(self.plate_codes_input.text())
         if self.use_latest_checkbox.isChecked():
-            return tuple(
-                PlateSource(code, *latest_image_source(self.repository, code))
-                for code in codes
-            )
-        sources = []
+            return tuple(PlateRequest(code) for code in codes)
+        requests = []
         for row in range(self.sources_table.rowCount()):
             batch = self.sources_table.cellWidget(row, 1).currentData()
             profile = self.sources_table.cellWidget(row, 2).currentData()
+            code = self.sources_table.item(row, 0).text()
             if batch is None or profile is None:
-                code = self.sources_table.item(row, 0).text()
                 raise PlateImagesNotFoundError(f"plate {code} has no images in that batch")
-            sources.append(PlateSource(self.sources_table.item(row, 0).text(), batch, profile))
-        return tuple(sources)
+            requests.append(PlateRequest(code, batch, profile))
+        return tuple(requests)
+
+    def plate_sources(self) -> tuple[PlateSource, ...]:
+        """Sources to load; raises PlateImagesNotFoundError for unimaged plates."""
+        return resolve_plate_sources(self.repository, self.requested_plates())
 
     def _refresh(self) -> None:
         codes = parse_plate_codes(self.plate_codes_input.text())
@@ -132,6 +165,7 @@ class LoadPlatesForm(QWidget):
         from PyQt5.QtWidgets import QTableWidgetItem
 
         self.sources_table.setRowCount(0)
+        unreachable = False
         for code in codes:
             row = self.sources_table.rowCount()
             self.sources_table.insertRow(row)
@@ -141,6 +175,11 @@ class LoadPlatesForm(QWidget):
             try:
                 batches = self.repository.available_batches(code)
                 latest_batch, _ = latest_image_source(self.repository, code)
+            except ImageSourceUnavailable as error:
+                # The share is down: probing the rest would only repeat it.
+                self._set_error(str(error))
+                unreachable = True
+                batches, latest_batch = (), None
             except (OSError, ValueError) as error:
                 self._set_error(str(error))
                 batches, latest_batch = (), None
@@ -154,6 +193,8 @@ class LoadPlatesForm(QWidget):
             )
             self.sources_table.setCellWidget(row, 1, batch_input)
             self.sources_table.setCellWidget(row, 2, profile_input)
+            if unreachable:
+                break
             self._refresh_profiles(code, batch_input, profile_input)
 
     def _refresh_profiles(
@@ -187,10 +228,11 @@ class LoadPlatesForm(QWidget):
         self.load_button.setEnabled(ready)
 
     def _submit_if_valid(self) -> None:
+        """Hand the request on; the window reads the share, where it can retry."""
         if not self.load_button.isEnabled():
             return
         try:
-            self.plate_sources()
+            self.requested_plates()
         except (OSError, ValueError) as error:
             self._set_error(str(error))
             return

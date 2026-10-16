@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from xtalflow.infrastructure import (
+    ImageSourceUnavailable,
     InvalidPlateCodeError,
     PlateImagesNotFoundError,
     RockMakerImageRepository,
@@ -170,3 +171,63 @@ def test_latest_image_source_skips_scheduled_batches_without_images() -> None:
     assert latest_image_source(Repository(), "1070") == (12, "profileID_10")
     with pytest.raises(PlateImagesNotFoundError, match="no imaged batches"):
         latest_image_source(EmptyRepository(), "1070")
+
+
+def _mount_table(path: Path, filesystem: str) -> str:
+    return f"device {path} {filesystem}"
+
+
+def test_a_folder_in_place_of_the_share_is_not_a_missing_plate(tmp_path: Path) -> None:
+    repository = RockMakerImageRepository(
+        tmp_path, require_network_mount=True, mount_table=_mount_table(tmp_path, "apfs")
+    )
+
+    with pytest.raises(ImageSourceUnavailable) as raised:
+        repository.available_batches("2071")
+
+    assert raised.value.reason == "the network share is not mounted"
+    assert str(tmp_path) in str(raised.value)
+    # Every caller that already catches OSError keeps catching this.
+    assert isinstance(raised.value, OSError)
+
+
+def test_a_plate_missing_from_a_mounted_share_says_so(tmp_path: Path) -> None:
+    repository = RockMakerImageRepository(
+        tmp_path, require_network_mount=True, mount_table=_mount_table(tmp_path, "smbfs")
+    )
+
+    with pytest.raises(PlateImagesNotFoundError, match="plate directory does not exist"):
+        repository.available_batches("2071")
+
+
+def test_a_local_image_root_reports_missing_plates_as_missing(tmp_path: Path) -> None:
+    repository = RockMakerImageRepository(tmp_path)
+
+    with pytest.raises(PlateImagesNotFoundError, match="plate directory does not exist"):
+        repository.available_batches("2071")
+
+
+def test_a_missing_image_root_is_the_share_not_the_plate(tmp_path: Path) -> None:
+    repository = RockMakerImageRepository(tmp_path / "gone")
+
+    with pytest.raises(ImageSourceUnavailable) as raised:
+        repository.available_batches("2071")
+
+    assert raised.value.reason == "the folder is missing"
+
+
+@requires_real_fixture
+def test_a_share_that_drops_mid_read_is_reported_as_the_share(monkeypatch) -> None:
+    repository = RockMakerImageRepository(FIXTURE_ROOT)
+    down = OSError(112, "Host is down")
+
+    def drop(self):
+        raise down
+
+    monkeypatch.setattr(Path, "iterdir", drop)
+
+    with pytest.raises(ImageSourceUnavailable) as raised:
+        repository.available_batches("1070")
+
+    assert "Host is down" in str(raised.value)
+    assert raised.value.__cause__ is down

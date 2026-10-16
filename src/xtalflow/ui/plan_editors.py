@@ -136,6 +136,8 @@ class PlanEditorBase(QWidget):
         self.selected_position_count = 0
         self.wells_needing_attention = 0
         self.experiment_status = None
+        # Set while the image share cannot be read, so the steps can say why.
+        self.images_unavailable: str | None = None
         # What the editor held when opened, to tell an edit from a look.
         self.initial_details: str | None = None
         self.autosave_timer: QTimer | None = None
@@ -349,6 +351,7 @@ class PlanEditorBase(QWidget):
             worksheets_saved,
             self.save_failed,
             worksheets_saved_elsewhere,
+            images_unavailable=self.images_unavailable,
         )
 
     def has_plan_specific_content(self) -> bool:

@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 from xtalflow.settings import (
@@ -5,7 +6,7 @@ from xtalflow.settings import (
     DEVELOPMENT_SETTINGS,
     OPERATING_SERVER_SETTINGS,
     PROJECT_ROOT,
-    with_instrument_output_policy,
+    with_network_path_policy,
 )
 from xtalflow.viewer import build_parser
 
@@ -43,12 +44,28 @@ def test_cli_uses_central_defaults_and_allows_site_overrides() -> None:
     assert defaults.mxlive_config == DEFAULT_SETTINGS.mxlive_config_path
 
 
+def test_image_root_outside_repository_must_be_a_network_share() -> None:
+    development = with_network_path_policy(DEVELOPMENT_SETTINGS)
+    operating = with_network_path_policy(
+        replace(DEVELOPMENT_SETTINGS, rmserver_root=Path("/smbmount/rmserver"))
+    )
+    allowed = with_network_path_policy(
+        replace(DEVELOPMENT_SETTINGS, rmserver_root=Path("/tmp/images")),
+        allow_local_image_root=True,
+    )
+
+    assert not development.require_network_image_root
+    assert operating.require_network_image_root
+    assert not allowed.require_network_image_root
+    assert OPERATING_SERVER_SETTINGS.require_network_image_root
+
+
 def test_instrument_directories_outside_repository_must_be_network_shares() -> None:
-    development = with_instrument_output_policy(DEVELOPMENT_SETTINGS)
-    operating_paths = with_instrument_output_policy(
+    development = with_network_path_policy(DEVELOPMENT_SETTINGS)
+    operating_paths = with_network_path_policy(
         DEVELOPMENT_SETTINGS.with_instrument_directory("echo650", Path("/smbmount/echo650"))
     )
-    allowed = with_instrument_output_policy(
+    allowed = with_network_path_policy(
         DEVELOPMENT_SETTINGS.with_instrument_directory("echo650", Path("/tmp/echo650")),
         allow_local_instrument_directories=True,
     )

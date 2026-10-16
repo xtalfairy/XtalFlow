@@ -144,9 +144,16 @@ class ProjectController:
         return self._add_loaded_image_set(plate, plate_format)
 
     def add_pinned_image_set(
-        self, plate_code: str, batch_id: int, profile: str, plate_format: PlateFormat
+        self,
+        plate_code: str,
+        batch_id: int,
+        profile: str,
+        plate_format: PlateFormat,
+        plate: PlateImages | None = None,
     ) -> ProjectImageSet:
-        plate = self.image_repository.load_plate_batch(plate_code, batch_id, profile)
+        """``plate`` is images already read, so the share is read only once."""
+        if plate is None:
+            plate = self.image_repository.load_plate_batch(plate_code, batch_id, profile)
         self._cache_plate(plate)
         return self._add_loaded_image_set(plate, plate_format)
 

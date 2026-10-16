@@ -87,6 +87,8 @@ class ExperimentFacts:
     conditions_summary: str = ""
     selection_error: str | None = None
     unused_well_count: int = 0
+    # Why the selected wells could not be counted: the image share was unreachable.
+    images_unavailable: str | None = None
 
 
 @dataclass(frozen=True)
@@ -126,7 +128,13 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
 
     selection = f"{counted(facts.well_count, 'well')} · {counted(facts.position_count, 'position')}"
     condition_test = facts.plan_type is PlanType.CONDITION_TEST
-    if condition_test and facts.required_well_count and facts.well_count < facts.required_well_count:
+    if facts.images_unavailable:
+        # Without the images the wells cannot be counted, so nothing below is known.
+        statuses[WorkflowStep.SELECT_WELLS] = StepStatus(
+            WorkflowStep.SELECT_WELLS, StepState.ATTENTION,
+            f"Plate images unavailable · {facts.images_unavailable}",
+        )
+    elif condition_test and facts.required_well_count and facts.well_count < facts.required_well_count:
         statuses[WorkflowStep.SELECT_WELLS] = StepStatus(
             WorkflowStep.SELECT_WELLS,
             StepState.ATTENTION if facts.wells_needing_attention else StepState.INCOMPLETE,

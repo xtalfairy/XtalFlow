@@ -829,10 +829,15 @@ class ExperimentCoordinator:
             try:
                 summaries = self.window.project_controller.project_target_summaries()
             except IMAGE_SOURCE_ERRORS as error:
+                # The wells are safe in the database; they just cannot be read
+                # without the images, so the steps say so instead of "none".
+                editor.images_unavailable = str(error)
                 self.window.status_message_label.show_message(
                     f"Selected wells unavailable: {error}"
                 )
+                self._refresh_experiment_status(editor)
                 return
+            editor.images_unavailable = None
             attention = {
                 summary.image.image_key for summary in summaries if not summary.is_ready
             }

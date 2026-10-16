@@ -1,5 +1,6 @@
 from .rmserver import (
     InvalidPlateCodeError,
+    ImageSourceUnavailable,
     PlateImagesNotFoundError,
     RockMakerImageRepository,
     latest_image_source,
@@ -13,6 +14,7 @@ from .mxlive_client import LegacyMxLiveReadClient, LegacyMxLiveWriteClient
 __all__ = [
     "InvalidPlateCodeError",
     "OpenCVWellDetector",
+    "ImageSourceUnavailable",
     "PlateImagesNotFoundError",
     "RockMakerImageRepository",
     "SQLiteImageSetReviewStore",

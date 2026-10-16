@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 from xtalflow.domain import CrystalImage, PlateImages
+from xtalflow.infrastructure.mounts import is_network_mount
 
 
 class InvalidPlateCodeError(ValueError):
@@ -12,6 +13,21 @@ class InvalidPlateCodeError(ValueError):
 
 class PlateImagesNotFoundError(FileNotFoundError):
     """Raised when no usable images exist for a plate/profile."""
+
+
+class ImageSourceUnavailable(OSError):
+    """The image share itself cannot be read, so no plate can be found on it.
+
+    An unmounted mountpoint is an ordinary empty folder, so a missing plate and
+    a dropped share look alike until the root itself is checked. Callers that
+    catch OSError keep catching this; callers that can offer to look again
+    catch it by name.
+    """
+
+    def __init__(self, root: Path, reason: str) -> None:
+        super().__init__(f"plate images on {root} cannot be read: {reason}")
+        self.root = root
+        self.reason = reason
 
 
 def natural_name_key(value: str) -> tuple:
@@ -45,8 +61,42 @@ class RockMakerImageRepository:
     _IMAGE_PATTERN = re.compile(r"^d(\d+)_.*_ef\.jpg$", re.IGNORECASE)
     _REVISION_PATTERN = re.compile(r"_r(\d+)_", re.IGNORECASE)
 
-    def __init__(self, root: Path | str) -> None:
+    def __init__(
+        self,
+        root: Path | str,
+        require_network_mount: bool = False,
+        mount_table: str | None = None,
+    ) -> None:
         self.root = Path(root).expanduser()
+        # Operating installations read a mounted share; a folder in its place
+        # means the share is gone, not that every plate has been deleted.
+        self.require_network_mount = require_network_mount
+        self.mount_table = mount_table
+
+    def _entries(self, directory: Path) -> tuple[Path, ...]:
+        """A folder's contents; a share that drops mid-read says so."""
+        try:
+            return tuple(directory.iterdir())
+        except OSError as error:
+            raise ImageSourceUnavailable(self.root, str(error)) from error
+
+    def _explain_missing(self, path: Path, plate_code: str = "") -> Exception:
+        """Why ``path`` is not there: the share, or the plate itself.
+
+        ``plate_code`` is given when the plate's own folder is missing, so the
+        window can say which plate is not there rather than quoting a path.
+        """
+        try:
+            root_is_there = self.root.is_dir()
+        except OSError as error:
+            return ImageSourceUnavailable(self.root, str(error))
+        if not root_is_there:
+            return ImageSourceUnavailable(self.root, "the folder is missing")
+        if self.require_network_mount and not is_network_mount(self.root, self.mount_table):
+            return ImageSourceUnavailable(self.root, "the network share is not mounted")
+        missing = PlateImagesNotFoundError(f"plate directory does not exist: {path}")
+        missing.plate_code = plate_code
+        return missing
 
     @staticmethod
     def shard_for(plate_code: str | int) -> str:
@@ -79,9 +129,9 @@ class RockMakerImageRepository:
         candidates: list[tuple[int, tuple[CrystalImage, ...]]] = []
 
         if not plate_dir.is_dir():
-            raise PlateImagesNotFoundError(f"plate directory does not exist: {plate_dir}")
+            raise self._explain_missing(plate_dir, code)
 
-        for batch_dir in plate_dir.iterdir():
+        for batch_dir in self._entries(plate_dir):
             match = self._BATCH_PATTERN.fullmatch(batch_dir.name)
             if not match or not batch_dir.is_dir():
                 continue
@@ -102,11 +152,11 @@ class RockMakerImageRepository:
         code = str(plate_code).strip()
         plate_dir = self.plate_directory(code)
         if not plate_dir.is_dir():
-            raise PlateImagesNotFoundError(f"plate directory does not exist: {plate_dir}")
+            raise self._explain_missing(plate_dir, code)
         return tuple(
             sorted(
                 int(match.group(1))
-                for batch_dir in plate_dir.iterdir()
+                for batch_dir in self._entries(plate_dir)
                 if batch_dir.is_dir()
                 and (match := self._BATCH_PATTERN.fullmatch(batch_dir.name))
             )
@@ -124,9 +174,7 @@ class RockMakerImageRepository:
             raise ValueError("batch_id must be non-negative")
         batch_dir = plate_dir / f"batchID_{batch_id}"
         if not batch_dir.is_dir():
-            raise PlateImagesNotFoundError(
-                f"batch directory does not exist: {batch_dir}"
-            )
+            raise self._explain_missing(batch_dir)
         images = self._images_in_batch(code, batch_id, batch_dir, profile)
         if not images:
             raise PlateImagesNotFoundError(
@@ -140,14 +188,12 @@ class RockMakerImageRepository:
         code = str(plate_code).strip()
         batch_dir = self.plate_directory(code) / f"batchID_{batch_id}"
         if not batch_dir.is_dir():
-            raise PlateImagesNotFoundError(
-                f"batch directory does not exist: {batch_dir}"
-            )
+            raise self._explain_missing(batch_dir)
         profiles = {
             profile_dir.name
-            for well_dir in batch_dir.iterdir()
+            for well_dir in self._entries(batch_dir)
             if well_dir.is_dir() and self._WELL_PATTERN.fullmatch(well_dir.name)
-            for profile_dir in well_dir.iterdir()
+            for profile_dir in self._entries(well_dir)
             if profile_dir.is_dir() and profile_dir.name.startswith("profileID_")
         }
         return tuple(sorted(profiles))
@@ -161,7 +207,7 @@ class RockMakerImageRepository:
     ) -> tuple[CrystalImage, ...]:
         selected: dict[tuple[int, int], tuple[int, Path]] = {}
 
-        for well_dir in batch_dir.iterdir():
+        for well_dir in self._entries(batch_dir):
             well_match = self._WELL_PATTERN.fullmatch(well_dir.name)
             if not well_match or not well_dir.is_dir():
                 continue
@@ -170,7 +216,7 @@ class RockMakerImageRepository:
             if not profile_dir.is_dir():
                 continue
 
-            for image_path in profile_dir.iterdir():
+            for image_path in self._entries(profile_dir):
                 image_match = self._IMAGE_PATTERN.fullmatch(image_path.name)
                 if not image_match or not image_path.is_file():
                     continue

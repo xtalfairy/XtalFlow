@@ -1,4 +1,5 @@
 import os
+import socket
 import sqlite3
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -29,7 +30,11 @@ from xtalflow.domain.fragment_screening import (
     SelectedCrystal,
 )
 from xtalflow.application import ReviewPersistenceError
-from xtalflow.infrastructure import RockMakerImageRepository, SQLiteReviewStore
+from xtalflow.infrastructure import (
+    ImageSourceUnavailable,
+    RockMakerImageRepository,
+    SQLiteReviewStore,
+)
 from xtalflow.application.experiment_workflow import StepState, WorkflowStep
 from xtalflow.ui.plan_editors import FragmentScreeningEditor
 from xtalflow.ui.load_plates_dialog import LoadPlatesDialog
@@ -287,6 +292,119 @@ def test_viewer_starts_when_workspace_images_are_unavailable(tmp_path: Path) -> 
     assert window.controller is None
     assert window.project_controller.active_project.id == project.id
     assert "Host is down" in window.review_summary_label.text()
+    window.close()
+    app.processEvents()
+
+
+def test_load_plates_offers_to_look_again_while_the_share_is_down(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+
+    class FlakyRepository(RockMakerImageRepository):
+        """Unreachable until the share comes back on the third read."""
+
+        reads = 0
+
+        def load_plate_batch(self, *args, **kwargs):
+            FlakyRepository.reads += 1
+            if FlakyRepository.reads < 3:
+                raise ImageSourceUnavailable(
+                    Path("/smbmount/rmserver"), "the network share is not mounted"
+                )
+            return super().load_plate_batch(*args, **kwargs)
+
+    window = ViewerWindow(FlakyRepository(FIXTURE_ROOT), store)
+    asked = []
+    monkeypatch.setattr(
+        QMessageBox, "warning",
+        lambda *args, **kwargs: asked.append(args[2]) or QMessageBox.Retry,
+    )
+    window.load_plates_form.plate_codes_input.setText("1070")
+
+    window.load_plates_form.load_button.click()
+
+    assert FlakyRepository.reads == 3
+    assert len(asked) == 2
+    assert "/smbmount/rmserver" in asked[0]
+    assert "XtalFlow cannot connect the share itself" in asked[0]
+    # The second time, the administrator is the one who can fix it.
+    assert "Ask the administrator" in asked[1]
+    assert socket.gethostname() in asked[1]
+    assert window.image_set_model.image_sets[0].plate_code == "1070"
+    window.close()
+    app.processEvents()
+
+
+def test_cancelling_the_share_dialog_loads_nothing(tmp_path: Path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+
+    class OfflineRepository(RockMakerImageRepository):
+        reads = 0
+
+        def load_plate_batch(self, *args, **kwargs):
+            OfflineRepository.reads += 1
+            raise ImageSourceUnavailable(Path("/smbmount/rmserver"), "Host is down")
+
+    window = ViewerWindow(OfflineRepository(FIXTURE_ROOT), store)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: QMessageBox.Cancel)
+    window.load_plates_form.plate_codes_input.setText("1070")
+
+    window.load_plates_form.load_button.click()
+
+    assert OfflineRepository.reads == 1
+    assert not window.image_set_model.image_sets
+    window.close()
+    app.processEvents()
+
+
+def test_a_plate_that_is_not_on_the_share_is_not_a_share_problem(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT), SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    )
+    asked = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda *args, **kwargs: asked.append(args[2]) or QMessageBox.Ok
+    )
+    window.load_plates_form.plate_codes_input.setText("9999")
+
+    window.load_plates_form.load_button.click()
+
+    assert not asked  # no retry dialog: looking again would find nothing
+    assert window.load_plates_form.error_label.text().startswith("No plate 9999")
+    assert not window.image_set_model.image_sets
+    window.close()
+    app.processEvents()
+
+
+def test_an_experiment_says_when_its_wells_cannot_be_read(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(FIXTURE_ROOT), store)
+    editor = window.experiments.start_experiment(PlanType.RAW_CRYSTAL)
+    editor.protein_input.setText("BRD4")
+
+    def share_is_down():
+        raise ImageSourceUnavailable(
+            Path("/smbmount/rmserver"), "the network share is not mounted"
+        )
+
+    monkeypatch.setattr(
+        window.project_controller, "project_target_summaries", share_is_down
+    )
+    window.experiments._sync_editor_selection(editor)
+
+    status = editor.experiment_status.status_of(WorkflowStep.SELECT_WELLS)
+    assert status.state is StepState.ATTENTION
+    assert "the network share is not mounted" in status.message
+    assert not editor.experiment_status.ready_to_finalize
     window.close()
     app.processEvents()
 
@@ -1672,6 +1790,7 @@ def test_startup_missing_plate_returns_clean_error(tmp_path: Path, capsys) -> No
         [
             "--root",
             str(tmp_path),
+            "--allow-local-image-root",
             "--plate",
             "1070",
             "--plate-format",
@@ -1681,6 +1800,26 @@ def test_startup_missing_plate_returns_clean_error(tmp_path: Path, capsys) -> No
         ]
     ) == 2
     assert "plate directory does not exist" in capsys.readouterr().err
+
+
+def test_startup_says_so_when_the_image_share_is_not_mounted(
+    tmp_path: Path, capsys
+) -> None:
+    # A root outside the repository is an operating path: a folder in place of
+    # the share means the share is gone, not that the plate was deleted.
+    assert main(
+        [
+            "--root",
+            str(tmp_path),
+            "--plate",
+            "1070",
+            "--plate-format",
+            SWISSCI_MIDI_3_LENS.id,
+            "--review-db",
+            str(tmp_path / "reviews.sqlite3"),
+        ]
+    ) == 2
+    assert "the network share is not mounted" in capsys.readouterr().err
 
 
 @pytest.mark.requires_rmserver_fixture

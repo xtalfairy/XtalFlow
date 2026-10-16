@@ -1652,7 +1652,7 @@ def test_target_selection_survives_image_navigation() -> None:
         RockMakerImageRepository(FIXTURE_ROOT), auto_advance_target_count=2
     )
     window.load_plate("2070", SWISSCI_MRC_2_WELL)
-    first_image = window.plate.images[0]
+    first_image = window.controller.plate.images[0]
 
     window._handle_image_click(100, 120, Qt.LeftButton)
     assert len(window.controller.session.targets_for(first_image)) == 1
@@ -1692,7 +1692,7 @@ def test_auto_advance_count_moves_and_navigation_persists(tmp_path: Path) -> Non
         RockMakerImageRepository(FIXTURE_ROOT), SQLiteReviewStore(database_path)
     )
     window.load_plate("1070", SWISSCI_MIDI_3_LENS)
-    first_image = window.plate.images[0]
+    first_image = window.controller.plate.images[0]
 
     window._handle_image_click(100, 120, Qt.LeftButton)
 
@@ -1776,7 +1776,7 @@ def test_auto_advance_setting_is_advisory_and_manual_next_is_always_allowed() ->
         RockMakerImageRepository(FIXTURE_ROOT), auto_advance_target_count=10
     )
     window.load_plate("1070", SWISSCI_MIDI_3_LENS)
-    first_image = window.plate.images[0]
+    first_image = window.controller.plate.images[0]
     for coordinate in range(1, 8):
         window._handle_image_click(coordinate * 10, 100, Qt.LeftButton)
 

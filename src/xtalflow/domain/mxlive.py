@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Protocol
+from typing import Any, Mapping
 
 
 class MxLiveReadError(RuntimeError):
@@ -71,14 +71,6 @@ class MxLiveSample:
         identifier = data.get("id") or data.get("sample_id")
         return cls(name.strip(), str(identifier) if identifier is not None else None,
                    dict(data))
-
-
-class MxLiveReader(Protocol):
-    def labworks(self, experiment_or_year: str) -> tuple[MxLiveLabwork, ...]: ...
-
-    def experiment_ids(self, year: int) -> tuple[str, ...]: ...
-
-    def samples(self) -> tuple[MxLiveSample, ...]: ...
 
 
 def _optional_text(value: object) -> str | None:

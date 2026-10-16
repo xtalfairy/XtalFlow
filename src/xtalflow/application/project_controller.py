@@ -138,7 +138,7 @@ class ProjectController:
     def add_latest_image_set(
         self, plate_code: str, plate_format: PlateFormat, profile: str = "profileID_1"
     ) -> ProjectImageSet:
-        project = self._require_active_project()
+        self._require_active_project()  # a plate is added to a project, not to nothing
         plate = self.image_repository.load_plate(plate_code, profile)
         self._cache_plate(plate)
         return self._add_loaded_image_set(plate, plate_format)
@@ -209,9 +209,6 @@ class ProjectController:
             plate = self._load_image_set_plate(image_set)
             self._activate_loaded_image_set(image_set, plate)
         return image_set
-
-    def rename_active_project(self, name: str) -> None:
-        self.rename_project(self._require_active_project().id, name)
 
     @property
     def visible_projects(self) -> tuple[Project, ...]:

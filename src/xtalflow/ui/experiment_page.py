@@ -139,9 +139,6 @@ class ExperimentPage(QWidget):
             if self.body.indexOf(page) < 0:
                 self.body.addWidget(page)
 
-    def page_for(self, step: WorkflowStep) -> QWidget | None:
-        return self._step_pages.get(step)
-
     def show_step(self, step: WorkflowStep, hint: str = "") -> None:
         self.body.setCurrentWidget(self._step_pages[step])
         self.step_hint_label.setText(hint)

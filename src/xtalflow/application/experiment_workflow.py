@@ -11,6 +11,7 @@ from enum import Enum
 
 from xtalflow.domain.experiment_naming import normalize_protein_name
 from xtalflow.domain.experiment_project import PlanType
+from xtalflow.text import counted
 
 
 class WorkflowStep(str, Enum):
@@ -105,10 +106,6 @@ class ExperimentStatus:
         )
 
 
-def _count(value: int, noun: str) -> str:
-    return f"{value} {noun}{'' if value == 1 else 's'}"
-
-
 def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
     statuses: dict[WorkflowStep, StepStatus] = {}
     notes: list[str] = []
@@ -127,7 +124,7 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
             WorkflowStep.SETUP, StepState.INCOMPLETE, message
         )
 
-    selection = f"{_count(facts.well_count, 'well')} · {_count(facts.position_count, 'position')}"
+    selection = f"{counted(facts.well_count, 'well')} · {counted(facts.position_count, 'position')}"
     condition_test = facts.plan_type is PlanType.CONDITION_TEST
     if condition_test and facts.required_well_count and facts.well_count < facts.required_well_count:
         statuses[WorkflowStep.SELECT_WELLS] = StepStatus(
@@ -147,7 +144,7 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
     elif facts.wells_needing_attention:
         statuses[WorkflowStep.SELECT_WELLS] = StepStatus(
             WorkflowStep.SELECT_WELLS, StepState.ATTENTION,
-            f"{_count(facts.wells_needing_attention, 'well')} "
+            f"{counted(facts.wells_needing_attention, 'well')} "
             f"{'needs' if facts.wells_needing_attention == 1 else 'need'} attention · {selection}",
         )
     else:
@@ -157,7 +154,7 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
 
     if condition_test and facts.unused_well_count:
         notes.append(
-            f"The last {_count(facts.unused_well_count, 'selected well')} "
+            f"The last {counted(facts.unused_well_count, 'selected well')} "
             f"{'is' if facts.unused_well_count == 1 else 'are'} not used."
         )
 
@@ -185,10 +182,10 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
                 "Select wells to check the fragment assignment.",
             )
         else:
-            message = f"Fragments assigned to {_count(facts.well_count, 'well')}"
+            message = f"Fragments assigned to {counted(facts.well_count, 'well')}"
             if facts.unused_fragment_count:
                 notes.append(
-                    f"The last {_count(facts.unused_fragment_count, 'fragment')} "
+                    f"The last {counted(facts.unused_fragment_count, 'fragment')} "
                     "in the chosen rows will not be used."
                 )
             statuses[WorkflowStep.CONDITIONS] = StepStatus(

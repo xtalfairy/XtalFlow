@@ -65,6 +65,7 @@ from xtalflow.domain.worksheets import (
     build_shifter_worksheet,
 )
 from xtalflow.infrastructure.mxlive_config import MxLiveAccount
+from xtalflow.text import counted
 from xtalflow.ui import theme
 from xtalflow.ui.forms import form_layout
 from xtalflow.ui.help_button import HelpButton
@@ -225,7 +226,7 @@ class PlanEditorBase(QWidget):
             experiment_id = "Assigned when finalized"
         rows = [
             ("Experiment ID", experiment_id),
-            ("Wells", f"{_plural(len(wells), 'well')} · {_plural(positions, 'soaking position')}"),
+            ("Wells", f"{counted(len(wells), 'well')} · {counted(positions, 'soaking position')}"),
         ]
         if self.destinations_text:
             rows.append(("Worksheets", self.destinations_text))
@@ -236,7 +237,7 @@ class PlanEditorBase(QWidget):
         reused = sum(1 for well in wells if self.well_usage.get(well.image_key))
         if not reused:
             return []
-        return [f"{_plural(reused, 'well')} already used in another experiment · see Usage"]
+        return [f"{counted(reused, 'well')} already used in another experiment · see Usage"]
 
     def set_destinations(self, text: str) -> None:
         self.destinations_text = text
@@ -644,7 +645,7 @@ class FragmentScreeningEditor(PlanEditorBase):
         if len(moves) > 8:
             shown.append(f"…and {len(moves) - 8} more")
         self.reassignment_label.setText(
-            f"{theme.SYMBOL_ATTENTION} This order gives {_plural(len(moves), 'well')} a "
+            f"{theme.SYMBOL_ATTENTION} This order gives {counted(len(moves), 'well')} a "
             "different fragment:\n" + "\n".join(shown)
         )
         self.reassignment_panel.show()
@@ -740,7 +741,7 @@ class FragmentScreeningEditor(PlanEditorBase):
         plan = self.current_plan
         if isinstance(plan, FragmentScreenPlan):
             fragments = (
-                f"{_plural(len(plan.assignments), 'fragment')} from {plan.library.name}, "
+                f"{counted(len(plan.assignments), 'fragment')} from {plan.library.name}, "
                 f"rows {self.rows_input.text()}"
             )
             if plan.unused_fragments:
@@ -774,7 +775,7 @@ class FragmentScreeningEditor(PlanEditorBase):
             f"{TRANSFER_INCREMENT_NL * value} nL" for value in (lower, lower + step) if value > 0
         ]
         return ValueError(
-            f"Cannot be split equally in {_plural(failing, 'well')}. "
+            f"Cannot be split equally in {counted(failing, 'well')}. "
             f"Try {' or '.join(suggestions)}."
         )
 
@@ -1013,10 +1014,6 @@ def _field(row: QHBoxLayout, *below: QLabel) -> QWidget:
         layout.addWidget(label)
     widget.setLayout(layout)
     return widget
-
-
-def _plural(value: int, noun: str) -> str:
-    return f"{value} {noun}{'' if value == 1 else 's'}"
 
 
 def _well_usage_display(

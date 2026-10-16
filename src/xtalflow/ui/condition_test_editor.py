@@ -18,7 +18,6 @@ from PyQt5.QtWidgets import (
     QButtonGroup,
     QComboBox,
     QDoubleSpinBox,
-    QFormLayout,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -75,7 +74,8 @@ from xtalflow.domain.worksheets import ECHO_HEADER, build_condition_echo_rounds,
 from xtalflow.ui import theme
 from xtalflow.ui.forms import form_layout
 from xtalflow.ui.help_button import HelpButton
-from xtalflow.ui.plan_editors import PlanEditorBase, _plural, _preview_table
+from xtalflow.text import counted
+from xtalflow.ui.plan_editors import PlanEditorBase, _preview_table
 
 CELL_WIDTH = 98
 CELL_HEIGHT = 32
@@ -142,7 +142,7 @@ def _percent(value: Decimal) -> str:
 
 
 def _wells(count: int) -> str:
-    return _plural(count, "well")
+    return counted(count, "well")
 
 
 def _set_flag(widget: QWidget, name: str, value: bool) -> None:
@@ -877,7 +877,7 @@ class ConditionTestEditor(PlanEditorBase):
             self,
             f"Remove {name}",
             f"Remove {name} from this test?\n\n"
-            f"Its {_plural(len(conditions), 'condition')} ({_wells(wells)}) are removed "
+            f"Its {counted(len(conditions), 'condition')} ({_wells(wells)}) are removed "
             "with it. Conditions for the other solvents stay as they are.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
@@ -1560,13 +1560,6 @@ class ConditionTestEditor(PlanEditorBase):
     def select_condition(self, row: int, column: int) -> None:
         self.matrix_table.setCurrentCell(row, column)
 
-    def _toggle_cell(self, row: int, column: int) -> None:
-        series = self._series
-        cell = series.cell(series.percents[column], series.times[row])
-        if cell is not None:
-            self._selected_cell_id = cell.id
-            self._set_cells((cell,), included=not cell.included)
-
     def _set_cells(self, cells, **changes) -> None:
         series = self._series
         for cell in cells:
@@ -1764,9 +1757,9 @@ class ConditionTestEditor(PlanEditorBase):
         drops = self.design.required_crystals
         replicates = {condition.replicates for condition in conditions}
         if len(replicates) == 1 and conditions:
-            count = f"{drops} ({_plural(len(conditions), 'condition')} × {replicates.pop()}), one per well"
+            count = f"{drops} ({counted(len(conditions), 'condition')} × {replicates.pop()}), one per well"
         else:
-            count = f"{drops} for {_plural(len(conditions), 'condition')}, one per well"
+            count = f"{drops} for {counted(len(conditions), 'condition')}, one per well"
         rows = [("Crystal drops", count)]
         by_additive = {status.additive.id: status for status in statuses}
         for additive in self.design.additives:
@@ -1782,7 +1775,7 @@ class ConditionTestEditor(PlanEditorBase):
             total = sum(volumes, Decimal("0"))
             rows.append((
                 additive.name,
-                f"{ul_text(total)} µL in total, into {_plural(len(volumes), 'crystal drop')}",
+                f"{ul_text(total)} µL in total, into {counted(len(volumes), 'crystal drop')}",
             ))
             rows.append(("Source wells", self._fill_text(additive, volumes, by_additive.get(additive.id))))
         cells = "".join(
@@ -2025,7 +2018,7 @@ class ConditionTestEditor(PlanEditorBase):
         too_few = short and wells < conditions
         _show_message(
             self.fit_note_label,
-            f"{_wells(wells)} cannot hold {_plural(conditions, 'condition')}, one well each: "
+            f"{_wells(wells)} cannot hold {counted(conditions, 'condition')}, one well each: "
             "exclude conditions in Conditions, or select more wells."
             if too_few else "",
         )
@@ -2135,7 +2128,7 @@ class ConditionTestEditor(PlanEditorBase):
         design = self.design
         drop = f"{design.drop_volume_nl.normalize():f} nL" if design.drop_volume_nl else "Not set"
         rows[2:2] = [
-            ("Conditions", f"{_plural(len(design.conditions()), 'condition')} · "
+            ("Conditions", f"{counted(len(design.conditions()), 'condition')} · "
                            f"{_wells(design.required_crystals)} required"),
             ("Initial drop volume", drop),
         ]

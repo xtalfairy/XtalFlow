@@ -10,7 +10,6 @@ from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QFormLayout,
     QHeaderView,
     QLabel,
     QLineEdit,

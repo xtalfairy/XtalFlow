@@ -66,7 +66,6 @@ from xtalflow.domain import (
     ImageCalibration,
     ImageFilter,
     PlateFormat,
-    PlateImages,
     plate_format_by_id,
     PlanType,
     crystal_selection_from_selected_crystals,
@@ -84,7 +83,6 @@ from xtalflow.domain.instruments import (
     ECHO_650,
     SHIFTER_1,
     SHIFTER_2,
-    InstrumentOutput,
     WorksheetKind,
 )
 from xtalflow.domain.mxlive import MxLiveReadError
@@ -152,6 +150,7 @@ from xtalflow.settings import (
     DEFAULT_SETTINGS,
     with_instrument_output_policy,
 )
+from xtalflow.text import counted
 from xtalflow.ui.review_widgets import (
     ImageCanvas,
     ImagePathStatusLabel,
@@ -189,8 +188,6 @@ IMAGE_SOURCE_ERRORS = (ValueError, OSError, ReviewPersistenceError)
 
 T = TypeVar("T")
 
-PLAN_TYPE_LABELS = PLAN_TYPE_TITLES
-
 STEP_HINTS = {
     WorkflowStep.SETUP: "",
     WorkflowStep.SELECT_WELLS: "",
@@ -199,9 +196,6 @@ STEP_HINTS = {
     WorkflowStep.WORKSHEETS: "",
 }
 
-
-def _count(value: int, noun: str) -> str:
-    return f"{value} {noun}{'' if value == 1 else 's'}"
 
 class ViewerWindow(QMainWindow):
     def __init__(
@@ -248,7 +242,6 @@ class ViewerWindow(QMainWindow):
             review_store.workspace if review_store is not None else None,
             self._global_auto_advance_target_count,
         )
-        self.plate: PlateImages | None = None
         self.controller: ReviewController | None = None
         self.calibration_service: WellCalibrationService | None = None
         self.current_calibration: ImageCalibration | None = None
@@ -874,7 +867,7 @@ class ViewerWindow(QMainWindow):
         title = next(
             (choice.title for choice in EXPERIMENT_CHOICES
              if choice.plan_type is plan_type and choice.template == template),
-            PLAN_TYPE_LABELS[plan_type],
+            PLAN_TYPE_TITLES[plan_type],
         )
         stem = f"{title} {datetime.now():%Y-%m-%d}"
         existing = set(self._experiment_names().values())
@@ -898,7 +891,7 @@ class ViewerWindow(QMainWindow):
         if QMessageBox.question(
             self,
             "Use earlier positions?",
-            f"This workspace has {_count(count, 'position')} placed before each "
+            f"This workspace has {counted(count, 'position')} placed before each "
             "experiment kept its own positions.\n\nUse them in this experiment? "
             "Otherwise it starts with no positions.",
             QMessageBox.Yes | QMessageBox.No,
@@ -1121,7 +1114,7 @@ class ViewerWindow(QMainWindow):
             ", ".join(item.label for item in self._instruments_for(plan_type))
             or "no configured instruments"
         )
-        editor.setup_step = SetupStep(editor, PLAN_TYPE_LABELS[plan_type])
+        editor.setup_step = SetupStep(editor, PLAN_TYPE_TITLES[plan_type])
         editor.worksheets_step = WorksheetsStep(editor)
         editor.worksheets_step.retry_button.clicked.connect(
             lambda _=False, selected_editor=editor: self._save_plan_worksheets(
@@ -1264,9 +1257,9 @@ class ViewerWindow(QMainWindow):
             )
         if step is WorkflowStep.SELECT_WELLS:
             if editor.wells_needing_attention:
-                return f"Check {_count(editor.wells_needing_attention, 'well')}", True
+                return f"Check {counted(editor.wells_needing_attention, 'well')}", True
             if editor.selected_well_count:
-                return f"Use {_count(editor.selected_well_count, 'well')}", True
+                return f"Use {counted(editor.selected_well_count, 'well')}", True
             return "Use wells", False
         if step is WorkflowStep.CONDITIONS:
             if editor.plan_type is PlanType.CONDITION_TEST:
@@ -1279,7 +1272,7 @@ class ViewerWindow(QMainWindow):
                     return f"Select {more} more well{'' if more == 1 else 's'}", (
                         state is StepState.COMPLETE
                     )
-                return f"Select {_count(required, 'well')}", state is StepState.COMPLETE
+                return f"Select {counted(required, 'well')}", state is StepState.COMPLETE
             if steps[steps.index(step) + 1] is WorkflowStep.SELECT_WELLS:
                 return "Select wells", state is StepState.COMPLETE
             return "Review assignments", state is StepState.COMPLETE
@@ -1313,7 +1306,7 @@ class ViewerWindow(QMainWindow):
         selected = editor.selected_well_count
         if not selected:
             return "No wells selected yet"
-        text = f"Selected {_count(selected, 'well')}"
+        text = f"Selected {counted(selected, 'well')}"
         if selected > required:
             spare = selected - required
             return f"{text} · {spare} will remain unused"
@@ -1334,8 +1327,8 @@ class ViewerWindow(QMainWindow):
             "Finalize experiment",
             f"Finalize {editor.plan_name}?\n\n"
             f"Experiment ID: {experiment_id}\n"
-            f"{_count(editor.selected_well_count, 'well')} · "
-            f"{_count(editor.selected_position_count, 'position')}\n"
+            f"{counted(editor.selected_well_count, 'well')} · "
+            f"{counted(editor.selected_position_count, 'position')}\n"
             f"Worksheets for: {instruments or 'no configured instruments'}\n\n"
             "Finalizing fixes what the worksheets will contain. It does not start "
             "the experiment; you can still change the plan and finalize again.",
@@ -1381,8 +1374,8 @@ class ViewerWindow(QMainWindow):
                 self._worksheets_saved_elsewhere(revision),
                 required_well_count=design.required_crystals,
                 conditions_summary=(
-                    f"{_count(len(design.conditions()), 'condition')} · "
-                    f"{_count(design.required_crystals, 'well')} required"
+                    f"{counted(len(design.conditions()), 'condition')} · "
+                    f"{counted(design.required_crystals, 'well')} required"
                 ),
                 selection_error=None if shortage else editor.selection_error,
                 unused_well_count=(
@@ -1426,7 +1419,7 @@ class ViewerWindow(QMainWindow):
             None,
         )
         page.show_identity(
-            editor.plan_name, PLAN_TYPE_LABELS[editor.plan_type],
+            editor.plan_name, PLAN_TYPE_TITLES[editor.plan_type],
             editor.lifecycle_label.text(),
             workspace.name if workspace is not None else "",
         )
@@ -1514,7 +1507,7 @@ class ViewerWindow(QMainWindow):
         if isinstance(editor, FragmentScreeningEditor):
             editor.assignment_empty_label.setText(
                 f"{theme.SYMBOL_ATTENTION} Check "
-                f"{_count(editor.wells_needing_attention, 'well')} in Select wells "
+                f"{counted(editor.wells_needing_attention, 'well')} in Select wells "
                 "to see the assignments."
                 if editor.wells_needing_attention
                 else "Select wells to see the assignments."
@@ -1589,7 +1582,7 @@ class ViewerWindow(QMainWindow):
             rounds = plan.dispense_rounds
             for index, (minute, additions) in enumerate(rounds, start=1):
                 name = f"ECHO file _R{index}" if len(rounds) > 1 else "ECHO file"
-                schedule.append((minute, f"dispense with the {name} ({_count(len(additions), 'well')})"))
+                schedule.append((minute, f"dispense with the {name} ({counted(len(additions), 'well')})"))
             for minute, group in plan.harvest_groups:
                 schedule.append((minute, f"harvest {', '.join(item.selected_well.well_address for item in group)}"))
         schedule.sort(key=lambda item: item[0])
@@ -2231,10 +2224,6 @@ class ViewerWindow(QMainWindow):
             self._alternate_worksheet_root = Path(selected)
             self._save_plan_worksheets(editor, Path(selected))
 
-    def _instrument_label(self, output: InstrumentOutput) -> str:
-        destination = self.settings.instrument(output.instrument)
-        return destination.label if destination is not None else output.label
-
     def _worksheet_export_service(self) -> WorksheetExportService:
         return WorksheetExportService(
             WorksheetExporter(self.settings, getpass.getuser()),
@@ -2432,7 +2421,7 @@ class ViewerWindow(QMainWindow):
             self,
             "Hide workspace",
             f"Hide '{project.name}' from the list?\n\n"
-            f"Its {_count(count, 'experiment')} and plates are hidden with it. Nothing is "
+            f"Its {counted(count, 'experiment')} and plates are hidden with it. Nothing is "
             "deleted; show it again from Hidden at the bottom of the workspace list.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
@@ -2561,7 +2550,6 @@ class ViewerWindow(QMainWindow):
 
     def _adopt_active_review(self) -> None:
         self.controller = self.project_controller.review_controller
-        self.plate = self.controller.plate if self.controller is not None else None
         if self.controller is None:
             self.calibration_service = None
             self.current_calibration = None
@@ -2697,12 +2685,6 @@ class ViewerWindow(QMainWindow):
         self._adopt_active_review()
         self._sync_project_widgets()
 
-    def _selected_plate_format(self) -> PlateFormat:
-        plate_format = self.plate_format_input.currentData()
-        if plate_format is None:
-            raise ValueError("select the plate format before adding a plate")
-        return plate_format
-
     def _filter_plate_list(self, text: str) -> None:
         query = text.strip().casefold()
         for row, image_set in enumerate(self.image_set_model.image_sets):
@@ -2809,7 +2791,7 @@ class ViewerWindow(QMainWindow):
         warning_count = len(all_summaries) - ready_count
         well_count = len({summary.image.image_key for summary in all_summaries})
         self.target_summary_status_label.setText(
-            f"{_count(len(all_summaries), 'position')} in {_count(well_count, 'well')} · "
+            f"{counted(len(all_summaries), 'position')} in {counted(well_count, 'well')} · "
             + (f"{warning_count} need attention" if warning_count else "all ready")
             if all_summaries else "No positions selected"
         )
@@ -3486,7 +3468,7 @@ class ViewerWindow(QMainWindow):
             others = self._other_experiments_using_current_image()
             used = f" · △ also used in {', '.join(others)}" if others else ""
             self.review_summary_label.setText(
-                f"This well: {_count(positions, 'position')} · {review_state}{matches}{used}"
+                f"This well: {counted(positions, 'position')} · {review_state}{matches}{used}"
             )
             self.review_summary_label.setStyleSheet(
                 theme.status_style("attention") if others else ""

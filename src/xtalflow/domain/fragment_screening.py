@@ -6,7 +6,7 @@ import re
 
 from .crystal_workflow import (
     AssignmentOrder,
-    CrystalTarget,
+    CrystalTarget,  # noqa: F401 — re-exported: callers import it from here
     SelectedCrystal,
 )
 from .crystal_selection import (

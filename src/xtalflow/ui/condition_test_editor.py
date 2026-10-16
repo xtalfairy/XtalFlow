@@ -6,6 +6,7 @@ import html
 import re
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
@@ -66,6 +67,7 @@ from xtalflow.domain.echo_source import (
     parse_wells,
     source_plate_type,
 )
+from xtalflow.application.planning_service import condition_test_plan_snapshot
 from xtalflow.infrastructure.source_plate_record import SourcePlateRecordUnavailable
 from xtalflow.domain.labwork import build_condition_test_labworks
 from xtalflow.domain.plan_lifecycle import PlanningDraft
@@ -2154,8 +2156,21 @@ class ConditionTestEditor(PlanEditorBase):
             rows.insert(4, ("Planned harvest", harvest))
         return rows
 
-    def _record_builder(self) -> Callable:
+    def record_builder(self) -> Callable:
         return build_condition_test_labworks
+
+    def _snapshot_of(self, plan, protein: str) -> str:
+        return condition_test_plan_snapshot(plan, protein)
+
+    def draft(self, now: datetime) -> PlanningDraft:
+        draft = super().draft(now)
+        return replace(draft, details_json=self.design.to_json())
+
+    def has_plan_specific_content(self) -> bool:
+        return self.design.to_json() != self.initial_details
+
+    def remember_opened_state(self) -> None:
+        self.initial_details = self.design.to_json()
 
     def restore_draft(self, draft: PlanningDraft) -> None:
         if draft.details_json:

@@ -75,11 +75,6 @@ from xtalflow.domain.fragment_screening import FragmentLibrary, FragmentScreenPl
 from xtalflow.domain.experiment_naming import suggest_experiment_id
 from xtalflow.domain.condition_test import TEMPLATES as CONDITION_TEMPLATES
 from xtalflow.domain.condition_test import ConditionTestPlan, format_minutes
-from xtalflow.domain.labwork import (
-    build_condition_test_labworks,
-    build_fragment_labworks,
-    build_raw_crystal_labworks,
-)
 from xtalflow.domain.plan_lifecycle import (
     PlanningDraft,
     PlanRevision,
@@ -106,10 +101,7 @@ from xtalflow.application.planning_service import (
     EXPERIMENT_ID_PREFIXES,
     PlanningService,
     PlanStatus,
-    condition_test_plan_snapshot,
-    fragment_plan_snapshot,
     plan_from_snapshot,
-    raw_crystal_plan_snapshot,
     saved_plan_status,
 )
 from xtalflow.application.worksheet_export import (
@@ -166,7 +158,11 @@ from xtalflow.ui.review_widgets import (
     StatusMessageLabel,
     ImageSetListView,
 )
-from xtalflow.ui.plan_editors import FragmentScreeningEditor, RawCrystalEditor
+from xtalflow.ui.plan_editors import (
+    FragmentScreeningEditor,
+    PlanEditorBase,
+    RawCrystalEditor,
+)
 from xtalflow.ui.examples_panel import ExamplesPanel
 from xtalflow.ui.help_button import HelpButton
 from xtalflow.ui.experiment_page import ExperimentPage
@@ -260,8 +256,8 @@ class ViewerWindow(QMainWindow):
         self.error_log_path: Path | None = None
         self._mxlive_experiment_ids: set[str] = set()
         self._handling_unexpected_error = False
-        self._editors: dict[str, FragmentScreeningEditor | RawCrystalEditor] = {}
-        self.current_editor: FragmentScreeningEditor | RawCrystalEditor | None = None
+        self._editors: dict[str, PlanEditorBase] = {}
+        self.current_editor: PlanEditorBase | None = None
         self._current_step: WorkflowStep | None = None
         self._target_summary_available = True
         self._alternate_worksheet_root: Path | None = None
@@ -888,7 +884,7 @@ class ViewerWindow(QMainWindow):
             number += 1
         return name
 
-    def _offer_workspace_positions(self, editor) -> None:
+    def _offer_workspace_positions(self, editor: PlanEditorBase) -> None:
         """Positions placed before experiments kept their own can seed a new one."""
         if self.review_store is None:
             return
@@ -1020,21 +1016,17 @@ class ViewerWindow(QMainWindow):
             editor.deleteLater()
 
     @staticmethod
-    def _has_content(editor) -> bool:
+    def _has_content(editor: PlanEditorBase) -> bool:
         """Whether a new experiment holds anything worth keeping as a draft."""
         return bool(
             editor.protein_input.text().strip()
             or editor.plan_name != editor.default_name
             or editor.selected_well_count
-            or getattr(editor, "library_id", None)
             or editor.last_revision is not None
-            or (
-                editor.plan_type is PlanType.CONDITION_TEST
-                and editor.design.to_json() != editor.initial_details
-            )
+            or editor.has_plan_specific_content()
         )
 
-    def _leave_experiment(self, editor) -> None:
+    def _leave_experiment(self, editor: PlanEditorBase) -> None:
         """Save a draft that has content; drop a new one that was only opened."""
         editor.autosave_timer.stop()
         if editor.persisted or self._has_content(editor):
@@ -1089,22 +1081,11 @@ class ViewerWindow(QMainWindow):
             restored.workflow_step if restored and restored.workflow_step
             else WorkflowStep.SETUP.value
         )
-        editor.last_revision = None
-        editor.last_revision_snapshot = None
-        editor.selection_signature = ()
-        editor.selected_well_count = 0
-        editor.selected_position_count = 0
-        editor.wells_needing_attention = 0
-        editor.save_failed = False
         editor.persisted = restored is not None
         editor.default_name = name
-        editor.experiment_status = None
         if restored is not None:
             editor.restore_draft(restored)
-        # What a condition test looked like when opened, to tell an edit from a look.
-        editor.initial_details = (
-            editor.design.to_json() if plan_type is PlanType.CONDITION_TEST else None
-        )
+        editor.remember_opened_state()
         editor.set_title(name)
         editor.autosave_timer = QTimer(editor)
         editor.autosave_timer.setSingleShot(True)
@@ -1164,7 +1145,7 @@ class ViewerWindow(QMainWindow):
         self._editors[plan_id] = editor
         return editor
 
-    def _open_editor(self, editor, step: WorkflowStep) -> None:
+    def _open_editor(self, editor: PlanEditorBase, step: WorkflowStep) -> None:
         previous = self.current_editor
         if previous is not None and previous is not editor and previous.plan_id in self._editors:
             self._leave_experiment(previous)
@@ -1340,7 +1321,7 @@ class ViewerWindow(QMainWindow):
             return f"{text} · {required - selected} more needed"
         return f"{text} · all will be used"
 
-    def _finalize_and_continue(self, editor) -> PlanRevision | None:
+    def _finalize_and_continue(self, editor: PlanEditorBase) -> PlanRevision | None:
         experiment_id = (
             editor.assigned_experiment_id or editor.current_experiment_id
             or "assigned when finalized"
@@ -1364,7 +1345,7 @@ class ViewerWindow(QMainWindow):
             return None
         return self._finalize_plan(editor)
 
-    def _rename_experiment(self, editor, text: str) -> None:
+    def _rename_experiment(self, editor: PlanEditorBase, text: str) -> None:
         name = text.strip()
         if not name:
             return
@@ -1378,7 +1359,7 @@ class ViewerWindow(QMainWindow):
             kinds.add(WorksheetKind.ECHO)
         return tuple(item for item in self.settings.instruments if item.worksheet in kinds)
 
-    def _experiment_facts(self, editor) -> ExperimentFacts:
+    def _experiment_facts(self, editor: PlanEditorBase) -> ExperimentFacts:
         plan = editor.current_plan
         if editor.plan_type is PlanType.CONDITION_TEST:
             revision = editor.last_revision
@@ -1432,7 +1413,7 @@ class ViewerWindow(QMainWindow):
             self._worksheets_saved_elsewhere(revision),
         )
 
-    def _refresh_experiment_status(self, editor) -> None:
+    def _refresh_experiment_status(self, editor: PlanEditorBase) -> None:
         status = evaluate_experiment(self._experiment_facts(editor))
         editor.experiment_status = status
         step = self._current_step
@@ -1479,7 +1460,7 @@ class ViewerWindow(QMainWindow):
             step is not steps[0],
         )
 
-    def _sync_editor_selection(self, editor, crystals=None) -> None:
+    def _sync_editor_selection(self, editor: PlanEditorBase, crystals=None) -> None:
         """Take the experiment's reviewed positions as its selected wells."""
         if crystals is None:
             try:
@@ -1530,7 +1511,7 @@ class ViewerWindow(QMainWindow):
             if selection is not None:
                 self._save_selection_snapshot(editor, selection)
             self._set_editor_well_usage(editor)
-        if hasattr(editor, "assignment_empty_label"):
+        if isinstance(editor, FragmentScreeningEditor):
             editor.assignment_empty_label.setText(
                 f"{theme.SYMBOL_ATTENTION} Check "
                 f"{_count(editor.wells_needing_attention, 'well')} in Select wells "
@@ -1564,7 +1545,7 @@ class ViewerWindow(QMainWindow):
             self._target_summary_visible_in_review = self.target_summary_dock.isVisible()
             self.target_summary_dock.hide()
 
-    def _refresh_worksheets_step(self, editor) -> None:
+    def _refresh_worksheets_step(self, editor: PlanEditorBase) -> None:
         revision = editor.last_revision
         finalized = (
             revision is not None
@@ -1713,7 +1694,7 @@ class ViewerWindow(QMainWindow):
         names = self._experiment_names()
         return tuple(names.get(plan_id, "a deleted experiment") for plan_id in others)
 
-    def _set_editor_well_usage(self, editor) -> None:
+    def _set_editor_well_usage(self, editor: PlanEditorBase) -> None:
         if self.review_store is None or editor.selection is None:
             editor.set_well_usage({})
             return
@@ -1731,15 +1712,17 @@ class ViewerWindow(QMainWindow):
         for editor in self._editors.values():
             self._set_editor_well_usage(editor)
 
-    def _plan_draft_changed(self, editor) -> None:
-        if not hasattr(editor, "autosave_timer"):
+    def _plan_draft_changed(self, editor: PlanEditorBase) -> None:
+        if editor.autosave_timer is None:
             return
         editor.lifecycle_label.setText("Draft · saving…")
         editor.webdb_upload_button.setEnabled(False)
         editor.autosave_timer.start()
         self._refresh_experiment_status(editor)
 
-    def _save_selection_snapshot(self, editor, selection: CrystalSelection) -> bool:
+    def _save_selection_snapshot(
+        self, editor: PlanEditorBase, selection: CrystalSelection
+    ) -> bool:
         if self.planning_service is None:
             return True
         try:
@@ -1753,47 +1736,14 @@ class ViewerWindow(QMainWindow):
         return True
 
     @staticmethod
-    def _plan_snapshot(editor) -> str | None:
-        plan = editor.current_plan
-        if plan is None:
-            return None
-        protein = editor.protein_input.text()
-        if editor.plan_type is PlanType.RAW_CRYSTAL:
-            return raw_crystal_plan_snapshot(plan, protein)
-        if editor.plan_type is PlanType.CONDITION_TEST:
-            return condition_test_plan_snapshot(plan, protein)
-        return fragment_plan_snapshot(
-            plan, protein, editor.library_input.currentData(Qt.UserRole),
-            editor.rows_input.text(),
-        )
+    def _plan_snapshot(editor: PlanEditorBase) -> str | None:
+        return editor.plan_snapshot()
 
     @staticmethod
-    def _draft_from_editor(editor) -> PlanningDraft:
-        now = datetime.now(timezone.utc)
-        step = getattr(editor, "workflow_step", None)
-        if editor.plan_type is PlanType.CONDITION_TEST:
-            return PlanningDraft(
-                editor.plan_id, editor.project_id, PlanType.CONDITION_TEST.value,
-                editor.plan_name, None, "", editor.protein_input.text(), "0",
-                editor.order_input.currentData().value, editor.plan_created_at, now,
-                editor.assigned_experiment_id, step, editor.design.to_json(),
-            )
-        if editor.plan_type is PlanType.RAW_CRYSTAL:
-            return PlanningDraft(
-                editor.plan_id, editor.project_id, PlanType.RAW_CRYSTAL.value,
-                editor.plan_name, None, "", editor.protein_input.text(), "0",
-                editor.order_input.currentData().value, editor.plan_created_at, now,
-                editor.assigned_experiment_id, step,
-            )
-        return PlanningDraft(
-            editor.plan_id, editor.project_id, PlanType.FRAGMENT_SCREENING.value,
-            editor.plan_name, editor.library_input.currentData(Qt.UserRole),
-            editor.rows_input.text(), editor.protein_input.text(),
-            str(editor.volume_input.value()), editor.order_input.currentData().value,
-            editor.plan_created_at, now, editor.assigned_experiment_id, step,
-        )
+    def _draft_from_editor(editor: PlanEditorBase) -> PlanningDraft:
+        return editor.draft(datetime.now(timezone.utc))
 
-    def _persist_draft(self, editor) -> None:
+    def _persist_draft(self, editor: PlanEditorBase) -> None:
         if not editor.persisted and not self._has_content(editor):
             # Opening a new experiment to look at it does not create a draft.
             editor.lifecycle_label.setText("Not saved yet")
@@ -1821,7 +1771,7 @@ class ViewerWindow(QMainWindow):
         if status.finalized:
             self._sync_webdb_upload_state(editor)
 
-    def _show_plan_status(self, editor, status: PlanStatus) -> None:
+    def _show_plan_status(self, editor: PlanEditorBase, status: PlanStatus) -> None:
         editor.lifecycle_label.setText(status.label if editor.persisted else "Not saved yet")
         self._refresh_experiment_status(editor)
 
@@ -1834,7 +1784,7 @@ class ViewerWindow(QMainWindow):
             plan_type, protein, self._mxlive_experiment_ids
         )
 
-    def _finalize_plan(self, editor) -> PlanRevision | None:
+    def _finalize_plan(self, editor: PlanEditorBase) -> PlanRevision | None:
         if self.planning_service is None:
             QMessageBox.warning(self, "Cannot finalize plan", "Open a writable review database first.")
             return None
@@ -1873,18 +1823,22 @@ class ViewerWindow(QMainWindow):
         self._refresh_project_well_usage()
         return revision
 
-    def _sync_webdb_upload_state(self, editor, failure: str = "") -> None:
+    def _sync_webdb_upload_state(
+        self, editor: PlanEditorBase, failure: str = ""
+    ) -> None:
         try:
             self._update_webdb_upload_controls(editor, failure)
         finally:
             self._refresh_experiment_status(editor)
 
-    def _update_webdb_upload_controls(self, editor, failure: str = "") -> None:
+    def _update_webdb_upload_controls(
+        self, editor: PlanEditorBase, failure: str = ""
+    ) -> None:
         editor.webdb_upload_button.setEnabled(False)
         editor.webdb_upload_button.setText("Upload to MxLive…")
         self._set_webdb_upload_state(editor, failure)
         account = self.mxlive_account
-        revision = getattr(editor, "last_revision", None)
+        revision = editor.last_revision
         if account is None or revision is None or not account.upload_ready:
             return
         lock = self._webdb_upload_lock(revision.experiment_id)
@@ -1938,18 +1892,14 @@ class ViewerWindow(QMainWindow):
             )
             return None
 
-    def _upload_plan_labworks(self, editor) -> None:
-        revision = getattr(editor, "last_revision", None)
+    def _upload_plan_labworks(self, editor: PlanEditorBase) -> None:
+        revision = editor.last_revision
         if revision is None:
             QMessageBox.warning(
                 self, "Cannot upload", "Finalize the current plan revision first."
             )
             return
-        build_labworks = {
-            PlanType.RAW_CRYSTAL: build_raw_crystal_labworks,
-            PlanType.FRAGMENT_SCREENING: build_fragment_labworks,
-            PlanType.CONDITION_TEST: build_condition_test_labworks,
-        }[editor.plan_type]
+        build_labworks = editor.record_builder()
         snapshot = json.loads(revision.snapshot_json)
         self._upload_labworks(
             editor,
@@ -1962,9 +1912,9 @@ class ViewerWindow(QMainWindow):
             ),
         )
 
-    def _upload_labworks(self, editor, records: tuple) -> None:
+    def _upload_labworks(self, editor: PlanEditorBase, records: tuple) -> None:
         account = self.mxlive_account
-        revision = getattr(editor, "last_revision", None)
+        revision = editor.last_revision
         if account is None or revision is None:
             QMessageBox.warning(
                 self, "Cannot upload", "Finalize the current plan revision first."
@@ -2187,7 +2137,9 @@ class ViewerWindow(QMainWindow):
         self._mxlive_experiment_ids.update(remote)
         return True
 
-    def _save_plan_worksheets(self, editor, alternate_root: Path | None = None) -> None:
+    def _save_plan_worksheets(
+        self, editor: PlanEditorBase, alternate_root: Path | None = None
+    ) -> None:
         """Save every worksheet of the finalized revision, or none of them."""
         revision = editor.last_revision
         if revision is None or self._plan_snapshot(editor) != editor.last_revision_snapshot:
@@ -2249,7 +2201,7 @@ class ViewerWindow(QMainWindow):
         self._refresh_worksheets_step(editor)
         self._refresh_experiment_status(editor)
 
-    def _offer_another_location(self, editor, error: Exception) -> bool:
+    def _offer_another_location(self, editor: PlanEditorBase, error: Exception) -> bool:
         """Ask whether to save the worksheets elsewhere; True to choose a folder."""
         message = str(error)
         reason = (message[:1].upper() + message[1:]).rstrip(".") + "."
@@ -2269,7 +2221,7 @@ class ViewerWindow(QMainWindow):
         )
         return answer == QMessageBox.Yes
 
-    def _save_worksheets_elsewhere(self, editor) -> None:
+    def _save_worksheets_elsewhere(self, editor: PlanEditorBase) -> None:
         selected = QFileDialog.getExistingDirectory(
             self, "Save worksheets to another folder",
             str(self._alternate_worksheet_root or Path.home()),

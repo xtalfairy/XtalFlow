@@ -7,10 +7,11 @@ import html
 import math
 import json
 from collections.abc import Callable
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import QTimer, Qt, pyqtSignal
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -31,8 +32,13 @@ from PyQt5.QtWidgets import (
 )
 
 from xtalflow.application import ReviewPersistenceError
+from xtalflow.application.planning_service import (
+    fragment_plan_snapshot,
+    raw_crystal_plan_snapshot,
+)
 from xtalflow.domain import (
     CrystalSelection,
+    PlanType,
     SelectedWellUsage,
     crystal_selection_from_selected_crystals,
 )
@@ -51,7 +57,7 @@ from xtalflow.domain.labwork import (
     build_fragment_labworks,
     build_raw_crystal_labworks,
 )
-from xtalflow.domain.plan_lifecycle import PlanningDraft
+from xtalflow.domain.plan_lifecycle import PlanningDraft, PlanRevision
 from xtalflow.domain.worksheets import (
     ECHO_HEADER,
     SHIFTER_HEADER,
@@ -92,7 +98,6 @@ class PlanEditorBase(QWidget):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self._transient_project_id = transient_project_id
         self.selection: CrystalSelection | None = None
         if isinstance(selection, CrystalSelection):
             self.selection = selection
@@ -107,6 +112,32 @@ class PlanEditorBase(QWidget):
         self.well_usage: dict[str, tuple[SelectedWellUsage, ...]] = {}
         self._experiment_id_provider: Callable[[str], str] | None = None
         self.step_pages: dict = {}
+
+        # What an experiment is beyond its plan: which workspace holds it, where
+        # it stands, and what was last finalized. The experiment screen fills
+        # these in when it adopts the editor; they are declared here so every
+        # editor answers the same questions from the moment it is built.
+        self.plan_type: PlanType | None = None
+        self.plan_id: str = transient_project_id
+        self.project_id: str = ""
+        self.plan_name: str = ""
+        self.default_name: str = ""
+        self.plan_created_at: datetime | None = None
+        self.workflow_step: str | None = None
+        self.persisted = False
+        self.save_failed = False
+        self.last_revision: PlanRevision | None = None
+        self.last_revision_snapshot: str | None = None
+        self.selection_signature: tuple = ()
+        self.selected_well_count = 0
+        self.selected_position_count = 0
+        self.wells_needing_attention = 0
+        self.experiment_status = None
+        # What the editor held when opened, to tell an edit from a look.
+        self.initial_details: str | None = None
+        self.autosave_timer: QTimer | None = None
+        self.setup_step: QWidget | None = None
+        self.worksheets_step: QWidget | None = None
 
         self.name_input = QLineEdit()
         self.name_input.setMaximumWidth(480)
@@ -213,8 +244,7 @@ class PlanEditorBase(QWidget):
 
     def set_crystals(self, crystals: tuple[SelectedCrystal, ...]) -> None:
         project_id = (
-            self.selection.project_id if self.selection is not None
-            else getattr(self, "plan_id", self._transient_project_id)
+            self.selection.project_id if self.selection is not None else self.plan_id
         )
         self.selection = (
             crystal_selection_from_selected_crystals(project_id, crystals)
@@ -263,8 +293,36 @@ class PlanEditorBase(QWidget):
         self._refresh_webdb_preview()
         self._refresh_facts()
 
-    def _record_builder(self) -> Callable:
+    def record_builder(self) -> Callable:
+        """The MxLive labwork builder for this kind of experiment."""
         raise NotImplementedError
+
+    def _snapshot_of(self, plan, protein: str) -> str:
+        """The finalized form of this plan, as JSON."""
+        raise NotImplementedError
+
+    def plan_snapshot(self) -> str | None:
+        """What finalizing would fix in place, or None while the plan is invalid."""
+        plan = self.current_plan
+        if plan is None:
+            return None
+        return self._snapshot_of(plan, self.protein_input.text())
+
+    def draft(self, now: datetime) -> PlanningDraft:
+        """This experiment as a row to save; plan types add their own inputs."""
+        return PlanningDraft(
+            self.plan_id, self.project_id, self.plan_type.value, self.plan_name,
+            None, "", self.protein_input.text(), "0",
+            self.order_input.currentData().value, self.plan_created_at, now,
+            self.assigned_experiment_id, self.workflow_step,
+        )
+
+    def has_plan_specific_content(self) -> bool:
+        """Whether this plan type's own inputs hold anything worth keeping."""
+        return False
+
+    def remember_opened_state(self) -> None:
+        """Keep what the editor held when opened, to tell an edit from a look."""
 
     def _refresh_webdb_preview(self) -> None:
         _refresh_labwork_preview(
@@ -274,7 +332,7 @@ class PlanEditorBase(QWidget):
             self.current_experiment_id,
             self.protein_input.text(),
             self.mxlive_account,
-            self._record_builder(),
+            self.record_builder(),
         )
         if self.webdb_upload_state:
             self.webdb_status_label.setText(
@@ -394,8 +452,26 @@ class FragmentScreeningEditor(PlanEditorBase):
             )
         self.refresh_plan()
 
-    def _record_builder(self) -> Callable:
+    def record_builder(self) -> Callable:
         return build_fragment_labworks
+
+    def _snapshot_of(self, plan, protein: str) -> str:
+        return fragment_plan_snapshot(
+            plan, protein, self.library_input.currentData(Qt.UserRole),
+            self.rows_input.text(),
+        )
+
+    def draft(self, now: datetime) -> PlanningDraft:
+        return PlanningDraft(
+            self.plan_id, self.project_id, self.plan_type.value, self.plan_name,
+            self.library_input.currentData(Qt.UserRole), self.rows_input.text(),
+            self.protein_input.text(), str(self.volume_input.value()),
+            self.order_input.currentData().value, self.plan_created_at, now,
+            self.assigned_experiment_id, self.workflow_step,
+        )
+
+    def has_plan_specific_content(self) -> bool:
+        return bool(self.library_id)
 
     def conditions_widget(self) -> QWidget:
         """Inputs on the left; what they assign to each well on the right."""
@@ -847,8 +923,11 @@ class RawCrystalEditor(PlanEditorBase):
         self.order_input.currentIndexChanged.connect(self.refresh_plan)
         self.refresh_plan()
 
-    def _record_builder(self) -> Callable:
+    def record_builder(self) -> Callable:
         return build_raw_crystal_labworks
+
+    def _snapshot_of(self, plan, protein: str) -> str:
+        return raw_crystal_plan_snapshot(plan, protein)
 
     def review_widget(self) -> QWidget:
         widget = super().review_widget()

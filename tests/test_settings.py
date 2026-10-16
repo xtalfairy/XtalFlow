@@ -6,6 +6,7 @@ from xtalflow.settings import (
     DEVELOPMENT_SETTINGS,
     OPERATING_SERVER_SETTINGS,
     PROJECT_ROOT,
+    SITE_CONFIG_PATH,
     with_network_path_policy,
 )
 from xtalflow.viewer import build_parser
@@ -41,7 +42,11 @@ def test_cli_uses_central_defaults_and_allows_site_overrides() -> None:
     assert str(overridden.echo_dir) == "/echo"
     assert overridden.mxlive_url == "https://mxlive.example"
     assert str(overridden.mxlive_key) == "/keys.dsa"
-    assert defaults.mxlive_config == DEFAULT_SETTINGS.mxlive_config_path
+    # Site configuration is looked for beside the installed version, whichever
+    # settings the build defaults to.
+    assert defaults.mxlive_config == SITE_CONFIG_PATH
+    assert SITE_CONFIG_PATH == PROJECT_ROOT.parent / "xtalflow.toml"
+    assert OPERATING_SERVER_SETTINGS.mxlive_config_path == SITE_CONFIG_PATH
 
 
 def test_image_root_outside_repository_must_be_a_network_share() -> None:

@@ -112,8 +112,17 @@ xtalflow-viewer \
 
 ### 장비 폴더 설정
 
-worksheet를 받는 장비는 `/etc/xtalflow/xtalflow.toml`(또는 `--mxlive-config`로
-지정한 파일)의 `[[instruments]]` 항목으로 설정합니다. 각 항목은 장비 ID, worksheet
+worksheet를 받는 장비는 설치한 버전 폴더 **옆**의 `xtalflow.toml`(또는
+`--mxlive-config`로 지정한 파일)의 `[[instruments]]` 항목으로 설정합니다.
+
+```
+/usr/local/fbdd_apps/XtalFlow/xtalflow.toml   ← 설정 (버전 공통)
+/usr/local/fbdd_apps/XtalFlow/0.9/            ← 설치된 소스
+```
+
+버전을 올릴 때는 새 버전 폴더를 옆에 두면 되고, 설정은 그대로 쓰입니다.
+XtalFlow 폴더를 통째로 지우면 설치가 함께 사라집니다. 설정 파일은 선택이며,
+없으면 아래 기본 구성과 로그인 계정 이름을 사용합니다. 각 항목은 장비 ID, worksheet
 종류(`echo` 또는 `shifter`), 출력 폴더, 표시 이름을 가집니다. 계획이 만드는 각
 worksheet는 같은 종류의 모든 장비 폴더에 저장됩니다. 예를 들어 SHIFTER를 한 대 더
 연결하려면 `worksheet = "shifter"` 항목을 추가합니다. 예시는
@@ -144,8 +153,9 @@ xtalflow-viewer --help
 
 XtalFlow은 기본적으로 OS 사용자명, MxLive 사용자명, MxLive API의
 `project_id`(실질적으로 계정 ID)가 같다고 간주합니다. 서로 다른 환경에서는
-[`xtalflow.example.toml`](./xtalflow.example.toml)을 복사하여 운영 서버의
-`/etc/xtalflow/xtalflow.toml`에 두고 사용자별 매핑을 설정합니다.
+[`xtalflow.example.toml`](./xtalflow.example.toml)을 복사하여 설치한 버전 폴더
+옆의 `xtalflow.toml`에 두고 사용자별 매핑을 설정합니다. 장비 설정과 같은
+파일입니다.
 
 ```toml
 [mxlive]
@@ -273,3 +283,20 @@ source .venv_air/bin/activate
 python -m pip install -e '.[dev]'
 python -m pytest -q
 ```
+
+## 제거
+
+설치는 한 폴더 안에 담겨 있습니다. 폴더를 지우면 프로그램과 가상환경, 설정이
+함께 사라집니다.
+
+```bash
+rm -rf /usr/local/fbdd_apps/XtalFlow
+```
+
+다음은 일부러 남습니다. 연구 기록이거나 다른 사용자의 것입니다.
+
+- 사용자별 리뷰 데이터베이스와 설정: `~/.local/share/XtalFlow/reviews.sqlite3`,
+  `~/.config/xtalflow/preferences.json` (`--review-db`로 바꿨다면 그 경로)
+- 장비 폴더에 이미 저장된 worksheet CSV와 `source-plates/` 사용 기록 — 다른
+  연구자가 이어서 보는 기록이므로 지우지 마세요.
+- worksheet 임시 폴더 `/tmp/xtalflow/worksheets`

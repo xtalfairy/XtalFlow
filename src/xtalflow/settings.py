@@ -20,6 +20,17 @@ from xtalflow.domain.instruments import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
+# Site configuration sits beside the installed version, not inside it, so that
+# upgrading means putting the next version folder next to this one and removing
+# the whole XtalFlow folder removes the installation with it:
+#
+#   /usr/local/fbdd_apps/XtalFlow/xtalflow.toml   <- instruments, MxLive accounts
+#   /usr/local/fbdd_apps/XtalFlow/0.9/            <- this source tree
+#
+# A missing file is not an error: the built-in instruments and the local user
+# name are used instead.
+SITE_CONFIG_PATH = PROJECT_ROOT.parent / "xtalflow.toml"
+
 
 @dataclass(frozen=True)
 class InstrumentDestination:
@@ -124,7 +135,7 @@ OPERATING_SERVER_SETTINGS = ApplicationSettings(
     require_network_image_root=True,
     mxlive_base_url="https://mxlive.postech.ac.kr",
     mxlive_ca_bundle=Path("/etc/pki/tls/certs/ca-bundle.crt"),
-    mxlive_config_path=Path("/etc/xtalflow/xtalflow.toml"),
+    mxlive_config_path=SITE_CONFIG_PATH,
     # Legacy resolves /data/users/{username}/.config/mxdc/keys.dsa. Supply the
     # user-specific path with --mxlive-key rather than embedding an account.
 )

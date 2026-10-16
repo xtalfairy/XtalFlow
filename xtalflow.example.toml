@@ -1,5 +1,11 @@
-# Copy this file to /etc/xtalflow/xtalflow.toml on the operating server.
-# Store only key paths here; never store private-key contents.
+# Copy this file beside the installed version, as xtalflow.toml:
+#
+#   /usr/local/fbdd_apps/XtalFlow/xtalflow.toml   <- this file
+#   /usr/local/fbdd_apps/XtalFlow/0.9/            <- the installed source tree
+#
+# XtalFlow looks there by itself; --mxlive-config points it somewhere else.
+# The file is optional: without it the instruments below and the local user
+# name are used. Store only key paths here; never store private-key contents.
 
 [mxlive]
 base_url = "https://mxlive.postech.ac.kr"

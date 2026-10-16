@@ -93,6 +93,7 @@ from xtalflow.presentation import ProjectImageSetListModel
 from xtalflow.settings import (
     ApplicationSettings,
     DEFAULT_SETTINGS,
+    SITE_CONFIG_PATH,
     with_network_path_policy,
 )
 from xtalflow.text import counted
@@ -2217,8 +2218,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mxlive-key", type=Path, default=DEFAULT_SETTINGS.mxlive_key_path)
     parser.add_argument("--mxlive-ca", type=Path, default=DEFAULT_SETTINGS.mxlive_ca_bundle)
     parser.add_argument(
-        "--mxlive-config", type=Path, default=DEFAULT_SETTINGS.mxlive_config_path,
-        help="site TOML file with MxLive account mappings and [[instruments]]",
+        "--mxlive-config", type=Path, default=SITE_CONFIG_PATH,
+        help="site TOML file with MxLive account mappings and [[instruments]] "
+        f"(default: {SITE_CONFIG_PATH})",
     )
     return parser
 

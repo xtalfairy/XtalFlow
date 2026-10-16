@@ -34,24 +34,31 @@ class SetupStep(QWidget):
         self.editor = editor
         self.type_label = QLabel(plan_type_label)
         self.workspace_label = QLabel()
-        # The ID the protein name produces, or why it cannot produce one, beside the field.
+        # The ID the protein name produces, or why it cannot produce one, under the field.
         self.experiment_id_label = QLabel()
         self.experiment_id_label.setObjectName("Muted")
         self.experiment_id_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.protein_error_label = QLabel()
         self.protein_error_label.setStyleSheet(theme.status_style("attention"))
-        self.protein_error_label.hide()
+        # Its line is always there, so a problem never pushes the fields below it down.
+        self.protein_error_label.setFixedHeight(
+            self.protein_error_label.sizeHint().height()
+        )
         editor.protein_input.setMaximumWidth(280)
         editor.name_input.setMaximumWidth(420)
         protein_row = QHBoxLayout()
-        protein_row.setSpacing(theme.SPACING_L)
         protein_row.addWidget(editor.protein_input)
-        protein_row.addWidget(self.experiment_id_label)
         protein_row.addStretch()
+        # One line under the field holds either message, so nothing else moves.
+        note_row = QHBoxLayout()
+        note_row.setSpacing(theme.SPACING_M)
+        note_row.addWidget(self.experiment_id_label)
+        note_row.addWidget(self.protein_error_label)
+        note_row.addStretch()
         protein_field = QVBoxLayout()
         protein_field.setSpacing(2)
         protein_field.addLayout(protein_row)
-        protein_field.addWidget(self.protein_error_label)
+        protein_field.addLayout(note_row)
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignLeft)
         form.setVerticalSpacing(theme.SPACING_L)
@@ -86,7 +93,6 @@ class SetupStep(QWidget):
             prefix = "Experiment ID: "
             error = message[len(prefix):] if protein and message.startswith(prefix) else ""
         self.protein_error_label.setText(error[:1].upper() + error[1:])
-        self.protein_error_label.setVisible(bool(error))
 
 
 INSTRUMENT_COLUMNS = ("Instrument", "File", "Rows", "Destination")

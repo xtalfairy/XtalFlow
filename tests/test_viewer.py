@@ -380,7 +380,8 @@ def test_main_window_starts_on_home_and_guides_an_experiment(
     assert editor.setup_step.protein_error_label.text().startswith("Protein name may contain")
     assert not page.primary_button.isEnabled()
     editor.protein_input.setText("BRD4")
-    assert editor.setup_step.protein_error_label.isHidden()
+    # Its line stays, empty, so fixing the name moves nothing.
+    assert editor.setup_step.protein_error_label.text() == ""
     page.primary_button.click()
 
     assert window._current_step is WorkflowStep.SELECT_WELLS

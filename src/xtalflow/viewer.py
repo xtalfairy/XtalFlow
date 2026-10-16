@@ -70,7 +70,7 @@ from xtalflow.domain import (
     PlanType,
     crystal_selection_from_selected_crystals,
 )
-from xtalflow.domain.fragment_screening import FragmentLibrary, FragmentScreenPlan
+from xtalflow.domain.fragment_screening import FragmentLibrary
 from xtalflow.domain.experiment_naming import suggest_experiment_id
 from xtalflow.domain.condition_test import TEMPLATES as CONDITION_TEMPLATES
 from xtalflow.domain.condition_test import ConditionTestPlan, format_minutes
@@ -1341,56 +1341,9 @@ class ViewerWindow(QMainWindow):
         return tuple(item for item in self.settings.instruments if item.worksheet in kinds)
 
     def _experiment_facts(self, editor: PlanEditorBase) -> ExperimentFacts:
-        plan = editor.current_plan
-        if editor.plan_type is PlanType.CONDITION_TEST:
-            revision = editor.last_revision
-            design = editor.design
-            shortage = design.required_crystals > editor.selected_well_count
-            return ExperimentFacts(
-                editor.plan_type,
-                editor.protein_input.text(),
-                editor.selected_well_count,
-                editor.selected_position_count,
-                editor.wells_needing_attention,
-                editor.design_error,
-                0,
-                revision.revision if revision is not None else None,
-                revision is not None
-                and self._plan_snapshot(editor) == editor.last_revision_snapshot,
-                self._worksheets_saved(revision),
-                editor.save_failed,
-                self._worksheets_saved_elsewhere(revision),
-                required_well_count=design.required_crystals,
-                conditions_summary=(
-                    f"{counted(len(design.conditions()), 'condition')} · "
-                    f"{counted(design.required_crystals, 'well')} required"
-                ),
-                selection_error=None if shortage else editor.selection_error,
-                unused_well_count=(
-                    len(plan.unused_wells) if isinstance(plan, ConditionTestPlan) else 0
-                ),
-            )
-        if plan is not None:
-            conditions_error = None
-        elif editor.selection is None:
-            # Before wells are chosen an empty library is a step not yet done, not a problem.
-            conditions_error = None
-        else:
-            conditions_error = editor.error_label.text() or "The plan is not valid."
         revision = editor.last_revision
-        return ExperimentFacts(
-            editor.plan_type,
-            editor.protein_input.text(),
-            editor.selected_well_count,
-            editor.selected_position_count,
-            editor.wells_needing_attention,
-            conditions_error,
-            len(plan.unused_fragments) if isinstance(plan, FragmentScreenPlan) else 0,
-            revision.revision if revision is not None else None,
-            revision is not None
-            and self._plan_snapshot(editor) == editor.last_revision_snapshot,
+        return editor.facts(
             self._worksheets_saved(revision),
-            editor.save_failed,
             self._worksheets_saved_elsewhere(revision),
         )
 

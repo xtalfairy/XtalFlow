@@ -66,6 +66,7 @@ from xtalflow.domain.echo_source import (
     parse_wells,
     source_plate_type,
 )
+from xtalflow.application.experiment_workflow import ExperimentFacts
 from xtalflow.application.planning_service import condition_test_plan_snapshot
 from xtalflow.infrastructure.source_plate_record import SourcePlateRecordUnavailable
 from xtalflow.domain.labwork import build_condition_test_labworks
@@ -2154,6 +2155,28 @@ class ConditionTestEditor(PlanEditorBase):
 
     def _snapshot_of(self, plan, protein: str) -> str:
         return condition_test_plan_snapshot(plan, protein)
+
+    def conditions_error(self) -> str | None:
+        return self.design_error
+
+    def facts(
+        self, worksheets_saved: bool, worksheets_saved_elsewhere: bool
+    ) -> ExperimentFacts:
+        facts = super().facts(worksheets_saved, worksheets_saved_elsewhere)
+        design = self.design
+        plan = self.current_plan
+        # Too few wells is the Conditions step's own message, not the selection's.
+        shortage = design.required_crystals > self.selected_well_count
+        return replace(
+            facts,
+            required_well_count=design.required_crystals,
+            conditions_summary=(
+                f"{counted(len(design.conditions()), 'condition')} · "
+                f"{counted(design.required_crystals, 'well')} required"
+            ),
+            selection_error=None if shortage else self.selection_error,
+            unused_well_count=len(plan.unused_wells) if plan is not None else 0,
+        )
 
     def draft(self, now: datetime) -> PlanningDraft:
         draft = super().draft(now)

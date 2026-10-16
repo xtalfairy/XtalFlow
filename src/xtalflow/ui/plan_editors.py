@@ -8,6 +8,7 @@ import math
 import json
 from collections.abc import Callable
 from datetime import datetime
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
@@ -32,6 +33,7 @@ from PyQt5.QtWidgets import (
 )
 
 from xtalflow.application import ReviewPersistenceError
+from xtalflow.application.experiment_workflow import ExperimentFacts
 from xtalflow.application.planning_service import (
     fragment_plan_snapshot,
     raw_crystal_plan_snapshot,
@@ -318,6 +320,37 @@ class PlanEditorBase(QWidget):
             self.assigned_experiment_id, self.workflow_step,
         )
 
+    def conditions_error(self) -> str | None:
+        """What stops the plan from being built, once the step has been reached."""
+        if self.current_plan is not None or self.selection is None:
+            # Before wells are chosen, missing inputs are a step not yet done.
+            return None
+        return self.error_label.text() or "The plan is not valid."
+
+    def facts(
+        self, worksheets_saved: bool, worksheets_saved_elsewhere: bool
+    ) -> ExperimentFacts:
+        """Where this experiment stands, for the workflow to judge its steps by.
+
+        Only the two worksheet answers come from outside, because they are kept
+        in the review database rather than in the editor.
+        """
+        revision = self.last_revision
+        return ExperimentFacts(
+            self.plan_type,
+            self.protein_input.text(),
+            self.selected_well_count,
+            self.selected_position_count,
+            self.wells_needing_attention,
+            self.conditions_error(),
+            0,
+            revision.revision if revision is not None else None,
+            revision is not None and self.plan_snapshot() == self.last_revision_snapshot,
+            worksheets_saved,
+            self.save_failed,
+            worksheets_saved_elsewhere,
+        )
+
     def has_plan_specific_content(self) -> bool:
         """Whether this plan type's own inputs hold anything worth keeping."""
         return False
@@ -455,6 +488,16 @@ class FragmentScreeningEditor(PlanEditorBase):
 
     def record_builder(self) -> Callable:
         return build_fragment_labworks
+
+    def facts(
+        self, worksheets_saved: bool, worksheets_saved_elsewhere: bool
+    ) -> ExperimentFacts:
+        facts = super().facts(worksheets_saved, worksheets_saved_elsewhere)
+        plan = self.current_plan
+        return replace(
+            facts,
+            unused_fragment_count=len(plan.unused_fragments) if plan is not None else 0,
+        )
 
     def _snapshot_of(self, plan, protein: str) -> str:
         return fragment_plan_snapshot(

@@ -156,6 +156,21 @@ def test_the_experiment_list_names_the_furthest_stage_reached() -> None:
         worksheets_saved_elsewhere=True,
     ) == ("Worksheets r2 · elsewhere", "attention")
 
+    # Every instrument that reads the worksheets got one, or only some did.
+    assert stage(
+        WorkflowStep.WORKSHEETS, 2, worksheets_saved=True,
+        instruments_saved=3, instruments_expected=3,
+    ) == ("Worksheets r2", "ok")
+    assert stage(
+        WorkflowStep.WORKSHEETS, 2, worksheets_saved=True,
+        instruments_saved=2, instruments_expected=3,
+    ) == ("Worksheets r2 · 2 of 3 instruments", "attention")
+    assert stage(
+        WorkflowStep.WORKSHEETS, 2, worksheets_saved=True,
+        instruments_saved=2, instruments_expected=3,
+        upload=UploadAvailability.UPLOADED,
+    ) == ("Sent r2 · 2 of 3 instruments", "attention")
+
     # The upload is the last stage this program can see by itself, but it does
     # not hide worksheets the instruments never received.
     assert stage(

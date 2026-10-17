@@ -1214,7 +1214,7 @@ def test_fragment_worksheets_are_saved_and_audited(tmp_path: Path, monkeypatch) 
     assert stage.text() == "Worksheets r1"
     # Hovering the stage, or clicking it, tells the whole story.
     detail = stage.toolTip()
-    assert "The worksheets for r1 are in the instrument folders." in detail
+    assert "in the folders of all 3 instruments that read them" in detail
     assert "Started " in detail and "Finalized r1 " in detail
     assert "ECHO 650" in detail and "SHIFTER 1" in detail
     assert not stage.icon().isNull()
@@ -1301,6 +1301,12 @@ def test_worksheets_go_to_the_instruments_that_are_up(
         editor.experiment_status.status_of(WorkflowStep.WORKSHEETS).state
         is StepState.COMPLETE
     )
+    # And the list of experiments tells a partial delivery from a full one.
+    window.experiments.show_home()
+    row = window.home_page.recent_table.item(0, 2)
+    assert row.text() == "Worksheets r1 · 2 of 3 instruments"
+    assert "No worksheet reached SHIFTER 2." in row.toolTip()
+    assert "ECHO 650, SHIFTER 1" in row.toolTip()
     window.close()
     app.processEvents()
 

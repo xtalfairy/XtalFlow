@@ -52,6 +52,8 @@ def experiment_progress(
     *,
     worksheets_saved: bool = False,
     worksheets_saved_elsewhere: bool = False,
+    instruments_saved: int = 0,
+    instruments_expected: int = 0,
     upload: UploadAvailability | None = None,
 ) -> ExperimentProgress:
     """The furthest stage this program can see for itself.
@@ -59,7 +61,13 @@ def experiment_progress(
     The stages are in the order they happen.  What follows the upload - the
     beamline accepting the samples and collecting data - is MxLive's to tell,
     and MxLive's labwork records carry no field for either.
+
+    ``instruments_saved`` of ``instruments_expected`` counts the instruments
+    that read this plan's worksheets: one of them being switched off leaves
+    the others with the files and that one without.
     """
+    some_instruments = 0 < instruments_saved < instruments_expected
+    reach = f"{instruments_saved} of {instruments_expected} instruments"
     if revision_number is None:
         return ExperimentProgress(
             f"Draft \u00b7 {STEP_LABELS[step]}",
@@ -92,6 +100,13 @@ def experiment_progress(
                 "instruments, so copy them across before running it.",
                 "attention",
             )
+        if some_instruments:
+            return ExperimentProgress(
+                f"Sent r{revision_number} \u00b7 {reach}",
+                f"{sent} Its worksheets reached {reach}; the ones left out "
+                "hold nothing for it.",
+                "attention",
+            )
         return ExperimentProgress(f"Sent r{revision_number}", sent, "ok")
     if worksheets_saved_elsewhere:
         return ExperimentProgress(
@@ -101,11 +116,23 @@ def experiment_progress(
             "instrument folders before running the experiment.",
             "attention",
         )
+    if worksheets_saved and some_instruments:
+        return ExperimentProgress(
+            f"Worksheets r{revision_number} \u00b7 {reach}",
+            f"The worksheets for r{revision_number} reached {reach}, because "
+            "the others could not be reached when they were saved. Do not run "
+            "the experiment on an instrument that holds nothing for it.",
+            "attention",
+        )
     if worksheets_saved:
+        where = (
+            f"in the folders of all {instruments_expected} instruments that "
+            "read them" if instruments_expected > 1 else "in the instrument folders"
+        )
         return ExperimentProgress(
             f"Worksheets r{revision_number}",
-            f"The worksheets for r{revision_number} are in the instrument "
-            "folders. The sample list has not been sent to MxLive.",
+            f"The worksheets for r{revision_number} are {where}. The sample "
+            "list has not been sent to MxLive.",
             "ok",
         )
     return ExperimentProgress(

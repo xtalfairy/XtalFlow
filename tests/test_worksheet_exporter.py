@@ -16,6 +16,7 @@ from xtalflow.domain.fragment_screening import (
 )
 from xtalflow.domain.raw_crystal import build_raw_crystal_plan
 from xtalflow.infrastructure.worksheet_exporter import (
+    InstrumentLocationUnavailable,
     WorksheetDestinationUnavailable,
     WorksheetExporter,
 )
@@ -444,3 +445,70 @@ def test_condition_test_sends_one_echo_file_per_dispense_time(tmp_path: Path) ->
         Path(output.path).name for output in result.outputs
     ]
     store.close()
+
+
+def test_an_instrument_that_is_down_says_which_ones_are_up(tmp_path: Path) -> None:
+    # The usual beamline case: one SHIFTER workstation is off, the other is not.
+    (tmp_path / "shifter1").mkdir()
+    (tmp_path / "echo650").mkdir()
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        instruments=standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "missing-shifter2"
+        ),
+        create_missing_instrument_roots=False,
+    )
+    exporter = WorksheetExporter(settings, "scientist")
+
+    with pytest.raises(InstrumentLocationUnavailable) as raised:
+        exporter.export(fragment_plan(), "FragSC-202607-BRD4-01")
+
+    assert raised.value.unreachable == ("shifter2",)
+    assert raised.value.reachable == ("echo650", "shifter1")
+    assert raised.value.reachable_covers_every_worksheet
+
+
+def test_saving_to_the_instruments_that_are_up_leaves_the_others_out(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "shifter1").mkdir()
+    (tmp_path / "echo650").mkdir()
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        instruments=standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "missing-shifter2"
+        ),
+        create_missing_instrument_roots=False,
+    )
+    exporter = WorksheetExporter(settings, "scientist")
+
+    result = exporter.export(
+        fragment_plan(), "FragSC-202607-BRD4-01", instruments=("echo650", "shifter1")
+    )
+
+    assert [output.instrument for output in result.outputs] == ["echo650", "shifter1"]
+    assert result.path_for("shifter1").is_file()
+    assert not (tmp_path / "missing-shifter2").exists()
+
+
+def test_leaving_out_the_only_instrument_of_a_kind_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "shifter1").mkdir()
+    (tmp_path / "echo650").mkdir()
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        instruments=standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
+        ),
+        create_missing_instrument_roots=True,
+    )
+    exporter = WorksheetExporter(settings, "scientist")
+
+    # A fragment screen dispenses as well as harvests, so dropping the ECHO
+    # would leave its worksheet with nowhere to go.
+    with pytest.raises(WorksheetDestinationUnavailable, match="no instrument is configured"):
+        exporter.export(
+            fragment_plan(), "FragSC-202607-BRD4-01", instruments=("shifter1",)
+        )

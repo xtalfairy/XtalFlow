@@ -1221,15 +1221,67 @@ def test_offer_of_another_folder_says_the_source_wells_stay_free(
     declined = window.experiments._offer_another_location(
         ConditionTestEditor(solvent_test_template()),
         InstrumentLocationUnavailable(
-            "instrument output location is unavailable: /smbmount/echo650"
+            "instrument output location is unavailable: /smbmount/echo650",
+            unreachable=("echo650",),
         ),
     )
 
-    assert declined is False
+    assert declined == ""
     assert asked[0].startswith(
         "Instrument output location is unavailable: /smbmount/echo650."
     )
     assert "source plate wells stay free" in asked[0]
+    window.close()
+    app.processEvents()
+
+
+def test_worksheets_go_to_the_instruments_that_are_up(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """One SHIFTER is off; the experiment still reaches the other."""
+    app = QApplication.instance() or QApplication([])
+    (tmp_path / "echo650").mkdir()
+    (tmp_path / "shifter1").mkdir()
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        instruments=standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "missing-shifter2"
+        ),
+        create_missing_instrument_roots=False,
+    )
+    window, store, editor = _fragment_plan_window(tmp_path, settings)
+    shown, answer = _answers(QMessageBox.Save)
+    monkeypatch.setattr(QMessageBox, "warning", answer)
+    assert window.experiments._finalize_plan(editor) is not None
+    window.experiments.go_to_step(WorkflowStep.WORKSHEETS)
+    step = editor.worksheets_step
+
+    window.experiment_page.primary_button.click()
+
+    assert "ECHO 650 and SHIFTER 1 can be reached" in shown[0]
+    assert "SHIFTER 2 will not have the files" in shown[0]
+    exports = store.audit.list_worksheet_exports(editor.last_revision.id)
+    assert [event.status for event in exports] == ["failed", "succeeded"]
+    assert [output.instrument for output in exports[-1].outputs] == [
+        "echo650", "shifter1"
+    ]
+    assert Path(exports[-1].path_for("shifter1")).is_file()
+    assert not (tmp_path / "missing-shifter2").exists()
+    # The step keeps saying so, because nobody must run this on SHIFTER 2.
+    assert "SHIFTER 2 did not receive the worksheets" in step.result_label.text()
+    table = step.instrument_table
+    rows = {
+        table.item(row, 0).text(): table.item(row, 3).text()
+        for row in range(table.rowCount())
+    }
+    assert rows["SHIFTER 2"] == "not saved · the instrument could not be reached"
+    # The step is done: the experiment can run on the instruments that have the
+    # files. What is missing is said on the page, not held against the step.
+    assert (
+        editor.experiment_status.status_of(WorkflowStep.WORKSHEETS).state
+        is StepState.COMPLETE
+    )
     window.close()
     app.processEvents()
 

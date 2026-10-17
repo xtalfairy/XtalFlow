@@ -35,8 +35,23 @@ class InstrumentLocationUnavailable(WorksheetDestinationUnavailable):
     """An instrument's folder cannot be reached or written to.
 
     Told apart from the other failures because the files themselves are fine:
-    another folder will hold them until the instrument's own can be reached.
+    another folder will hold them until the instrument's own can be reached,
+    and the instruments that are up can be given their worksheets meanwhile.
     """
+
+    def __init__(
+        self,
+        message: str,
+        unreachable: tuple[str, ...] = (),
+        reachable: tuple[str, ...] = (),
+        reachable_covers_every_worksheet: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.unreachable = unreachable
+        self.reachable = reachable
+        # Whether every worksheet this plan makes has somewhere to go without
+        # the instruments that are down.
+        self.reachable_covers_every_worksheet = reachable_covers_every_worksheet
 
 
 @dataclass(frozen=True)
@@ -106,17 +121,30 @@ class WorksheetExporter:
         plan: WorksheetPlan,
         experiment_id: str,
         alternate_root: Path | None = None,
+        instruments: tuple[str, ...] | None = None,
     ) -> WorksheetExportResult:
-        """Write to the instruments' folders, or below ``alternate_root/<instrument>``."""
+        """Write to the instruments' folders, or below ``alternate_root/<instrument>``.
+
+        ``instruments`` limits delivery to those instrument ids, for saving to
+        the ones that are up while another is down. Every worksheet the plan
+        makes must still have an instrument that reads it.
+        """
         worksheets = worksheets_for(plan)
-        destinations = self._destinations_for(worksheets)
+        destinations = self._destinations_for(worksheets, instruments)
         if alternate_root is None:
-            missing = self._unavailable_bases(
-                tuple(item.output_directory for item in destinations)
-            )
+            missing = self._unavailable_bases(destinations)
             if missing and not self.settings.create_missing_instrument_roots:
+                reachable = tuple(
+                    item for item in destinations if item.instrument not in missing
+                )
                 raise InstrumentLocationUnavailable(
-                    "instrument output location is unavailable: " + ", ".join(missing)
+                    "instrument output location is unavailable: "
+                    + ", ".join(missing.values()),
+                    unreachable=tuple(missing),
+                    reachable=tuple(item.instrument for item in reachable),
+                    reachable_covers_every_worksheet=(
+                        {item.worksheet for item in reachable} == set(worksheets)
+                    ),
                 )
             directories = tuple(
                 item.output_directory / self.username for item in destinations
@@ -137,10 +165,14 @@ class WorksheetExporter:
         )
 
     def _destinations_for(
-        self, worksheets: dict[WorksheetKind, object]
+        self,
+        worksheets: dict[WorksheetKind, object],
+        instruments: tuple[str, ...] | None = None,
     ) -> tuple[InstrumentDestination, ...]:
         destinations = tuple(
-            item for item in self.settings.instruments if item.worksheet in worksheets
+            item for item in self.settings.instruments
+            if item.worksheet in worksheets
+            and (instruments is None or item.instrument in instruments)
         )
         configured = {item.worksheet for item in destinations}
         unconfigured = [kind.value for kind in worksheets if kind not in configured]
@@ -152,19 +184,25 @@ class WorksheetExporter:
             )
         return destinations
 
-    def _unavailable_bases(self, bases: tuple[Path, ...]) -> list[str]:
-        unavailable = []
-        for base in bases:
+    def _unavailable_bases(
+        self, destinations: tuple[InstrumentDestination, ...]
+    ) -> dict[str, str]:
+        """Why each instrument that cannot be reached cannot be reached."""
+        unavailable: dict[str, str] = {}
+        for item in destinations:
+            base = item.output_directory
             try:
                 if not base.is_dir():
-                    unavailable.append(str(base))
+                    unavailable[item.instrument] = str(base)
                 elif (
                     self.settings.require_network_instrument_mounts
                     and not is_network_mount(base)
                 ):
-                    unavailable.append(f"{base} (network share is not mounted)")
+                    unavailable[item.instrument] = (
+                        f"{base} (network share is not mounted)"
+                    )
             except OSError:
-                unavailable.append(str(base))
+                unavailable[item.instrument] = str(base)
         return unavailable
 
     def _export_to_directories(

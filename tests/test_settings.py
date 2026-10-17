@@ -1,12 +1,15 @@
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from xtalflow.settings import (
     DEFAULT_SETTINGS,
     DEVELOPMENT_SETTINGS,
     OPERATING_SERVER_SETTINGS,
     PROJECT_ROOT,
     SITE_CONFIG_PATH,
+    settings_from_environment,
     with_network_path_policy,
 )
 from xtalflow.viewer import build_parser
@@ -159,3 +162,13 @@ def test_invalid_instrument_configuration_is_reported(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="'echo650' is not configured"):
         settings_from_arguments(args)
+
+
+def test_installation_is_chosen_by_the_environment() -> None:
+    assert settings_from_environment("") is DEVELOPMENT_SETTINGS
+    assert settings_from_environment("operating") is OPERATING_SERVER_SETTINGS
+    assert settings_from_environment(" Operating ") is OPERATING_SERVER_SETTINGS
+    assert DEFAULT_SETTINGS is DEVELOPMENT_SETTINGS  # nothing set while testing
+
+    with pytest.raises(ValueError, match="XTALFLOW_SETTINGS"):
+        settings_from_environment("beamline")

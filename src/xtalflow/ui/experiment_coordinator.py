@@ -934,6 +934,13 @@ class ExperimentCoordinator:
         if latest is not None and latest.status == WORKSHEETS_SUCCEEDED:
             for output in latest.outputs:
                 saved.setdefault(output.instrument, []).append(Path(output.path))
+        # Instruments that read one of these worksheets but received nothing,
+        # because they were down when the user chose to save without them.
+        left_out = tuple(
+            destination.instrument
+            for destination in self._instruments_for(editor.plan_type)
+            if destination.worksheet in worksheets and destination.instrument not in saved
+        ) if saved else ()
         # Before saving, the folder each file will go to; after, the files themselves.
         rows = []
         for destination in self._instruments_for(editor.plan_type):
@@ -945,6 +952,8 @@ class ExperimentCoordinator:
                 where = str(paths[0])
             elif paths:
                 where = f"{paths[0].parent}/{', '.join(path.name for path in paths)}"
+            elif destination.instrument in left_out:
+                where = "not saved · the instrument could not be reached"
             else:
                 where = str(destination.output_directory / username)
             rows.append((
@@ -987,6 +996,16 @@ class ExperimentCoordinator:
                 f"chose · {latest.exported_at:%Y-%m-%d %H:%M} · {latest.username} · "
                 "not in the instrument folders; copy the files there, or save again "
                 "once they can be reached",
+                "attention",
+                can_retry=True,
+                copy_text="\n".join(output.path for output in latest.outputs),
+            )
+        elif latest.status == WORKSHEETS_SUCCEEDED and left_out:
+            editor.worksheets_step.show_result(
+                f"{theme.SYMBOL_ATTENTION} Saved r{revision.revision} · "
+                f"{latest.exported_at:%Y-%m-%d %H:%M} · {latest.username} · "
+                f"{self._instrument_names(left_out)} did not receive the "
+                "worksheets; do not run this experiment there",
                 "attention",
                 can_retry=True,
                 copy_text="\n".join(output.path for output in latest.outputs),
@@ -1511,9 +1530,16 @@ class ExperimentCoordinator:
         return True
 
     def _save_plan_worksheets(
-        self, editor: PlanEditorBase, alternate_root: Path | None = None
+        self,
+        editor: PlanEditorBase,
+        alternate_root: Path | None = None,
+        instruments: tuple[str, ...] | None = None,
     ) -> None:
-        """Save every worksheet of the finalized revision, or none of them."""
+        """Save every worksheet of the finalized revision, or none of them.
+
+        ``instruments`` names the ones to save to when the user chose to leave
+        out an instrument that is down.
+        """
         revision = editor.last_revision
         if revision is None or self._plan_snapshot(editor) != editor.last_revision_snapshot:
             QMessageBox.warning(
@@ -1537,7 +1563,9 @@ class ExperimentCoordinator:
         try:
             result = self.window._run_in_background(
                 f"Saving worksheets to {destination}…",
-                lambda: service.deliver(plan, revision.experiment_id, alternate_root),
+                lambda: service.deliver(
+                    plan, revision.experiment_id, alternate_root, instruments
+                ),
             )
         except WorksheetDestinationUnavailable as error:
             self._record_worksheet_export(
@@ -1546,14 +1574,15 @@ class ExperimentCoordinator:
             self.window.status_message_label.show_message("No worksheets were saved", 5000)
             self._refresh_worksheets_step(editor)
             self._refresh_experiment_status(editor)
-            # An unreachable instrument folder is nothing the user can fix here,
-            # so offer another place for the files instead of only saying no.
-            if (
-                alternate_root is None
-                and isinstance(error, InstrumentLocationUnavailable)
-                and self._offer_another_location(editor, error)
-            ):
-                self._save_worksheets_elsewhere(editor)
+            # An unreachable instrument folder is nothing the user can fix
+            # here, so offer what can still be done: the instruments that are
+            # up, or another folder for the files.
+            if alternate_root is None and isinstance(error, InstrumentLocationUnavailable):
+                choice = self._offer_another_location(editor, error)
+                if choice == "reachable":
+                    self._save_plan_worksheets(editor, instruments=error.reachable)
+                elif choice == "elsewhere":
+                    self._save_worksheets_elsewhere(editor)
             return
         else:
             self._record_worksheet_export(
@@ -1574,8 +1603,24 @@ class ExperimentCoordinator:
         self._refresh_worksheets_step(editor)
         self._refresh_experiment_status(editor)
 
-    def _offer_another_location(self, editor: PlanEditorBase, error: Exception) -> bool:
-        """Ask whether to save the worksheets elsewhere; True to choose a folder."""
+    def _instrument_names(self, instruments: tuple[str, ...]) -> str:
+        """The instruments as the user knows them: ECHO 650 and SHIFTER 1."""
+        labels = []
+        for instrument in instruments:
+            destination = self.window.settings.instrument(instrument)
+            labels.append(destination.label if destination is not None else instrument)
+        if len(labels) < 2:
+            return "".join(labels)
+        return f"{', '.join(labels[:-1])} and {labels[-1]}"
+
+    def _offer_another_location(
+        self, editor: PlanEditorBase, error: InstrumentLocationUnavailable
+    ) -> str:
+        """Ask what to do about instruments that are down.
+
+        Returns "reachable" to save to the ones that are up, "elsewhere" to
+        choose a folder, or "" to leave it.
+        """
         message = str(error)
         reason = (message[:1].upper() + message[1:]).rstrip(".") + "."
         wells = (
@@ -1583,6 +1628,23 @@ class ExperimentCoordinator:
             "worksheets reach the instrument folders."
             if isinstance(editor, ConditionTestEditor) else ""
         )
+        if error.reachable_covers_every_worksheet:
+            # One instrument of a kind is down and another reads the same
+            # worksheet: the experiment can go ahead on the ones that are up.
+            answer = QMessageBox.warning(
+                self.window,
+                "Instrument folders unavailable",
+                f"{reason}\n\nNothing was saved yet. "
+                f"{self._instrument_names(error.reachable)} can be reached and read "
+                f"the same worksheets.\n\nSave to "
+                f"{self._instrument_names(error.reachable)} only? "
+                f"{self._instrument_names(error.unreachable)} will not have the "
+                f"files, so do not run this experiment there.{wells}",
+                QMessageBox.Save | QMessageBox.Cancel,
+                QMessageBox.Save,
+            )
+            # Cancelling leaves the page's own "Save to another folder…" button.
+            return "reachable" if answer == QMessageBox.Save else ""
         answer = QMessageBox.question(
             self.window,
             "Instrument folders unavailable",
@@ -1592,7 +1654,8 @@ class ExperimentCoordinator:
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes,
         )
-        return answer == QMessageBox.Yes
+        return "elsewhere" if answer == QMessageBox.Yes else ""
+
 
     def _save_worksheets_elsewhere(self, editor: PlanEditorBase) -> None:
         selected = QFileDialog.getExistingDirectory(

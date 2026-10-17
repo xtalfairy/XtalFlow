@@ -97,8 +97,18 @@ source /usr/local/fbdd_apps/XtalViewer/2.0/.venv3127/bin/activate
 ## Viewer 실행
 
 개발 환경의 기본 설정은 저장소 내부 테스트 fixture를 가리킵니다. 운영 서버에서는
-`DEFAULT_SETTINGS`를 `OPERATING_SERVER_SETTINGS`로 바꾸지 않았다면 다음과 같이
-운영 경로를 명시해야 합니다.
+환경변수 하나로 운영 설정을 고릅니다. 소스는 고치지 않습니다.
+
+```bash
+export XTALFLOW_SETTINGS=operating
+xtalflow-viewer
+```
+
+`/etc/profile.d/xtalflow.sh`에 그 한 줄을 두면 모든 연구자에게 적용됩니다.
+운영 설정은 이미지 공유, 장비 폴더 세 곳, worksheet 임시 폴더, MxLive 주소,
+그리고 설치 폴더 옆의 `xtalflow.toml`을 가리킵니다.
+
+환경변수를 쓰지 않으면 다음과 같이 운영 경로를 하나씩 명시해야 합니다.
 
 ```bash
 xtalflow-viewer \
@@ -283,6 +293,21 @@ source .venv_air/bin/activate
 python -m pip install -e '.[dev]'
 python -m pytest -q
 ```
+
+## 장비 한 대가 꺼져 있을 때
+
+worksheet는 같은 종류의 장비 폴더 모두에 저장됩니다. 그중 하나가 꺼져 있거나
+공유가 빠져 있으면, 나머지 장비가 같은 worksheet를 읽을 수 있는 경우에 한해
+"살아 있는 장비에만 저장할까요?"를 묻습니다. 예를 들어 SHIFTER 2가 꺼져 있고
+SHIFTER 1이 살아 있으면 SHIFTER 1에만 저장하고 실험을 진행할 수 있습니다.
+
+저장되지 않은 장비는 Worksheets 화면에 계속 남습니다. 해당 줄은 `not saved ·
+the instrument could not be reached`로 표시되고, 아래에 "그 장비에서는 이 실험을
+실행하지 마세요"라고 적힙니다. 꺼진 장비가 돌아오면 `Try again`으로 다시
+저장하면 됩니다.
+
+그 worksheet를 읽는 장비가 하나도 없으면(예: ECHO가 하나뿐인데 꺼져 있음)
+아무것도 저장하지 않고, 대신 다른 폴더에 저장할지 묻습니다.
 
 ## 제거
 

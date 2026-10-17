@@ -6,6 +6,7 @@ line arguments may override the defaults without changing source code.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -141,9 +142,34 @@ OPERATING_SERVER_SETTINGS = ApplicationSettings(
 )
 
 
-# Change this one assignment for an operating-server installation. CLI path
-# arguments can still override individual directories.
-DEFAULT_SETTINGS = DEVELOPMENT_SETTINGS
+SETTINGS_VARIABLE = "XTALFLOW_SETTINGS"
+SETTINGS_CHOICES = {
+    "development": DEVELOPMENT_SETTINGS,
+    "operating": OPERATING_SERVER_SETTINGS,
+}
+
+
+def settings_from_environment(name: str | None = None) -> ApplicationSettings:
+    """The installation this run belongs to, named by XTALFLOW_SETTINGS.
+
+    An operating server exports XTALFLOW_SETTINGS=operating once, for every
+    user, instead of each of them repeating the beamline paths on the command
+    line. Nothing else has to be edited, so an installed version stays the
+    same files as the commit it came from.
+    """
+    choice = (name if name is not None else os.environ.get(SETTINGS_VARIABLE, "")).strip().lower()
+    if not choice:
+        return DEVELOPMENT_SETTINGS
+    if choice not in SETTINGS_CHOICES:
+        raise ValueError(
+            f"{SETTINGS_VARIABLE} must be one of "
+            f"{', '.join(sorted(SETTINGS_CHOICES))}; got {choice!r}"
+        )
+    return SETTINGS_CHOICES[choice]
+
+
+# Command line path arguments still override individual directories.
+DEFAULT_SETTINGS = settings_from_environment()
 
 
 def with_network_path_policy(

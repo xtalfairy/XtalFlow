@@ -114,7 +114,7 @@ def test_the_stage_carries_a_mark_and_tells_its_story_on_click():
         ),
         RecentExperiment(
             "w", "Demo", "b", "Look", PlanType.RAW_CRYSTAL,
-            "Worksheets r1 · elsewhere", now, now, "attention",
+            "Worksheets r1 · not on SHIFTER 2", now, now, "attention",
             "Copy them to the instrument folders.",
         ),
         RecentExperiment(
@@ -136,7 +136,7 @@ def test_the_stage_carries_a_mark_and_tells_its_story_on_click():
     page.recent_table.cellClicked.emit(1, 2)
     app.processEvents()
     assert QToolTip.text() == (
-        "Worksheets r1 · elsewhere\n\nCopy them to the instrument folders."
+        "Worksheets r1 · not on SHIFTER 2\n\nCopy them to the instrument folders."
     )
     page.close()
     app.processEvents()

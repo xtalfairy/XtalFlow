@@ -214,6 +214,8 @@ class ExperimentCoordinator:
                 self.window.status_message_label.show_message(f"Recent work unavailable: {error}")
                 return ()
         locks = self._upload_locks()
+        exports = self._worksheet_exports()
+        revisions = self._revision_numbers()
         recent = []
         for draft in drafts:
             if draft.project_id not in workspaces:
@@ -222,7 +224,7 @@ class ExperimentCoordinator:
                 plan_type = PlanType(draft.plan_type)
             except ValueError:
                 continue
-            progress = self._recent_status(draft, locks)
+            progress = self._recent_status(draft, locks, exports, revisions)
             recent.append(
                 RecentExperiment(
                     draft.project_id, workspaces[draft.project_id], draft.id,
@@ -245,8 +247,33 @@ class ExperimentCoordinator:
             )
             return {}
 
+    def _worksheet_exports(self) -> dict[str, tuple[tuple[int, object], ...]]:
+        """Every plan's save attempts, with the revision each one was for."""
+        if self.window.review_store is None:
+            return {}
+        try:
+            return self.window.review_store.audit.list_worksheet_exports_by_plan()
+        except ReviewPersistenceError as error:
+            self.window.status_message_label.show_message(
+                f"Worksheet history unavailable: {error}"
+            )
+            return {}
+
+    def _revision_numbers(self) -> dict[str, int]:
+        """Which revision each stored id is, so an older upload can be named."""
+        if self.window.review_store is None:
+            return {}
+        try:
+            return self.window.review_store.planning.revision_numbers()
+        except ReviewPersistenceError:
+            return {}
+
     def _recent_status(
-        self, draft: PlanningDraft, locks: dict[str, UploadLockState]
+        self,
+        draft: PlanningDraft,
+        locks: dict[str, UploadLockState],
+        exports: dict[str, tuple[tuple[int, object], ...]],
+        revisions: dict[str, int],
     ) -> ExperimentProgress:
         revision = None
         if self.planning_service is not None:
@@ -262,24 +289,42 @@ class ExperimentCoordinator:
         if revision is None:
             progress = experiment_progress(step, None)
             return replace(progress, detail=f"{progress.detail}\n\n{started}")
-        export = self._latest_worksheet_export(revision)
-        saved = self._worksheets_saved(revision)
-        expected, missing = self._instrument_coverage(export if saved else None)
+        attempts = exports.get(draft.id, ())
+        # The files an instrument holds are from the last save that worked,
+        # whichever revision it was for, and a later failure does not undo it.
+        delivered = next(
+            (item for item in reversed(attempts) if item[1].status == WORKSHEETS_SUCCEEDED),
+            None,
+        )
+        saved = delivered is not None and delivered[0] == revision.revision
+        older = delivered[0] if delivered is not None and not saved else None
+        last = attempts[-1] if attempts else None
+        expected, missing = self._instrument_coverage(delivered[1] if saved else None)
         lock = locks.get(revision.experiment_id or "")
+        uploaded_revision = (
+            revisions.get(lock.event.revision_id)
+            if lock is not None and lock.event is not None else None
+        )
         progress = experiment_progress(
             step,
             revision.revision,
             worksheets_saved=saved,
-            worksheets_saved_elsewhere=self._worksheets_saved_elsewhere(revision),
+            worksheets_saved_elsewhere=saved and self._saved_elsewhere(delivered[1]),
             instruments_missing=missing,
             instruments_expected=expected,
+            save_failed=(
+                not saved and last is not None and last[0] == revision.revision
+                and last[1].status == WORKSHEETS_FAILED
+            ),
+            instruments_have_revision=older,
             upload=lock.availability if lock is not None else None,
+            uploaded_revision=uploaded_revision,
         )
         return replace(
             progress,
             detail="\n\n".join(
                 (progress.detail, "\n".join(self._stage_history(
-                    started, revision, export, lock, missing
+                    started, revision, delivered, lock, missing, uploaded_revision
                 )))
             ),
         )
@@ -306,21 +351,25 @@ class ExperimentCoordinator:
             item.label for item in expected if item.instrument not in delivered
         )
 
-    def _stage_history(self, started, revision, export, lock, missing=()) -> list[str]:
+    def _stage_history(
+        self, started, revision, delivered, lock, missing=(), uploaded_revision=None
+    ) -> list[str]:
         """When each stage happened, and which instruments the files reached."""
         history = [started, f"Finalized r{revision.revision} {_when(revision.finalized_at)}."]
-        if export is not None and export.status == WORKSHEETS_SUCCEEDED:
+        if delivered is not None:
+            number, export = delivered
             where = ", ".join(
                 self._instrument_label(output.instrument) for output in export.outputs
             )
             history.append(
-                f"Worksheets saved {_when(export.exported_at)}"
+                f"Worksheets r{number} saved {_when(export.exported_at)}"
                 + (f" \u00b7 {where}." if where else ".")
             )
             if missing:
                 history.append(f"No worksheet reached {', '.join(missing)}.")
         if lock is not None and lock.event is not None:
-            history.append(f"Sent to MxLive {_when(lock.event.attempted_at)}.")
+            number = f"r{uploaded_revision} " if uploaded_revision is not None else ""
+            history.append(f"Sent {number}to MxLive {_when(lock.event.attempted_at)}.")
         return history
 
     def _instrument_label(self, instrument: str) -> str:

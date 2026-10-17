@@ -1070,6 +1070,12 @@ def test_later_revision_with_uploaded_experiment_id_is_not_uploaded_again(
     window.experiments._upload_plan_labworks(editor)
     assert len(Writer.posted) == 1
     assert dialogs[-1][0] == "information"
+    # The experiment page knows; so must the list, because what MxLive holds
+    # is r1 and a labwork cannot be replaced.
+    window.experiments.show_home()
+    stage = window.home_page.recent_table.item(0, 2)
+    assert stage.text() == "Finalized r2 · MxLive has r1"
+    assert "Sent r1 to MxLive" in stage.toolTip()
     window.close()
     app.processEvents()
 
@@ -1218,6 +1224,17 @@ def test_fragment_worksheets_are_saved_and_audited(tmp_path: Path, monkeypatch) 
     assert "Started " in detail and "Finalized r1 " in detail
     assert "ECHO 650" in detail and "SHIFTER 1" in detail
     assert not stage.icon().isNull()
+
+    # A later attempt that fails does not take the files off the instruments,
+    # so the list must not go back to saying nothing was saved.
+    from xtalflow.domain.plan_lifecycle import WorksheetExportEvent
+
+    store.audit.record_worksheet_export(WorksheetExportEvent(
+        "failed-retry", revision.id, "tester", datetime.now(timezone.utc),
+        "failed", (), "the share went away",
+    ))
+    window.experiments.show_home()
+    assert window.home_page.recent_table.item(0, 2).text() == "Worksheets r1"
     window.close()
     app.processEvents()
 
@@ -2799,5 +2816,42 @@ def test_setup_opens_with_the_cursor_in_the_first_blank_field(tmp_path: Path) ->
     window.experiments.go_to_step(WorkflowStep.SETUP)
     app.processEvents()
     assert window.focusWidget() is not editor.name_input
+    window.close()
+    app.processEvents()
+
+
+def test_a_second_revision_does_not_hide_the_worksheets_on_the_instruments(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """r1 is saved and the plan changes: the SHIFTERs still hold r1."""
+    app = QApplication.instance() or QApplication([])
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        instruments=standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
+        ),
+        create_missing_instrument_roots=True,
+    )
+    window, store, editor = _fragment_plan_window(tmp_path, settings)
+    page = window.experiment_page
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    window.experiments.go_to_step(WorkflowStep.REVIEW)
+    page.primary_button.click()
+    page.primary_button.click()
+    assert editor.lifecycle_label.text() == "Finalized r1"
+
+    editor.protein_input.setText("BRD4-B")
+    window.experiments._persist_draft(editor)
+    window.experiments.go_to_step(WorkflowStep.REVIEW)
+    page.primary_button.click()
+
+    assert editor.lifecycle_label.text() == "Finalized r2"
+    window.experiments.show_home()
+    stage = window.home_page.recent_table.item(0, 2)
+    assert stage.text() == "Finalized r2 · instruments have r1"
+    detail = stage.toolTip()
+    assert "Harvesting now would follow that plan, not this one" in detail
+    assert "Worksheets r1 saved" in detail
     window.close()
     app.processEvents()

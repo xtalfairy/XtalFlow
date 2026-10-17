@@ -186,12 +186,17 @@ def test_the_experiment_list_names_the_furthest_stage_reached() -> None:
         WorkflowStep.WORKSHEETS, 2, worksheets_saved=True,
         worksheets_saved_elsewhere=True, upload=UploadAvailability.UPLOADED,
     ) == ("Sent r2 · not on instruments", "attention")
+    # An upload nobody can account for is never covered: it is the one warning
+    # that asks for an action NOT to be taken.
     for availability in (
         UploadAvailability.PARTIAL, UploadAvailability.NEEDS_VERIFICATION
     ):
         assert stage(
             WorkflowStep.WORKSHEETS, 2, worksheets_saved=True, upload=availability
-        ) == ("Upload r2 · check MxLive", "attention")
+        ) == ("Worksheets r2 · check MxLive", "attention")
+        assert stage(
+            WorkflowStep.REVIEW, 2, upload=availability
+        ) == ("Finalized r2 · check MxLive", "attention")
     # An experiment that may still be uploaded reports where it actually stands.
     assert stage(
         WorkflowStep.WORKSHEETS, 2, worksheets_saved=True,
@@ -214,3 +219,41 @@ def test_every_stage_explains_itself_in_a_sentence() -> None:
     assert "no way to remove a labwork" in experiment_progress(
         WorkflowStep.WORKSHEETS, 1, upload=UploadAvailability.PARTIAL
     ).detail
+
+
+def test_a_new_revision_does_not_hide_what_the_instruments_hold() -> None:
+    """Finalizing again leaves the earlier worksheets where they are.
+
+    The instruments would harvest the older plan, so the list says which
+    revision they hold rather than reporting a clean, finalized experiment.
+    """
+    def stage(*args, **kwargs):
+        progress = experiment_progress(*args, **kwargs)
+        return progress.headline, progress.state
+
+    assert stage(
+        WorkflowStep.REVIEW, 2, instruments_have_revision=1
+    ) == ("Finalized r2 · instruments have r1", "attention")
+    assert "Harvesting now would follow that plan" in experiment_progress(
+        WorkflowStep.REVIEW, 2, instruments_have_revision=1
+    ).detail
+
+    # MxLive holds the sample list of the revision that was uploaded, and a
+    # labwork cannot be replaced, so r2 is not "sent" however r1 went.
+    assert stage(
+        WorkflowStep.REVIEW, 2, upload=UploadAvailability.UPLOADED,
+        uploaded_revision=1,
+    ) == ("Finalized r2 · MxLive has r1", "attention")
+    assert stage(
+        WorkflowStep.WORKSHEETS, 2, worksheets_saved=True,
+        upload=UploadAvailability.UPLOADED, uploaded_revision=2,
+    ) == ("Sent r2", "ok")
+
+    # A save that failed is not the same as one never tried.
+    assert stage(
+        WorkflowStep.WORKSHEETS, 2, save_failed=True
+    ) == ("Finalized r2 · worksheet save failed", "attention")
+    # What the instruments hold outranks it: that is what would be harvested.
+    assert stage(
+        WorkflowStep.WORKSHEETS, 2, save_failed=True, instruments_have_revision=1
+    ) == ("Finalized r2 · instruments have r1", "attention")

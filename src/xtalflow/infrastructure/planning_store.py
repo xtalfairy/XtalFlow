@@ -352,6 +352,16 @@ class SQLitePlanningStore:
             for row in rows
         )
 
+    def revision_numbers(self) -> dict[str, int]:
+        """Every revision's number by its id, for screens that list many plans."""
+        try:
+            rows = self._connection.execute(
+                "SELECT revision_id, revision_number FROM plan_revision"
+            ).fetchall()
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError("could not load plan revisions") from error
+        return {row[0]: row[1] for row in rows}
+
     def load_recent_drafts(self, limit: int = 50) -> tuple[PlanningDraft, ...]:
         """Experiments in every workspace, most recently edited first."""
         try:

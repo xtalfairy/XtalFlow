@@ -58,102 +58,131 @@ def experiment_progress(
     worksheets_saved_elsewhere: bool = False,
     instruments_missing: tuple[str, ...] = (),
     instruments_expected: int = 0,
+    save_failed: bool = False,
+    instruments_have_revision: int | None = None,
     upload: UploadAvailability | None = None,
+    uploaded_revision: int | None = None,
 ) -> ExperimentProgress:
     """The furthest stage this program can see for itself.
 
-    The stages are in the order they happen.  What follows the upload - the
-    beamline accepting the samples and collecting data - is MxLive's to tell,
-    and MxLive's labwork records carry no field for either.
+    The headline is the stage THIS revision reached, and anything after the
+    middle dot is the one thing that makes that stage unusable.  What follows
+    the upload - the beamline accepting the samples and collecting data - is
+    MxLive's to tell, and MxLive's labwork records carry no field for either.
 
-    ``instruments_missing`` names the instruments that read this plan's
-    worksheets and did not get one, because they were switched off when the
-    others were saved.  Naming them is the point: a count would send the
-    reader back to the detail to ask which.
+    The facts are about the newest revision unless they say otherwise:
+    ``instruments_have_revision`` is an earlier revision whose worksheets are
+    the ones sitting in the instrument folders, and ``uploaded_revision`` is
+    the revision MxLive actually holds.  ``instruments_missing`` names the
+    instruments that read this plan's worksheets and did not get one, because
+    they were switched off when the others were saved.
     """
-    # "elsewhere" is the same fact at its limit: no instrument has the files.
-    missing = (
-        "not on instruments" if worksheets_saved_elsewhere
-        else f"not on {instruments_missing[0]}" if len(instruments_missing) == 1
-        else f"not on {counted(len(instruments_missing), 'instrument')}"
-        if instruments_missing else ""
-    )
     if revision_number is None:
         return ExperimentProgress(
             f"Draft \u00b7 {STEP_LABELS[step]}",
             "Not finalized yet. The experiment was left at the "
             f"{STEP_LABELS[step]} step.",
         )
+    uploaded = upload is UploadAvailability.UPLOADED
+    sent = uploaded and uploaded_revision in (None, revision_number)
+    if sent:
+        headline = f"Sent r{revision_number}"
+        stage = f"The sample list for r{revision_number} is on MxLive."
+        clean = "Its worksheets are in the instrument folders."
+    elif worksheets_saved:
+        headline = f"Worksheets r{revision_number}"
+        every = (
+            f"in the folders of all {instruments_expected} instruments that read them"
+            if instruments_expected > 1 else "in the instrument folders"
+        )
+        stage = f"The worksheets for r{revision_number} are {every}."
+        clean = "The sample list has not been sent to MxLive."
+    else:
+        headline = f"Finalized r{revision_number}"
+        stage = f"Finalized as r{revision_number}."
+        clean = "No worksheets have been saved yet."
+
+    clause, because = _stage_clause(
+        revision_number,
+        sent=sent,
+        worksheets_saved=worksheets_saved,
+        worksheets_saved_elsewhere=worksheets_saved_elsewhere,
+        instruments_missing=instruments_missing,
+        save_failed=save_failed,
+        instruments_have_revision=instruments_have_revision,
+        upload=upload,
+        uploaded_revision=uploaded_revision if uploaded else None,
+    )
+    if not clause:
+        return ExperimentProgress(headline, f"{stage} {clean}", "ok")
+    return ExperimentProgress(
+        f"{headline} \u00b7 {clause}", f"{stage} {because}", "attention"
+    )
+
+
+def _stage_clause(
+    revision_number: int,
+    *,
+    sent: bool,
+    worksheets_saved: bool,
+    worksheets_saved_elsewhere: bool,
+    instruments_missing: tuple[str, ...],
+    save_failed: bool,
+    instruments_have_revision: int | None,
+    upload: UploadAvailability | None,
+    uploaded_revision: int | None,
+) -> tuple[str, str]:
+    """The one thing in the way, worst first; empty when nothing is."""
     if upload in (UploadAvailability.PARTIAL, UploadAvailability.NEEDS_VERIFICATION):
-        return ExperimentProgress(
-            f"Upload r{revision_number} \u00b7 check MxLive",
+        # Never covered: every other warning asks for an action that can be
+        # taken back, and this one asks for an action NOT to be taken.
+        return "check MxLive", (
             f"The MxLive upload of r{revision_number} did not finish with a "
             "known result. Check which records MxLive holds before uploading "
-            "again: there is no way to remove a labwork once it is stored.",
-            "attention",
+            "again: there is no way to remove a labwork once it is stored."
         )
-    if upload is UploadAvailability.UPLOADED:
-        sent = f"The sample list for r{revision_number} is on MxLive."
-        # The samples are registered, but nothing will be harvested for them
-        # until the worksheets reach the instruments. Say so here.
-        if not worksheets_saved:
-            return ExperimentProgress(
-                f"Sent r{revision_number} \u00b7 no worksheets",
-                f"{sent} Its worksheets were never saved, so no instrument "
-                "will harvest anything for it.",
-                "attention",
-            )
-        if worksheets_saved_elsewhere:
-            return ExperimentProgress(
-                f"Sent r{revision_number} \u00b7 {missing}",
-                f"{sent} Its worksheets went to a folder you chose, not to the "
-                "instruments, so copy them across before running it.",
-                "attention",
-            )
-        if missing:
-            return ExperimentProgress(
-                f"Sent r{revision_number} \u00b7 {missing}",
-                f"{sent} Its worksheets did not reach "
-                f"{_and_list(instruments_missing)}, so do not run it there.",
-                "attention",
-            )
-        return ExperimentProgress(
-            f"Sent r{revision_number}",
-            f"{sent} Its worksheets are in the instrument folders.",
-            "ok",
+    if instruments_have_revision is not None:
+        older = f"r{instruments_have_revision}"
+        return f"instruments have {older}", (
+            f"The instruments still hold the worksheets of {older}. Harvesting "
+            f"now would follow that plan, not this one: save the worksheets "
+            f"for r{revision_number} before anybody runs it."
         )
     if worksheets_saved_elsewhere:
-        return ExperimentProgress(
-            f"Worksheets r{revision_number} \u00b7 {missing}",
+        return "not on instruments", (
             f"The worksheets for r{revision_number} went to a folder you chose "
             "because an instrument could not be reached. Copy them to the "
-            "instrument folders before running the experiment.",
-            "attention",
+            "instrument folders before running the experiment."
         )
-    if worksheets_saved and missing:
-        return ExperimentProgress(
-            f"Worksheets r{revision_number} \u00b7 {missing}",
+    if worksheets_saved and instruments_missing:
+        missing = (
+            f"not on {instruments_missing[0]}" if len(instruments_missing) == 1
+            else f"not on {counted(len(instruments_missing), 'instrument')}"
+        )
+        return missing, (
             f"The worksheets for r{revision_number} did not reach "
             f"{_and_list(instruments_missing)}, which could not be reached "
-            "when they were saved. Do not run the experiment there.",
-            "attention",
+            "when they were saved. Do not run the experiment there."
         )
-    if worksheets_saved:
-        where = (
-            f"in the folders of all {instruments_expected} instruments that "
-            "read them" if instruments_expected > 1 else "in the instrument folders"
+    if sent and not worksheets_saved:
+        return "no worksheets", (
+            "Its worksheets were never saved, so no instrument will harvest "
+            "anything for it."
         )
-        return ExperimentProgress(
-            f"Worksheets r{revision_number}",
-            f"The worksheets for r{revision_number} are {where}. The sample "
-            "list has not been sent to MxLive.",
-            "ok",
+    if save_failed:
+        return "worksheet save failed", (
+            f"The last attempt to save the worksheets for r{revision_number} "
+            "failed, so no instrument has them. Open the experiment and save "
+            "them again."
         )
-    return ExperimentProgress(
-        f"Finalized r{revision_number}",
-        f"Finalized as r{revision_number}. No worksheets have been saved yet.",
-        "ok",
-    )
+    if uploaded_revision is not None and uploaded_revision != revision_number:
+        older = f"r{uploaded_revision}"
+        return f"MxLive has {older}", (
+            f"MxLive holds the sample list of {older}, finalized before this "
+            f"revision. Nothing was sent for r{revision_number}, and a labwork "
+            "cannot be replaced once it is stored."
+        )
+    return "", ""
 
 
 def steps_for(plan_type: PlanType) -> tuple[WorkflowStep, ...]:

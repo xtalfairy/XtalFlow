@@ -72,6 +72,45 @@ class SQLiteDeliveryAuditStore:
             for row in rows
         )
 
+    def list_worksheet_exports_by_plan(
+        self,
+    ) -> dict[str, tuple[tuple[int, WorksheetExportEvent], ...]]:
+        """Every attempt with the revision it was for, by plan, oldest first.
+
+        The experiment list needs the whole history of a plan, not only its
+        newest revision: worksheets saved for an earlier revision are still
+        the ones sitting in the instrument folders.
+        """
+        try:
+            rows = self._connection.execute(
+                """SELECT revision.plan_id, revision.revision_number,
+                          export.export_id, export.revision_id, export.username,
+                          export.exported_at, export.status, export.error_message
+                   FROM worksheet_export_event AS export
+                   JOIN plan_revision AS revision
+                     ON revision.revision_id = export.revision_id
+                   ORDER BY export.exported_at""",
+            ).fetchall()
+            output_rows = self._connection.execute(
+                """SELECT export_id, instrument, path FROM worksheet_export_output
+                   ORDER BY export_id, output_order""",
+            ).fetchall()
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError("could not list worksheet exports") from error
+        outputs: dict[str, list[InstrumentOutput]] = {}
+        for export_id, instrument, path in output_rows:
+            outputs.setdefault(export_id, []).append(InstrumentOutput(instrument, path))
+        grouped: dict[str, list[tuple[int, WorksheetExportEvent]]] = {}
+        for row in rows:
+            grouped.setdefault(row[0], []).append((
+                row[1],
+                WorksheetExportEvent(
+                    row[2], row[3], row[4], datetime.fromisoformat(row[5]),
+                    row[6], tuple(outputs.get(row[2], ())), row[7],
+                ),
+            ))
+        return {key: tuple(value) for key, value in grouped.items()}
+
     def record_webdb_upload(self, event: WebDBUploadEvent) -> None:
         try:
             with self._connection:

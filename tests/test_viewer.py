@@ -36,7 +36,7 @@ from xtalflow.infrastructure import (
     SQLiteReviewStore,
 )
 from xtalflow.application.experiment_workflow import StepState, WorkflowStep
-from xtalflow.domain.mxlive import MxLiveLabwork
+from xtalflow.domain.mxlive import MxLiveLabwork, MxLiveReadError
 from xtalflow.ui.plan_editors import FragmentScreeningEditor
 from xtalflow.ui.load_plates_dialog import LoadPlatesDialog
 from xtalflow.viewer import ViewerWindow
@@ -1045,6 +1045,70 @@ def test_upload_is_not_sent_when_attempt_cannot_be_audited(
     assert dialogs[-1] == (
         "critical", "The upload audit record could not be saved:\ndatabase is locked"
     )
+    window.close()
+    app.processEvents()
+
+
+def test_an_experiment_already_on_mxlive_is_never_uploaded_again(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """MxLive overwrites a labwork it has, erasing the beamline's own fields.
+
+    The local audit cannot see an upload made from another computer, so the
+    server is asked before anything is sent.
+    """
+    app = QApplication.instance() or QApplication([])
+    window, _store, editor, revision, dialogs = _finalized_raw_upload_window(
+        tmp_path, monkeypatch
+    )
+
+    class Holds(_FakeMxLiveReader):
+        rows = ()
+
+        def labworks(self, experiment_id):
+            return Holds.rows
+
+    class Writer(_RecordingWriter):
+        posted = []
+
+    monkeypatch.setattr(
+        "xtalflow.ui.experiment_coordinator.LegacyMxLiveReadClient", Holds
+    )
+    monkeypatch.setattr(
+        "xtalflow.ui.experiment_coordinator.LegacyMxLiveWriteClient", Writer
+    )
+
+    # Nothing was uploaded from this computer, so the local audit says the
+    # experiment is free. MxLive says otherwise, and MxLive is right.
+    Holds.rows = (
+        MxLiveLabwork.from_mapping({"expri_id": revision.experiment_id}),
+    ) * 3
+    window.experiments._upload_plan_labworks(editor)
+
+    assert Writer.posted == []
+    assert "already holds 3 records" in dialogs[-1][1]
+    assert "erase the harvest time" in dialogs[-1][1]
+
+    # When MxLive cannot be asked at all, nothing is sent either: an upload
+    # that overwrites cannot be taken back, a later attempt costs nothing.
+    def unreachable(self, experiment_id):
+        raise MxLiveReadError("MxLive request failed (HTTP 503)")
+
+    monkeypatch.setattr(Holds, "labworks", unreachable)
+    window.experiments._upload_plan_labworks(editor)
+    assert Writer.posted == []
+    assert "could not be asked" in dialogs[-1][1]
+
+    # MxLive matches the identifier as a substring, so a longer one that merely
+    # contains ours is not this experiment and must not block it.
+    monkeypatch.setattr(
+        Holds, "labworks",
+        lambda self, experiment_id: (
+            MxLiveLabwork.from_mapping({"expri_id": f"{experiment_id}9"}),
+        ),
+    )
+    window.experiments._upload_plan_labworks(editor)
+    assert len(Writer.posted) == 1
     window.close()
     app.processEvents()
 

@@ -1679,6 +1679,28 @@ class ExperimentCoordinator:
                 self.window, "Cannot upload", "Finalize the current plan revision first."
             )
             return
+        try:
+            held = self._records_already_on_mxlive(revision.experiment_id)
+        except (MxLiveReadError, ValueError, OSError) as error:
+            # Refusing is the safe answer: an upload that overwrites cannot be
+            # taken back, and not sending one costs only a later attempt.
+            QMessageBox.warning(
+                self.window, "Cannot upload",
+                "MxLive could not be asked whether it already holds "
+                f"{revision.experiment_id}, so an upload that would overwrite "
+                f"records there cannot be ruled out.\n\n{error}",
+            )
+            return
+        if held:
+            QMessageBox.warning(
+                self.window, "Already on MxLive",
+                f"MxLive already holds {counted(held, 'record')} for "
+                f"{revision.experiment_id}.\n\nUploading again would overwrite "
+                "them, and would erase the harvest time and the puck the beamline "
+                "recorded on them. MxLive cannot undo that.",
+            )
+            self._sync_webdb_upload_state(editor)
+            return
         endpoint = labworks_endpoint(account.base_url, account.beamline)
         answer = QMessageBox.question(
             self.window,
@@ -1750,6 +1772,24 @@ class ExperimentCoordinator:
                 f"{outcome.error_message}\n\nMxLive may have stored these records. "
                 "Use Verify on MxLive before uploading again.",
             )
+
+    def _records_already_on_mxlive(self, experiment_id: str) -> int:
+        """How many records MxLive already holds under this experiment ID.
+
+        The local audit only knows about uploads made from this computer and
+        this database, and MxLive overwrites a labwork it already has with the
+        values sent - erasing the harvest time and the puck the beamline wrote
+        on it. So the server is asked before anything is sent.
+
+        MxLive matches the identifier as a substring, so the answers are
+        compared here for an exact one.
+        """
+        reader = self._mxlive_reader()
+        labworks = self.window._run_in_background(
+            f"Checking {experiment_id} on MxLive…",
+            lambda: reader.labworks(experiment_id),
+        )
+        return sum(1 for item in labworks if item.experiment_id == experiment_id)
 
     def _verify_labworks_upload(
         self, editor, experiment_id: str, event: WebDBUploadEvent

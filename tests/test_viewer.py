@@ -912,6 +912,18 @@ def test_only_finalized_raw_revision_can_be_uploaded_and_is_audited(
     assert events[0].account_id == events[0].username
     assert not editor.webdb_upload_button.isEnabled()
     assert unexpected_dialogs == []
+
+    # The list of experiments says how far this one came, and when it started.
+    # The worksheets were never saved here, and the list keeps saying so.
+    draft = store.planning.load_recent_drafts()[0]
+    window.experiments.show_home()
+    table = window.home_page.recent_table
+    assert table.item(0, 2).text() == (
+        "Sent to the beamline r1 · worksheets not saved"
+    )
+    assert table.item(0, 4).text() == (
+        draft.created_at.astimezone().strftime("%Y-%m-%d %H:%M")
+    )
     window.close()
     app.processEvents()
 

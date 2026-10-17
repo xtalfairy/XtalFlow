@@ -10,7 +10,7 @@ from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication
 
 from xtalflow.domain import PlanType
-from xtalflow.ui.home_page import HomePage, RecentExperiment
+from xtalflow.ui.home_page import HomePage, RecentExperiment, WorkspaceEntry
 from xtalflow.ui.workspace_sidebar import WorkspaceSidebar
 
 
@@ -71,3 +71,32 @@ def test_home_delete_button_and_key_request_deletion():
     QTest.keyClick(page.recent_table, Qt.Key_Delete)
     assert deleted == [("workspace", "plan"), ("workspace", "plan")]
     page.close()
+
+
+def test_experiment_list_shows_when_each_one_started_and_how_far_it_came():
+    app = QApplication.instance() or QApplication([])
+    page = HomePage()
+    started = datetime(2026, 10, 2, 9, 30, tzinfo=timezone.utc)
+    edited = datetime(2026, 10, 9, 14, 5, tzinfo=timezone.utc)
+    page.show_recent_work((RecentExperiment(
+        "workspace", "Demo", "plan", "Example", PlanType.RAW_CRYSTAL,
+        "Sent to the beamline r1", edited, started,
+    ),))
+
+    assert [
+        page.recent_table.horizontalHeaderItem(column).text()
+        for column in range(page.recent_table.columnCount())
+    ] == ["Experiment", "Type", "Stage", "Workspace", "Started", "Edited"]
+    assert page.recent_table.item(0, 2).text() == "Sent to the beamline r1"
+    assert page.recent_table.item(0, 4).text() == (
+        started.astimezone().strftime("%Y-%m-%d %H:%M")
+    )
+    assert page.recent_table.item(0, 5).text() == (
+        edited.astimezone().strftime("%Y-%m-%d %H:%M")
+    )
+    # The workspace column is the one that hides; the dates stay put.
+    page.show_workspaces((WorkspaceEntry("workspace", "Demo"),), "workspace")
+    assert page.recent_table.isColumnHidden(3)
+    assert not page.recent_table.isColumnHidden(4)
+    page.close()
+    app.processEvents()

@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from xtalflow.application.labwork_upload import UploadAvailability
 from xtalflow.domain.experiment_naming import normalize_protein_name
 from xtalflow.domain.experiment_project import PlanType
 from xtalflow.text import counted
@@ -29,6 +30,40 @@ STEP_LABELS = {
     WorkflowStep.REVIEW: "Review",
     WorkflowStep.WORKSHEETS: "Worksheets",
 }
+
+
+def experiment_progress(
+    step: WorkflowStep,
+    revision_number: int | None,
+    *,
+    worksheets_saved: bool = False,
+    worksheets_saved_elsewhere: bool = False,
+    upload: UploadAvailability | None = None,
+) -> str:
+    """One line for the experiment list: how far this experiment has come.
+
+    The stages are the ones this program can see for itself, in the order they
+    happen.  What follows the upload - the beamline accepting the samples and
+    collecting data - is MxLive's to tell, and is not shown here.
+    """
+    if revision_number is None:
+        return f"Draft · {STEP_LABELS[step]}"
+    if upload is UploadAvailability.UPLOADED:
+        sent = f"Sent to the beamline r{revision_number}"
+        # The samples are registered, but nothing will be harvested for them
+        # until the worksheets reach the instruments. Say so here.
+        if not worksheets_saved:
+            return f"{sent} · worksheets not saved"
+        if worksheets_saved_elsewhere:
+            return f"{sent} · worksheets not in instrument folders"
+        return sent
+    if upload in (UploadAvailability.PARTIAL, UploadAvailability.NEEDS_VERIFICATION):
+        return f"Upload r{revision_number} needs checking on MxLive"
+    if worksheets_saved_elsewhere:
+        return f"Worksheets r{revision_number} not in instrument folders"
+    if worksheets_saved:
+        return f"Worksheets saved r{revision_number}"
+    return f"Finalized r{revision_number}"
 
 
 def steps_for(plan_type: PlanType) -> tuple[WorkflowStep, ...]:

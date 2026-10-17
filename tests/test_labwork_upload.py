@@ -120,4 +120,9 @@ def test_upload_service_records_attempt_before_outcome(tmp_path) -> None:
     assert pending.payload_json == '[{"expri_id":"RawCrystal-01"}]'
     assert verified.status == "succeeded"
     assert service.lock_state("RawCrystal-01").availability is UploadAvailability.UPLOADED
+    # The experiment list reads every experiment's history in one query.
+    assert {
+        experiment_id: lock.availability
+        for experiment_id, lock in service.lock_states().items()
+    } == {"RawCrystal-01": UploadAvailability.UPLOADED}
     store.close()

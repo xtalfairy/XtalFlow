@@ -116,6 +116,10 @@ class UploadAuditPort(Protocol):
         self, experiment_id: str
     ) -> tuple[WebDBUploadEvent, ...]: ...
 
+    def list_webdb_uploads_by_experiment(
+        self,
+    ) -> Mapping[str, tuple[WebDBUploadEvent, ...]]: ...
+
 
 class LabworkUploadService:
     def __init__(self, store: UploadAuditPort) -> None:
@@ -123,6 +127,13 @@ class LabworkUploadService:
 
     def lock_state(self, experiment_id: str) -> UploadLockState:
         return upload_lock_state(self.store.list_webdb_uploads_for_experiment(experiment_id))
+
+    def lock_states(self) -> dict[str, UploadLockState]:
+        """The lock of every experiment ID that was ever uploaded, in one read."""
+        return {
+            experiment_id: upload_lock_state(events)
+            for experiment_id, events in self.store.list_webdb_uploads_by_experiment().items()
+        }
 
     def begin(
         self,

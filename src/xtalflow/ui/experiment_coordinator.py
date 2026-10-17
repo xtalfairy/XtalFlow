@@ -42,6 +42,7 @@ from xtalflow.application.experiment_workflow import (
     StepState,
     WorkflowStep,
     evaluate_experiment,
+    experiment_progress,
     steps_for,
 )
 from xtalflow.application.planning_service import (
@@ -206,6 +207,7 @@ class ExperimentCoordinator:
             except ReviewPersistenceError as error:
                 self.window.status_message_label.show_message(f"Recent work unavailable: {error}")
                 return ()
+        locks = self._upload_locks()
         recent = []
         for draft in drafts:
             if draft.project_id not in workspaces:
@@ -217,29 +219,47 @@ class ExperimentCoordinator:
             recent.append(
                 RecentExperiment(
                     draft.project_id, workspaces[draft.project_id], draft.id,
-                    draft.name, plan_type, self._recent_status(draft), draft.updated_at,
+                    draft.name, plan_type, self._recent_status(draft, locks),
+                    draft.updated_at, draft.created_at,
                 )
             )
         return tuple(recent)
 
-    def _recent_status(self, draft: PlanningDraft) -> str:
+    def _upload_locks(self) -> dict[str, UploadLockState]:
+        """Read the upload history of every experiment once, not row by row."""
+        if self.upload_service is None:
+            return {}
+        try:
+            return self.upload_service.lock_states()
+        except ReviewPersistenceError as error:
+            self.window.status_message_label.show_message(
+                f"Upload history unavailable: {error}"
+            )
+            return {}
+
+    def _recent_status(
+        self, draft: PlanningDraft, locks: dict[str, UploadLockState]
+    ) -> str:
         revision = None
         if self.planning_service is not None:
             try:
                 revision = self.planning_service.latest_revision(draft.id)
             except ReviewPersistenceError:
                 revision = None
-        if revision is not None:
-            if self._worksheets_saved(revision):
-                if self._worksheets_saved_elsewhere(revision):
-                    return f"Worksheets r{revision.revision} not in instrument folders"
-                return f"Worksheets saved r{revision.revision}"
-            return f"Finalized r{revision.revision}"
         try:
             step = WorkflowStep(draft.workflow_step)
         except ValueError:
             step = WorkflowStep.SETUP
-        return f"Draft · {STEP_LABELS[step]}"
+        if revision is None:
+            return experiment_progress(step, None)
+        lock = locks.get(revision.experiment_id or "")
+        return experiment_progress(
+            step,
+            revision.revision,
+            worksheets_saved=self._worksheets_saved(revision),
+            worksheets_saved_elsewhere=self._worksheets_saved_elsewhere(revision),
+            upload=lock.availability if lock is not None else None,
+        )
 
     def _experiment_names(self) -> dict[str, str]:
         names: dict[str, str] = {}

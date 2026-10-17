@@ -129,6 +129,38 @@ class SQLiteDeliveryAuditStore:
             for row in rows
         )
 
+    def list_webdb_uploads_by_experiment(
+        self,
+    ) -> dict[str, tuple[WebDBUploadEvent, ...]]:
+        """Every attempt, grouped by experiment ID, oldest first.
+
+        The experiment list needs all of them at once; asking experiment by
+        experiment would be one query per row on the screen.
+        """
+        try:
+            rows = self._connection.execute(
+                """SELECT revision.experiment_id, upload.upload_id,
+                          upload.revision_id, upload.username, upload.account_id,
+                          upload.endpoint, upload.attempted_at, upload.status,
+                          upload.record_count, upload.payload_json,
+                          upload.response_json, upload.error_message
+                   FROM webdb_upload_event AS upload
+                   JOIN plan_revision AS revision
+                     ON revision.revision_id = upload.revision_id
+                   ORDER BY upload.attempted_at""",
+            ).fetchall()
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError("could not list WebDB uploads") from error
+        grouped: dict[str, list[WebDBUploadEvent]] = {}
+        for row in rows:
+            grouped.setdefault(row[0], []).append(
+                WebDBUploadEvent(
+                    row[1], row[2], row[3], row[4], row[5],
+                    datetime.fromisoformat(row[6]), *row[7:]
+                )
+            )
+        return {key: tuple(value) for key, value in grouped.items()}
+
     def list_webdb_uploads(self, revision_id: str) -> tuple[WebDBUploadEvent, ...]:
         rows = self._connection.execute(
             """SELECT upload_id, revision_id, username, account_id, endpoint,

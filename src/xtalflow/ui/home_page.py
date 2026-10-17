@@ -50,6 +50,10 @@ QLabel#HomeEmpty {{ color: {theme.TEXT_MUTED}; background: transparent;
 ALL_EXPERIMENTS = "All experiments"
 
 
+def _moment(value: datetime | None) -> str:
+    return "" if value is None else value.astimezone().strftime("%Y-%m-%d %H:%M")
+
+
 def panel_toggle_button(tooltip: str) -> QToolButton:
     """The same icon hides the panel from inside it and shows it again from a page."""
     button = QToolButton()
@@ -142,6 +146,7 @@ class RecentExperiment:
     plan_type: PlanType
     status: str
     updated_at: datetime
+    created_at: datetime | None = None
 
 
 class HomePage(QWidget):
@@ -191,10 +196,12 @@ class HomePage(QWidget):
         recent_title.setObjectName("HomeSection")
         self.recent_count = QLabel("0 experiments")
         self.recent_count.setObjectName("HomeMuted")
-        self.recent_table = QTableWidget(0, 5)
+        self.recent_table = QTableWidget(0, 6)
         self.recent_table.setObjectName("HomeRecent")
+        # Started tells apart two experiments on the same plate; Stage says how
+        # far each one has come.
         self.recent_table.setHorizontalHeaderLabels(
-            ("Experiment", "Type", "Status", "Workspace", "Edited")
+            ("Experiment", "Type", "Stage", "Workspace", "Started", "Edited")
         )
         self.recent_table.verticalHeader().setVisible(False)
         self.recent_table.verticalHeader().setDefaultSectionSize(48)
@@ -300,7 +307,8 @@ class HomePage(QWidget):
                 labels.get(experiment.plan_type, experiment.plan_type.value),
                 experiment.status,
                 experiment.workspace_name,
-                experiment.updated_at.astimezone().strftime("%Y-%m-%d %H:%M"),
+                _moment(experiment.created_at),
+                _moment(experiment.updated_at),
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)

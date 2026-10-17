@@ -2855,3 +2855,47 @@ def test_a_second_revision_does_not_hide_the_worksheets_on_the_instruments(
     assert "Worksheets r1 saved" in detail
     window.close()
     app.processEvents()
+
+
+def test_a_failed_retry_leaves_the_saved_worksheets_on_the_page(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The instruments keep the files from the save that worked."""
+    from xtalflow.domain.plan_lifecycle import WorksheetExportEvent
+
+    app = QApplication.instance() or QApplication([])
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        instruments=standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
+        ),
+        create_missing_instrument_roots=True,
+    )
+    window, store, editor = _fragment_plan_window(tmp_path, settings)
+    page = window.experiment_page
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    window.experiments.go_to_step(WorkflowStep.REVIEW)
+    page.primary_button.click()
+    page.primary_button.click()
+    revision = editor.last_revision
+    saved_path = store.audit.list_worksheet_exports(revision.id)[0].path_for("shifter2")
+
+    store.audit.record_worksheet_export(WorksheetExportEvent(
+        "failed-retry", revision.id, "tester", datetime.now(timezone.utc),
+        "failed", (), "the share went away",
+    ))
+    window.experiments._refresh_worksheets_step(editor)
+
+    result = editor.worksheets_step.result_label.text()
+    assert "Saved r1" in result
+    assert "saving again failed" in result and "the share went away" in result
+    # The files are still listed, because they are still on the instruments.
+    table = editor.worksheets_step.instrument_table
+    assert table.item(2, 3).text() == saved_path
+    assert (
+        editor.experiment_status.status_of(WorkflowStep.WORKSHEETS).state
+        is StepState.COMPLETE
+    )
+    window.close()
+    app.processEvents()

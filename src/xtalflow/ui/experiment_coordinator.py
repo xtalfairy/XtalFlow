@@ -1065,9 +1065,12 @@ class ExperimentCoordinator:
         worksheets = worksheets_for(plan) if plan is not None else {}
         username = getpass.getuser()
         latest = self._latest_worksheet_export(revision) if finalized else None
+        # The files on the instruments are from the last save that worked; an
+        # attempt that failed afterwards did not take them away.
+        delivered = self._successful_worksheet_export(revision) if finalized else None
         saved: dict[str, list[Path]] = {}
-        if latest is not None and latest.status == WORKSHEETS_SUCCEEDED:
-            for output in latest.outputs:
+        if delivered is not None:
+            for output in delivered.outputs:
                 saved.setdefault(output.instrument, []).append(Path(output.path))
         # Instruments that read one of these worksheets but received nothing,
         # because they were down when the user chose to save without them.
@@ -1125,6 +1128,21 @@ class ExperimentCoordinator:
         if latest is None:
             # Not finalized yet: the footer names that and disables saving.
             editor.worksheets_step.show_result("", "muted")
+        elif delivered is not None and latest.status != WORKSHEETS_SUCCEEDED:
+            # The instruments keep what the earlier save put there, so the files
+            # are still listed above; what failed is only the attempt to redo it.
+            again = (
+                "was cancelled" if latest.status == WORKSHEETS_CANCELLED
+                else f"failed · {latest.error_message or ''}".rstrip(" ·")
+            )
+            editor.worksheets_step.show_result(
+                f"{theme.SYMBOL_ATTENTION} Saved r{revision.revision} · "
+                f"{delivered.exported_at:%Y-%m-%d %H:%M} · {delivered.username} · "
+                f"saving again {again}; the files above are from that earlier save",
+                "attention",
+                can_retry=True,
+                copy_text="\n".join(output.path for output in delivered.outputs),
+            )
         elif latest.status == WORKSHEETS_SUCCEEDED and self._saved_elsewhere(latest):
             editor.worksheets_step.show_result(
                 f"{theme.SYMBOL_ATTENTION} Saved r{revision.revision} to the folder you "
@@ -1167,15 +1185,20 @@ class ExperimentCoordinator:
             )
 
     def _worksheets_saved(self, revision) -> bool:
-        latest = self._latest_worksheet_export(revision)
-        return latest is not None and latest.status == WORKSHEETS_SUCCEEDED
+        return self._successful_worksheet_export(revision) is not None
 
     def _worksheets_saved_elsewhere(self, revision) -> bool:
-        latest = self._latest_worksheet_export(revision)
-        return (
-            latest is not None
-            and latest.status == WORKSHEETS_SUCCEEDED
-            and self._saved_elsewhere(latest)
+        delivered = self._successful_worksheet_export(revision)
+        return delivered is not None and self._saved_elsewhere(delivered)
+
+    def _successful_worksheet_export(self, revision):
+        """The last save that worked, which is what the instruments hold."""
+        return next(
+            (
+                event for event in reversed(self._worksheet_exports_for(revision))
+                if event.status == WORKSHEETS_SUCCEEDED
+            ),
+            None,
         )
 
     def _saved_elsewhere(self, event) -> bool:
@@ -1190,13 +1213,16 @@ class ExperimentCoordinator:
         return False
 
     def _latest_worksheet_export(self, revision):
-        if revision is None or self.window.review_store is None:
-            return None
-        try:
-            exports = self.window.review_store.audit.list_worksheet_exports(revision.id)
-        except ReviewPersistenceError:
-            return None
+        exports = self._worksheet_exports_for(revision)
         return exports[-1] if exports else None
+
+    def _worksheet_exports_for(self, revision) -> tuple:
+        if revision is None or self.window.review_store is None:
+            return ()
+        try:
+            return self.window.review_store.audit.list_worksheet_exports(revision.id)
+        except ReviewPersistenceError:
+            return ()
 
     def _other_experiments_using_current_image(self) -> tuple[str, ...]:
         image_set = self.window.project_controller.active_image_set

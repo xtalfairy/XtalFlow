@@ -1304,7 +1304,7 @@ def test_worksheets_go_to_the_instruments_that_are_up(
     # And the list of experiments tells a partial delivery from a full one.
     window.experiments.show_home()
     row = window.home_page.recent_table.item(0, 2)
-    assert row.text() == "Worksheets r1 · 2 of 3 instruments"
+    assert row.text() == "Worksheets r1 · not on SHIFTER 2"
     assert "No worksheet reached SHIFTER 2." in row.toolTip()
     assert "ECHO 650, SHIFTER 1" in row.toolTip()
     window.close()
@@ -1381,7 +1381,7 @@ def test_unavailable_instrument_share_can_use_alternate_root(
     assert folders[-1] == str(tmp_path / "chosen")
     window.experiments.show_home()
     assert window.home_page.recent_table.item(0, 2).text() == (
-        "Worksheets r1 · elsewhere"
+        "Worksheets r1 · not on instruments"
     )
     window.close()
     app.processEvents()

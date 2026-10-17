@@ -32,6 +32,10 @@ STEP_LABELS = {
 }
 
 
+def _and_list(names: tuple[str, ...]) -> str:
+    return " and ".join(", ".join(names).rsplit(", ", 1))
+
+
 @dataclass(frozen=True)
 class ExperimentProgress:
     """How far an experiment has come, for the list of experiments.
@@ -52,7 +56,7 @@ def experiment_progress(
     *,
     worksheets_saved: bool = False,
     worksheets_saved_elsewhere: bool = False,
-    instruments_saved: int = 0,
+    instruments_missing: tuple[str, ...] = (),
     instruments_expected: int = 0,
     upload: UploadAvailability | None = None,
 ) -> ExperimentProgress:
@@ -62,12 +66,18 @@ def experiment_progress(
     beamline accepting the samples and collecting data - is MxLive's to tell,
     and MxLive's labwork records carry no field for either.
 
-    ``instruments_saved`` of ``instruments_expected`` counts the instruments
-    that read this plan's worksheets: one of them being switched off leaves
-    the others with the files and that one without.
+    ``instruments_missing`` names the instruments that read this plan's
+    worksheets and did not get one, because they were switched off when the
+    others were saved.  Naming them is the point: a count would send the
+    reader back to the detail to ask which.
     """
-    some_instruments = 0 < instruments_saved < instruments_expected
-    reach = f"{instruments_saved} of {instruments_expected} instruments"
+    # "elsewhere" is the same fact at its limit: no instrument has the files.
+    missing = (
+        "not on instruments" if worksheets_saved_elsewhere
+        else f"not on {instruments_missing[0]}" if len(instruments_missing) == 1
+        else f"not on {counted(len(instruments_missing), 'instrument')}"
+        if instruments_missing else ""
+    )
     if revision_number is None:
         return ExperimentProgress(
             f"Draft \u00b7 {STEP_LABELS[step]}",
@@ -95,33 +105,37 @@ def experiment_progress(
             )
         if worksheets_saved_elsewhere:
             return ExperimentProgress(
-                f"Sent r{revision_number} \u00b7 worksheets elsewhere",
+                f"Sent r{revision_number} \u00b7 {missing}",
                 f"{sent} Its worksheets went to a folder you chose, not to the "
                 "instruments, so copy them across before running it.",
                 "attention",
             )
-        if some_instruments:
+        if missing:
             return ExperimentProgress(
-                f"Sent r{revision_number} \u00b7 {reach}",
-                f"{sent} Its worksheets reached {reach}; the ones left out "
-                "hold nothing for it.",
+                f"Sent r{revision_number} \u00b7 {missing}",
+                f"{sent} Its worksheets did not reach "
+                f"{_and_list(instruments_missing)}, so do not run it there.",
                 "attention",
             )
-        return ExperimentProgress(f"Sent r{revision_number}", sent, "ok")
+        return ExperimentProgress(
+            f"Sent r{revision_number}",
+            f"{sent} Its worksheets are in the instrument folders.",
+            "ok",
+        )
     if worksheets_saved_elsewhere:
         return ExperimentProgress(
-            f"Worksheets r{revision_number} \u00b7 elsewhere",
+            f"Worksheets r{revision_number} \u00b7 {missing}",
             f"The worksheets for r{revision_number} went to a folder you chose "
             "because an instrument could not be reached. Copy them to the "
             "instrument folders before running the experiment.",
             "attention",
         )
-    if worksheets_saved and some_instruments:
+    if worksheets_saved and missing:
         return ExperimentProgress(
-            f"Worksheets r{revision_number} \u00b7 {reach}",
-            f"The worksheets for r{revision_number} reached {reach}, because "
-            "the others could not be reached when they were saved. Do not run "
-            "the experiment on an instrument that holds nothing for it.",
+            f"Worksheets r{revision_number} \u00b7 {missing}",
+            f"The worksheets for r{revision_number} did not reach "
+            f"{_and_list(instruments_missing)}, which could not be reached "
+            "when they were saved. Do not run the experiment there.",
             "attention",
         )
     if worksheets_saved:

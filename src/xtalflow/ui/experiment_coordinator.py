@@ -264,14 +264,14 @@ class ExperimentCoordinator:
             return replace(progress, detail=f"{progress.detail}\n\n{started}")
         export = self._latest_worksheet_export(revision)
         saved = self._worksheets_saved(revision)
-        reached, expected, missing = self._instrument_coverage(export if saved else None)
+        expected, missing = self._instrument_coverage(export if saved else None)
         lock = locks.get(revision.experiment_id or "")
         progress = experiment_progress(
             step,
             revision.revision,
             worksheets_saved=saved,
             worksheets_saved_elsewhere=self._worksheets_saved_elsewhere(revision),
-            instruments_saved=reached,
+            instruments_missing=missing,
             instruments_expected=expected,
             upload=lock.availability if lock is not None else None,
         )
@@ -284,15 +284,15 @@ class ExperimentCoordinator:
             ),
         )
 
-    def _instrument_coverage(self, export) -> tuple[int, int, tuple[str, ...]]:
-        """How many instruments that read these worksheets got one, and who missed out.
+    def _instrument_coverage(self, export) -> tuple[int, tuple[str, ...]]:
+        """How many instruments read these worksheets, and which got none.
 
         The worksheet kinds the plan writes are read back from what was
         delivered: a save reaches at least one instrument of every kind it
         writes for, or it does not happen at all.
         """
         if export is None:
-            return 0, 0, ()
+            return 0, ()
         delivered = {output.instrument for output in export.outputs}
         kinds = {
             destination.worksheet
@@ -302,12 +302,8 @@ class ExperimentCoordinator:
         expected = [
             item for item in self.window.settings.instruments if item.worksheet in kinds
         ]
-        return (
-            len(delivered),
-            len(expected),
-            tuple(
-                item.label for item in expected if item.instrument not in delivered
-            ),
+        return len(expected), tuple(
+            item.label for item in expected if item.instrument not in delivered
         )
 
     def _stage_history(self, started, revision, export, lock, missing=()) -> list[str]:
@@ -324,7 +320,7 @@ class ExperimentCoordinator:
             if missing:
                 history.append(f"No worksheet reached {', '.join(missing)}.")
         if lock is not None and lock.event is not None:
-            history.append(f"Uploaded to MxLive {_when(lock.event.attempted_at)}.")
+            history.append(f"Sent to MxLive {_when(lock.event.attempted_at)}.")
         return history
 
     def _instrument_label(self, instrument: str) -> str:

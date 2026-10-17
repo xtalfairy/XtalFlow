@@ -140,3 +140,33 @@ def test_the_stage_carries_a_mark_and_tells_its_story_on_click():
     )
     page.close()
     app.processEvents()
+
+
+def test_a_long_stage_story_is_broken_into_readable_lines():
+    """Qt lays a plain tooltip out on one line however long it is."""
+    from xtalflow.ui.home_page import TOOLTIP_WIDTH, wrapped
+
+    app = QApplication.instance() or QApplication([])
+    page = HomePage()
+    now = datetime.now(timezone.utc)
+    detail = (
+        "The beamline harvested all 36 crystals of r2 into pucks 5C-0029, "
+        "5C-0030 and 5C-0031. Nothing after this is recorded in MxLive."
+        "\n\nStarted 2026-10-03 18:12."
+        "\nWorksheets r2 saved 2026-10-05 10:30 · ECHO 650, SHIFTER 1, SHIFTER 2."
+    )
+    page.show_recent_work((RecentExperiment(
+        "w", "Demo", "a", "Harvest", PlanType.RAW_CRYSTAL, "Harvested r2",
+        now, now, "ok", detail,
+    ),))
+
+    lines = page.recent_table.item(0, 2).toolTip().splitlines()
+    assert max(len(line) for line in lines) <= TOOLTIP_WIDTH
+    assert len(lines) > 6
+    # The paragraphs stay apart, and a puck keeps its name on one line.
+    assert "" in lines
+    assert all("5C-" not in line or "5C-00" in line for line in lines)
+    # Nothing is lost in the breaking.
+    assert " ".join(wrapped(detail).split()) == " ".join(detail.split())
+    page.close()
+    app.processEvents()

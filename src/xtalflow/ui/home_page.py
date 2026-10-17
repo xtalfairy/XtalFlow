@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import textwrap
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -49,6 +50,23 @@ QLabel#HomeEmpty {{ color: {theme.TEXT_MUTED}; background: transparent;
 """
 
 ALL_EXPERIMENTS = "All experiments"
+
+# Qt lays a plain tooltip out on one line however long it is, so the lines are
+# broken here. Wide enough for a date and an instrument, narrow enough to read.
+TOOLTIP_WIDTH = 64
+
+
+def wrapped(text: str) -> str:
+    """Break long lines for a tooltip, keeping the blank lines between them.
+
+    Never inside a hyphenated name: a puck is 5C-0029 on both of its lines
+    or on neither.
+    """
+    return "\n".join(
+        textwrap.fill(line, TOOLTIP_WIDTH, break_on_hyphens=False)
+        if line.strip() else ""
+        for line in text.splitlines()
+    )
 
 
 def _moment(value: datetime | None) -> str:
@@ -347,7 +365,7 @@ class HomePage(QWidget):
                 mark, 15, theme.STATUS_COLORS[experiment.stage_state]
             )))
         if experiment.stage_detail:
-            item.setToolTip(f"{experiment.stage}\n\n{experiment.stage_detail}")
+            item.setToolTip(wrapped(f"{experiment.stage}\n\n{experiment.stage_detail}"))
 
     def _show_stage_detail(self, row: int, column: int) -> None:
         """A click says the same as a hover, for anyone who does not hover."""

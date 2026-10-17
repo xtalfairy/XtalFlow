@@ -1076,7 +1076,7 @@ def test_later_revision_with_uploaded_experiment_id_is_not_uploaded_again(
     window.experiments.show_home()
     stage = window.home_page.recent_table.item(0, 2)
     assert stage.text() == "Finalized r2 · MxLive has r1"
-    assert "Sent r1 to MxLive" in stage.toolTip()
+    assert "Sent r1 to MxLive" in _tooltip(stage)
     window.close()
     app.processEvents()
 
@@ -1220,7 +1220,7 @@ def test_fragment_worksheets_are_saved_and_audited(tmp_path: Path, monkeypatch) 
     stage = window.home_page.recent_table.item(0, 2)
     assert stage.text() == "Worksheets r1"
     # Hovering the stage, or clicking it, tells the whole story.
-    detail = stage.toolTip()
+    detail = _tooltip(stage)
     assert "in the folders of all 3 instruments that read them" in detail
     assert "Started " in detail and "Finalized r1 " in detail
     assert "ECHO 650" in detail and "SHIFTER 1" in detail
@@ -1323,8 +1323,8 @@ def test_worksheets_go_to_the_instruments_that_are_up(
     window.experiments.show_home()
     row = window.home_page.recent_table.item(0, 2)
     assert row.text() == "Worksheets r1 · not on SHIFTER 2"
-    assert "No worksheet reached SHIFTER 2." in row.toolTip()
-    assert "ECHO 650, SHIFTER 1" in row.toolTip()
+    assert "No worksheet reached SHIFTER 2." in _tooltip(row)
+    assert "ECHO 650, SHIFTER 1" in _tooltip(row)
     window.close()
     app.processEvents()
 
@@ -2851,7 +2851,7 @@ def test_a_second_revision_does_not_hide_the_worksheets_on_the_instruments(
     window.experiments.show_home()
     stage = window.home_page.recent_table.item(0, 2)
     assert stage.text() == "Finalized r2 · instruments have r1"
-    detail = stage.toolTip()
+    detail = _tooltip(stage)
     assert "Harvesting now would follow that plan, not this one" in detail
     assert "Worksheets r1 saved" in detail
     window.close()
@@ -2900,6 +2900,11 @@ def test_a_failed_retry_leaves_the_saved_worksheets_on_the_page(
     )
     window.close()
     app.processEvents()
+
+
+def _tooltip(item) -> str:
+    """A tooltip's words, without the line breaks the list puts in for Qt."""
+    return " ".join(item.toolTip().split())
 
 
 def _settle(app, done, attempts: int = 100) -> None:
@@ -2957,7 +2962,7 @@ def test_the_list_shows_what_the_beamline_did_once_mxlive_answers(
 
     stage = window.home_page.recent_table.item(0, 2)
     assert stage.text() == "Harvested r1 · no worksheets"
-    assert "harvested all 2 crystals of r1 into puck 5C-0029" in stage.toolTip()
+    assert "harvested all 2 crystals of r1 into puck 5C-0029" in _tooltip(stage)
     # The year comes from the experiment ID, and one read covers it.
     assert Harvested.years == [str(int(revision.experiment_id.split("-")[1][:4]))]
     window.close()

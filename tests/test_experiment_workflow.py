@@ -257,3 +257,34 @@ def test_a_new_revision_does_not_hide_what_the_instruments_hold() -> None:
     assert stage(
         WorkflowStep.WORKSHEETS, 2, save_failed=True, instruments_have_revision=1
     ) == ("Finalized r2 · instruments have r1", "attention")
+
+
+def test_the_beamline_stages_come_from_mxlive_records() -> None:
+    """MxLive has no accept field; what it has is harvest times and pucks."""
+    from xtalflow.domain.mxlive import BeamlineProgress
+
+    def stage(beamline):
+        progress = experiment_progress(
+            WorkflowStep.WORKSHEETS, 1, worksheets_saved=True,
+            upload=UploadAvailability.UPLOADED, beamline=beamline,
+        )
+        return progress.headline, progress.state, progress.detail
+
+    headline, state, detail = stage(BeamlineProgress(36, 36, ("5C-0029",)))
+    assert (headline, state) == ("Harvested r1", "ok")
+    assert "harvested all 36 crystals of r1 into puck 5C-0029" in detail
+
+    # Crystals can go into more than one puck.
+    assert "into pucks 5C-0029 and 5C-0030" in stage(
+        BeamlineProgress(36, 36, ("5C-0029", "5C-0030"))
+    )[2]
+
+    # Harvesting that has only started is not a stage of its own: the
+    # experiment is still where XtalFlow left it, and the count is the story.
+    headline, state, detail = stage(BeamlineProgress(36, 12, ("5C-0029",)))
+    assert (headline, state) == ("Sent r1", "ok")
+    assert "12 of 36 crystals have been harvested" in detail
+
+    # Nothing from the beamline yet, or no answer from MxLive at all.
+    assert stage(BeamlineProgress(36, 0, ()))[0] == "Sent r1"
+    assert stage(None)[0] == "Sent r1"

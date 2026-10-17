@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 
@@ -40,7 +41,9 @@ class MxLiveLabwork:
     plate_code: str | None
     plate_well: str | None
     puck_name: str | None
-    raw: Mapping[str, Any]
+    # Filled by the beamline when the crystal is harvested; empty until then.
+    harvest_time: str | None = None
+    raw: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> MxLiveLabwork:
@@ -53,8 +56,51 @@ class MxLiveLabwork:
             _optional_text(data.get("plate_code")),
             _optional_text(data.get("plate_well")),
             _optional_text(data.get("puck_name")),
+            _optional_text(data.get("harvest_time")),
             dict(data),
         )
+
+
+@dataclass(frozen=True)
+class BeamlineProgress:
+    """What the beamline has done with one experiment's crystals.
+
+    MxLive has no field for accepting an experiment.  What it does carry is
+    the result of the steps its staff take on each labwork: a harvest time
+    and the puck a crystal went into.  Those are the only two things anyone
+    outside XtalFlow writes into a record it can read.
+    """
+
+    records: int = 0
+    harvested: int = 0
+    pucks: tuple[str, ...] = ()
+
+    @property
+    def fully_harvested(self) -> bool:
+        return self.records > 0 and self.harvested == self.records
+
+
+def beamline_progress(
+    labworks: "Iterable[MxLiveLabwork]",
+) -> dict[str, BeamlineProgress]:
+    """One answer per experiment, folded from its records."""
+    records: dict[str, int] = {}
+    harvested: dict[str, int] = {}
+    pucks: dict[str, set[str]] = {}
+    for item in labworks:
+        records[item.experiment_id] = records.get(item.experiment_id, 0) + 1
+        if item.harvest_time:
+            harvested[item.experiment_id] = harvested.get(item.experiment_id, 0) + 1
+        if item.puck_name:
+            pucks.setdefault(item.experiment_id, set()).add(item.puck_name)
+    return {
+        experiment_id: BeamlineProgress(
+            count,
+            harvested.get(experiment_id, 0),
+            tuple(sorted(pucks.get(experiment_id, ()))),
+        )
+        for experiment_id, count in records.items()
+    }
 
 
 @dataclass(frozen=True)

@@ -286,3 +286,25 @@ def test_uncertain_failure_after_accepted_records_reports_minimum_count(
 
     assert captured.value.outcome_uncertain
     assert "at least 1 of 2" in str(captured.value)
+
+
+def test_beamline_progress_counts_harvests_and_collects_pucks() -> None:
+    from xtalflow.domain.mxlive import MxLiveLabwork, beamline_progress
+
+    records = [
+        {"expri_id": "A", "puck_name": "5C-0029", "harvest_time": "2026-06-02 10:00"},
+        {"expri_id": "A", "puck_name": "5C-0029", "harvest_time": "2026-06-02 10:05"},
+        {"expri_id": "B", "puck_name": None, "harvest_time": None},
+        {"expri_id": "C", "puck_name": "5C-0030", "harvest_time": "2026-06-02 11:00"},
+        {"expri_id": "C", "puck_name": "None", "harvest_time": "None"},
+    ]
+    progress = beamline_progress(
+        MxLiveLabwork.from_mapping(record) for record in records
+    )
+
+    assert progress["A"].fully_harvested
+    assert progress["A"].pucks == ("5C-0029",)
+    assert not progress["B"].fully_harvested and progress["B"].records == 1
+    # MxLive writes the string "None" for an empty field; it is not a puck.
+    assert progress["C"] == progress["C"].__class__(2, 1, ("5C-0030",))
+    assert not progress["C"].fully_harvested

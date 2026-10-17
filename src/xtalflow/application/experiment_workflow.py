@@ -11,6 +11,7 @@ from enum import Enum
 
 from xtalflow.application.labwork_upload import UploadAvailability
 from xtalflow.domain.experiment_naming import normalize_protein_name
+from xtalflow.domain.mxlive import BeamlineProgress
 from xtalflow.domain.experiment_project import PlanType
 from xtalflow.text import counted
 
@@ -34,6 +35,10 @@ STEP_LABELS = {
 
 def _and_list(names: tuple[str, ...]) -> str:
     return " and ".join(", ".join(names).rsplit(", ", 1))
+
+
+def _pucks(names: tuple[str, ...]) -> str:
+    return ("puck " if len(names) == 1 else "pucks ") + _and_list(names)
 
 
 @dataclass(frozen=True)
@@ -62,6 +67,7 @@ def experiment_progress(
     instruments_have_revision: int | None = None,
     upload: UploadAvailability | None = None,
     uploaded_revision: int | None = None,
+    beamline: BeamlineProgress | None = None,
 ) -> ExperimentProgress:
     """The furthest stage this program can see for itself.
 
@@ -85,10 +91,24 @@ def experiment_progress(
         )
     uploaded = upload is UploadAvailability.UPLOADED
     sent = uploaded and uploaded_revision in (None, revision_number)
-    if sent:
+    harvested = sent and beamline is not None and beamline.fully_harvested
+    if harvested:
+        headline = f"Harvested r{revision_number}"
+        stage = (
+            f"The beamline harvested all {counted(beamline.records, 'crystal')} "
+            f"of r{revision_number}"
+            + (f" into {_pucks(beamline.pucks)}." if beamline.pucks else ".")
+        )
+        clean = "Nothing after this is recorded in MxLive."
+    elif sent:
         headline = f"Sent r{revision_number}"
         stage = f"The sample list for r{revision_number} is on MxLive."
         clean = "Its worksheets are in the instrument folders."
+        if beamline is not None and beamline.harvested:
+            clean = (
+                f"{beamline.harvested} of "
+                f"{counted(beamline.records, 'crystal')} have been harvested."
+            )
     elif worksheets_saved:
         headline = f"Worksheets r{revision_number}"
         every = (

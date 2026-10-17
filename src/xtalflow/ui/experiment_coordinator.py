@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import getpass
 import json
+import re
+import threading
+import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -69,6 +72,11 @@ from xtalflow.application.labwork_upload import (
     UploadLockState,
     send_labworks,
 )
+from xtalflow.domain.mxlive import (
+    BeamlineProgress,
+    MxLiveReadError,
+    beamline_progress,
+)
 from xtalflow.infrastructure import (
     LegacyMxLiveReadClient,
     LegacyMxLiveWriteClient,
@@ -116,6 +124,20 @@ STEP_HINTS = {
 }
 
 
+# One read covers a year of labworks; experiments older than this are not
+# looked up, and a read is not repeated while its answer is this fresh.
+MXLIVE_YEARS = 2
+MXLIVE_CHECK_SECONDS = 300.0
+
+_EXPERIMENT_YEAR = re.compile(r"-(\d{4})\d{2}-")
+
+
+def _years_of(experiment_ids) -> set[int]:
+    """The years in experiment IDs such as FragSC-202607-BRD4-01."""
+    found = (_EXPERIMENT_YEAR.search(item or "") for item in experiment_ids)
+    return {int(match.group(1)) for match in found if match is not None}
+
+
 def _when(moment: datetime) -> str:
     return moment.astimezone().strftime("%Y-%m-%d %H:%M")
 
@@ -146,6 +168,13 @@ class ExperimentCoordinator:
             self.mxlive_configuration_error = str(error)
         self._mxlive_experiment_ids: set[str] = set()
         self._editors: dict[str, PlanEditorBase] = {}
+        # What the beamline did with each uploaded experiment, read from MxLive
+        # in the background. Empty until the first read comes back, and after a
+        # read that failed: the list never waits for it.
+        self._beamline: dict[str, BeamlineProgress] = {}
+        self._beamline_years: set[int] = set()
+        self._beamline_checked_at = 0.0
+        self._beamline_busy = False
         self.current_editor: PlanEditorBase | None = None
         self._current_step: WorkflowStep | None = None
         self._alternate_worksheet_root: Path | None = None
@@ -200,6 +229,7 @@ class ExperimentCoordinator:
         self.window._refresh_home_workspaces(recent)
         self.window.pages.setCurrentWidget(self.window.home_page)
         self.window.setWindowTitle("XtalFlow")
+        self._check_beamline()
 
     def _recent_experiments(self) -> tuple[RecentExperiment, ...]:
         workspaces = {
@@ -214,6 +244,10 @@ class ExperimentCoordinator:
                 self.window.status_message_label.show_message(f"Recent work unavailable: {error}")
                 return ()
         locks = self._upload_locks()
+        self._beamline_years = _years_of(
+            experiment_id for experiment_id, lock in locks.items()
+            if lock.availability is UploadAvailability.UPLOADED
+        )
         exports = self._worksheet_exports()
         revisions = self._revision_numbers()
         recent = []
@@ -234,6 +268,58 @@ class ExperimentCoordinator:
                 )
             )
         return tuple(recent)
+
+    def _check_beamline(self) -> None:
+        """Ask MxLive what the beamline did, without making the list wait.
+
+        Only uploaded experiments can have records, and one read covers a
+        whole year. A read that fails leaves the stages as they are and is
+        not tried again for a while: the list is useful without it.
+        """
+        account = self.mxlive_account
+        years = sorted(self._beamline_years, reverse=True)[:MXLIVE_YEARS]
+        if (
+            not years or self._beamline_busy or account is None
+            or not account.upload_ready
+            or time.monotonic() - self._beamline_checked_at < MXLIVE_CHECK_SECONDS
+        ):
+            return
+        reader = self._mxlive_reader()
+        outcome: dict[str, object] = {}
+
+        def work() -> None:
+            try:
+                records = [item for year in years for item in reader.labworks(str(year))]
+                outcome["progress"] = beamline_progress(records)
+            except (MxLiveReadError, ValueError, OSError) as error:
+                outcome["error"] = error
+
+        self._beamline_busy = True
+        self._beamline_checked_at = time.monotonic()
+        worker = threading.Thread(target=work, name="xtalflow-mxlive", daemon=True)
+        poll = QTimer(self.window)
+        poll.setInterval(200)
+        poll.timeout.connect(
+            lambda: None if worker.is_alive() else self._beamline_read(poll, outcome)
+        )
+        worker.start()
+        poll.start()
+
+    def _beamline_read(self, poll: QTimer, outcome: dict) -> None:
+        poll.stop()
+        self._beamline_busy = False
+        if "error" in outcome:
+            self.window.status_message_label.show_message(
+                f"Beamline progress unavailable: {outcome['error']}", 6000
+            )
+            return
+        progress = outcome.get("progress") or {}
+        if progress == self._beamline:
+            return
+        self._beamline = progress
+        # Only the list shows these stages, and it may have been left since.
+        if self.window.pages.currentWidget() is self.window.home_page:
+            self.window.home_page.show_recent_work(self._recent_experiments())
 
     def _upload_locks(self) -> dict[str, UploadLockState]:
         """Read the upload history of every experiment once, not row by row."""
@@ -319,6 +405,7 @@ class ExperimentCoordinator:
             instruments_have_revision=older,
             upload=lock.availability if lock is not None else None,
             uploaded_revision=uploaded_revision,
+            beamline=self._beamline.get(revision.experiment_id or ""),
         )
         return replace(
             progress,

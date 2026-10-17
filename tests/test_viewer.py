@@ -36,6 +36,7 @@ from xtalflow.infrastructure import (
     SQLiteReviewStore,
 )
 from xtalflow.application.experiment_workflow import StepState, WorkflowStep
+from xtalflow.domain.mxlive import MxLiveLabwork
 from xtalflow.ui.plan_editors import FragmentScreeningEditor
 from xtalflow.ui.load_plates_dialog import LoadPlatesDialog
 from xtalflow.viewer import ViewerWindow
@@ -978,7 +979,7 @@ class _RecordingWriter:
 def test_unknown_upload_result_locks_until_verified_on_mxlive(
     tmp_path: Path, monkeypatch
 ) -> None:
-    from xtalflow.domain.mxlive import MxLiveLabwork, MxLiveUncertainWriteError
+    from xtalflow.domain.mxlive import MxLiveUncertainWriteError
 
     app = QApplication.instance() or QApplication([])
     window, store, editor, revision, dialogs = _finalized_raw_upload_window(
@@ -2897,5 +2898,67 @@ def test_a_failed_retry_leaves_the_saved_worksheets_on_the_page(
         editor.experiment_status.status_of(WorkflowStep.WORKSHEETS).state
         is StepState.COMPLETE
     )
+    window.close()
+    app.processEvents()
+
+
+def _settle(app, done, attempts: int = 100) -> None:
+    """Let the background MxLive read finish without freezing the test."""
+    for _ in range(attempts):
+        app.processEvents()
+        if done():
+            return
+        QTest.qWait(20)
+
+
+def test_the_list_shows_what_the_beamline_did_once_mxlive_answers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The stages after the upload come from MxLive, in the background."""
+    app = QApplication.instance() or QApplication([])
+    window, store, editor, revision, _dialogs = _finalized_raw_upload_window(
+        tmp_path, monkeypatch
+    )
+    monkeypatch.setattr(
+        "xtalflow.ui.experiment_coordinator.LegacyMxLiveWriteClient", _RecordingWriter
+    )
+    window.experiments._upload_plan_labworks(editor)
+
+    # Before MxLive answers, the list says only what XtalFlow itself knows.
+    window.experiments.show_home()
+    assert window.home_page.recent_table.item(0, 2).text() == (
+        "Sent r1 · no worksheets"
+    )
+    _settle(app, lambda: not window.experiments._beamline_busy)
+
+    class Harvested(_FakeMxLiveReader):
+        years = []
+
+        def labworks(self, year):
+            Harvested.years.append(year)
+            return tuple(
+                MxLiveLabwork.from_mapping({
+                    "expri_id": revision.experiment_id,
+                    "puck_name": "5C-0029",
+                    "harvest_time": "2026-06-02 10:0{}".format(index),
+                })
+                for index in range(2)
+            )
+
+    monkeypatch.setattr(
+        "xtalflow.ui.experiment_coordinator.LegacyMxLiveReadClient", Harvested
+    )
+    window.experiments._beamline_checked_at = 0.0
+    window.experiments.show_home()
+    _settle(
+        app,
+        lambda: window.home_page.recent_table.item(0, 2).text().startswith("Harvested"),
+    )
+
+    stage = window.home_page.recent_table.item(0, 2)
+    assert stage.text() == "Harvested r1 · no worksheets"
+    assert "harvested all 2 crystals of r1 into puck 5C-0029" in stage.toolTip()
+    # The year comes from the experiment ID, and one read covers it.
+    assert Harvested.years == [str(int(revision.experiment_id.split("-")[1][:4]))]
     window.close()
     app.processEvents()

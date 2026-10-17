@@ -2967,3 +2967,57 @@ def test_the_list_shows_what_the_beamline_did_once_mxlive_answers(
     assert Harvested.years == [str(int(revision.experiment_id.split("-")[1][:4]))]
     window.close()
     app.processEvents()
+
+
+def test_mxlive_history_opens_from_the_panel_and_fills_itself(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The third place to stand, beside new experiments and workspaces."""
+    app = QApplication.instance() or QApplication([])
+    window, _store, _editor, _revision, _dialogs = _finalized_raw_upload_window(
+        tmp_path, monkeypatch
+    )
+
+    class History(_FakeMxLiveReader):
+        asked = []
+
+        def labworks(self, year):
+            History.asked.append(year)
+            if not year.endswith("6"):
+                return ()
+            return tuple(
+                MxLiveLabwork.from_mapping({
+                    "expri_id": "FragSC-202603-OLD-01", "protein_name": "OLD",
+                    "plate_code": "1234", "plate_well": f"A0{index}a",
+                    "crystal_no": index, "name": "someone-else",
+                    "staff_comments": "Uploaded by XtalFlow · Fragment Screening",
+                })
+                for index in (1, 2)
+            )
+
+    monkeypatch.setattr(
+        "xtalflow.ui.experiment_coordinator.LegacyMxLiveReadClient", History
+    )
+    page = window.mxlive_history_page
+
+    window.workspace_sidebar.history_button.click()
+
+    assert window.pages.currentWidget() is page
+    _settle(app, lambda: page.experiment_table.rowCount() > 0)
+    assert page.experiment_table.item(0, 0).text() == "FragSC-202603-OLD-01"
+    assert page.experiment_table.item(0, 4).text() == "not yet"
+    # Two years are read, newest first, and only once each.
+    assert len(History.asked) == 2 and History.asked == sorted(History.asked, reverse=True)
+    asked_once = list(History.asked)
+    window.experiments.show_mxlive_history()
+    assert History.asked == asked_once
+
+    # An experiment that is only on MxLive stays out of the working list.
+    window.experiments.show_home()
+    names = [
+        window.home_page.recent_table.item(row, 0).text()
+        for row in range(window.home_page.recent_table.rowCount())
+    ]
+    assert "FragSC-202603-OLD-01" not in names
+    window.close()
+    app.processEvents()

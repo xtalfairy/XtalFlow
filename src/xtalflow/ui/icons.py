@@ -46,6 +46,13 @@ SIDEBAR = (
 )
 
 
+# A clock turned back: what the beamline already did.
+HISTORY = (
+    '<path d="M3.6 12a8.4 8.4 0 1 0 2.5-6"/>'
+    '<path d="M3.2 4.3v4.2h4.2"/>'
+    '<path d="M12 7.4V12l3.2 1.9"/>'
+)
+
 # Stage marks for the experiment list. Each has its own shape, so the stage
 # is still readable where colour is not: a tick for a stage that is done, a
 # warning triangle for one that needs a look, an open ring for a draft.

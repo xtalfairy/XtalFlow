@@ -74,6 +74,7 @@ class WorkspaceSidebar(QWidget):
     start_requested = pyqtSignal(object)
     # A workspace id, or None for every experiment.
     workspace_selected = pyqtSignal(object)
+    history_requested = pyqtSignal()
     create_workspace_requested = pyqtSignal()
     rename_workspace_requested = pyqtSignal(str, str)
     hide_workspace_requested = pyqtSignal(str)
@@ -142,6 +143,28 @@ class WorkspaceSidebar(QWidget):
         self.hidden_list.setToolTip("Double-click to show it in the list again")
         self.hidden_list.hide()
 
+        # The third place to stand, beside new experiments and workspaces: what
+        # MxLive holds, which is read-only and belongs to the account, not to a
+        # folder on this computer.
+        mxlive_title = QLabel("MxLive")
+        mxlive_title.setObjectName("SidebarTitle")
+        mxlive_title.setContentsMargins(10, 0, 0, theme.SPACING_S)
+        self.history_button = QPushButton("Experiment history")
+        self.history_button.setObjectName("NewExperiment")
+        self.history_button.setCursor(Qt.PointingHandCursor)
+        self.history_button.setIcon(
+            QIcon(icons.svg_pixmap(icons.HISTORY, 18, theme.TEXT_MUTED))
+        )
+        self.history_button.setIconSize(QSize(18, 18))
+        self.history_button.setToolTip(
+            "Experiments MxLive holds for your account\n"
+            "Read-only, including ones made on another computer"
+        )
+        self.history_button.setAccessibleName("MxLive experiment history")
+        mxlive_divider = QFrame()
+        mxlive_divider.setObjectName("SidebarDivider")
+        mxlive_divider.setFixedHeight(1)
+
         layout = QVBoxLayout()
         layout.setContentsMargins(theme.SPACING_M, theme.SPACING_L, theme.SPACING_M, theme.SPACING_L)
         layout.setSpacing(theme.SPACING_S)
@@ -155,9 +178,15 @@ class WorkspaceSidebar(QWidget):
         layout.addWidget(self.workspace_list, 1)
         layout.addWidget(self.hidden_toggle)
         layout.addWidget(self.hidden_list)
+        layout.addSpacing(theme.SPACING_L)
+        layout.addWidget(mxlive_divider)
+        layout.addSpacing(theme.SPACING_L)
+        layout.addWidget(mxlive_title)
+        layout.addWidget(self.history_button)
         self.setLayout(layout)
 
         self.collapse_button.clicked.connect(self.collapse_requested.emit)
+        self.history_button.clicked.connect(self.history_requested.emit)
         self.new_workspace_button.clicked.connect(self.create_workspace_requested.emit)
         self.workspace_list.currentItemChanged.connect(self._workspace_item_changed)
         self.workspace_list.itemClicked.connect(self._workspace_item_clicked)

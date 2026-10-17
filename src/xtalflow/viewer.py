@@ -107,6 +107,7 @@ from xtalflow.ui.examples_panel import ExamplesPanel
 from xtalflow.ui.help_button import HelpButton
 from xtalflow.ui.experiment_page import ExperimentPage
 from xtalflow.ui.workspace_sidebar import WorkspaceSidebar
+from xtalflow.ui.mxlive_history_page import MxLiveHistoryPage
 from xtalflow.ui.home_page import (
     HomePage,
     WorkspaceEntry,
@@ -175,6 +176,8 @@ class ViewerWindow(QMainWindow):
         # Home lists what XtalFlow prepares; each experiment then walks its steps.
         self.home_page = HomePage()
         self.experiment_page = ExperimentPage()
+        # A third place to stand: what MxLive holds for this account, read-only.
+        self.mxlive_history_page = MxLiveHistoryPage()
         self._home_workspace_id: str | None = None
         self.select_wells_page = self._build_image_review_tab()
         self._selection_sync_timer = QTimer(self)
@@ -185,6 +188,7 @@ class ViewerWindow(QMainWindow):
         self.pages = QStackedWidget()
         self.pages.addWidget(self.home_page)
         self.pages.addWidget(self.experiment_page)
+        self.pages.addWidget(self.mxlive_history_page)
         # The workspace panel runs the full height beside every page.
         layout = QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -546,6 +550,16 @@ class ViewerWindow(QMainWindow):
         sidebar.hide_workspace_requested.connect(self.hide_workspace)
         sidebar.restore_workspace_requested.connect(self.restore_workspace)
         sidebar.collapse_requested.connect(lambda: self.set_workspace_panel_visible(False))
+        sidebar.history_requested.connect(self.experiments.show_mxlive_history)
+        self.mxlive_history_page.refresh_requested.connect(
+            self.experiments.refresh_mxlive_history
+        )
+        self.mxlive_history_page.earlier_years_requested.connect(
+            self.experiments.load_earlier_mxlive_history
+        )
+        self.mxlive_history_page.show_panel_requested.connect(
+            lambda: self.set_workspace_panel_visible(True)
+        )
         self.home_page.rename_workspace_requested.connect(self._edit_workspace_name)
         self.home_page.hide_workspace_requested.connect(self.hide_workspace)
         self.home_page.show_panel_requested.connect(
@@ -747,6 +761,7 @@ class ViewerWindow(QMainWindow):
         self.workspace_sidebar.setVisible(visible)
         self.home_page.panel_button.setVisible(not visible)
         self.experiment_page.panel_button.setVisible(not visible)
+        self.mxlive_history_page.panel_button.setVisible(not visible)
         self.workspace_panel_action.blockSignals(True)
         self.workspace_panel_action.setChecked(visible)
         self.workspace_panel_action.blockSignals(False)

@@ -72,6 +72,7 @@ from xtalflow.application.labwork_upload import (
     UploadLockState,
     send_labworks,
 )
+from xtalflow.application.beamline_history import past_experiments
 from xtalflow.domain.mxlive import (
     BeamlineProgress,
     MxLiveReadError,
@@ -128,6 +129,17 @@ STEP_HINTS = {
 # looked up, and a read is not repeated while its answer is this fresh.
 MXLIVE_YEARS = 2
 MXLIVE_CHECK_SECONDS = 300.0
+# MxLive at BL-5C has nothing before this, and a wrong year is a wasted GET.
+MXLIVE_EARLIEST_YEAR = 2015
+
+
+def _recent_years(count: int) -> list[int]:
+    this_year = datetime.now().year
+    return [this_year - offset for offset in range(count)]
+
+
+def _year_list(years: list[int]) -> str:
+    return ", ".join(str(year) for year in sorted(years, reverse=True))
 
 _EXPERIMENT_YEAR = re.compile(r"-(\d{4})\d{2}-")
 
@@ -175,6 +187,10 @@ class ExperimentCoordinator:
         self._beamline_years: set[int] = set()
         self._beamline_checked_at = 0.0
         self._beamline_busy = False
+        # One year of labworks read once, shared by the stage in the list and
+        # the history page. A year older than the two the list needs is read
+        # only when somebody asks for it there.
+        self._labworks: dict[int, tuple] = {}
         self.current_editor: PlanEditorBase | None = None
         self._current_step: WorkflowStep | None = None
         self._alternate_worksheet_root: Path | None = None
@@ -287,15 +303,24 @@ class ExperimentCoordinator:
         reader = self._mxlive_reader()
         outcome: dict[str, object] = {}
 
+        self._read_labworks(years)
+
+    def _read_labworks(self, years: list[int]) -> None:
+        """Read whole years of labworks on a worker thread, once each."""
+        reader = self._mxlive_reader()
+        outcome: dict[str, object] = {}
+
         def work() -> None:
             try:
-                records = [item for year in years for item in reader.labworks(str(year))]
-                outcome["progress"] = beamline_progress(records)
+                outcome["years"] = {
+                    year: tuple(reader.labworks(str(year))) for year in years
+                }
             except (MxLiveReadError, ValueError, OSError) as error:
                 outcome["error"] = error
 
         self._beamline_busy = True
         self._beamline_checked_at = time.monotonic()
+        self._show_history_status(f"Reading {_year_list(years)} from MxLive…")
         worker = threading.Thread(target=work, name="xtalflow-mxlive", daemon=True)
         poll = QTimer(self.window)
         poll.setInterval(200)
@@ -309,17 +334,76 @@ class ExperimentCoordinator:
         poll.stop()
         self._beamline_busy = False
         if "error" in outcome:
-            self.window.status_message_label.show_message(
-                f"Beamline progress unavailable: {outcome['error']}", 6000
+            message = f"Beamline progress unavailable: {outcome['error']}"
+            self.window.status_message_label.show_message(message, 6000)
+            self._show_history_status(str(outcome["error"]), "attention")
+            return
+        self._show_history_status("")
+        self._labworks.update(outcome.get("years") or {})
+        progress = beamline_progress(
+            item for year in sorted(self._beamline_years, reverse=True)[:MXLIVE_YEARS]
+            for item in self._labworks.get(year, ())
+        )
+        changed = progress != self._beamline
+        self._beamline = progress
+        current = self.window.pages.currentWidget()
+        # Only these two screens show anything that came from MxLive.
+        if changed and current is self.window.home_page:
+            self.window.home_page.show_recent_work(self._recent_experiments())
+        if current is self.window.mxlive_history_page:
+            self._show_history()
+
+    def _show_history_status(self, message: str, kind: str = "muted") -> None:
+        if self.window.pages.currentWidget() is self.window.mxlive_history_page:
+            self.window.mxlive_history_page.show_status(message, kind)
+
+    def show_mxlive_history(self) -> None:
+        """The third place to stand: what MxLive holds for this account."""
+        account = self.mxlive_account
+        page = self.window.mxlive_history_page
+        page.show_account(
+            account.username if account else "",
+            account.beamline if account else "",
+        )
+        self.window.pages.setCurrentWidget(page)
+        self.window.setWindowTitle("XtalFlow · MxLive history")
+        self._show_history()
+        if account is None or not account.upload_ready:
+            page.show_status(
+                "No MxLive key is configured, so nothing can be read.", "attention"
             )
             return
-        progress = outcome.get("progress") or {}
-        if progress == self._beamline:
+        if not self._labworks:
+            self._read_labworks(_recent_years(MXLIVE_YEARS))
+        elif self._beamline_busy:
+            page.show_status("Reading from MxLive…")
+
+    def refresh_mxlive_history(self) -> None:
+        """Ask again for the years already on the page."""
+        if self._beamline_busy or self.mxlive_account is None:
             return
-        self._beamline = progress
-        # Only the list shows these stages, and it may have been left since.
-        if self.window.pages.currentWidget() is self.window.home_page:
-            self.window.home_page.show_recent_work(self._recent_experiments())
+        self._beamline_checked_at = 0.0
+        self._read_labworks(sorted(self._labworks) or _recent_years(MXLIVE_YEARS))
+
+    def load_earlier_mxlive_history(self) -> None:
+        """One more year back, which is one more GET."""
+        if self._beamline_busy or self.mxlive_account is None:
+            return
+        earliest = min(self._labworks, default=_recent_years(1)[0])
+        if earliest <= MXLIVE_EARLIEST_YEAR:
+            self._show_history_status(
+                f"MxLive is not read before {MXLIVE_EARLIEST_YEAR}.", "attention"
+            )
+            return
+        self._read_labworks([earliest - 1])
+
+    def _show_history(self) -> None:
+        page = self.window.mxlive_history_page
+        years = tuple(sorted(self._labworks))
+        page.show_years(years, min(years, default=0) > MXLIVE_EARLIEST_YEAR)
+        page.show_experiments(past_experiments(
+            item for year in years for item in self._labworks[year]
+        ))
 
     def _upload_locks(self) -> dict[str, UploadLockState]:
         """Read the upload history of every experiment once, not row by row."""

@@ -919,7 +919,7 @@ def test_only_finalized_raw_revision_can_be_uploaded_and_is_audited(
     window.experiments.show_home()
     table = window.home_page.recent_table
     assert table.item(0, 2).text() == (
-        "Sent to the beamline r1 · worksheets not saved"
+        "Sent r1 · no worksheets"
     )
     assert table.item(0, 4).text() == (
         draft.created_at.astimezone().strftime("%Y-%m-%d %H:%M")
@@ -1210,7 +1210,14 @@ def test_fragment_worksheets_are_saved_and_audited(tmp_path: Path, monkeypatch) 
     assert Path(exports[0].path_for("echo650")).is_file()
     assert Path(exports[0].path_for("shifter2")).is_file()
     window.experiments.show_home()
-    assert window.home_page.recent_table.item(0, 2).text() == "Worksheets saved r1"
+    stage = window.home_page.recent_table.item(0, 2)
+    assert stage.text() == "Worksheets r1"
+    # Hovering the stage, or clicking it, tells the whole story.
+    detail = stage.toolTip()
+    assert "The worksheets for r1 are in the instrument folders." in detail
+    assert "Started " in detail and "Finalized r1 " in detail
+    assert "ECHO 650" in detail and "SHIFTER 1" in detail
+    assert not stage.icon().isNull()
     window.close()
     app.processEvents()
 
@@ -1368,7 +1375,7 @@ def test_unavailable_instrument_share_can_use_alternate_root(
     assert folders[-1] == str(tmp_path / "chosen")
     window.experiments.show_home()
     assert window.home_page.recent_table.item(0, 2).text() == (
-        "Worksheets r1 not in instrument folders"
+        "Worksheets r1 · elsewhere"
     )
     window.close()
     app.processEvents()
@@ -1456,7 +1463,7 @@ def test_raw_crystal_experiment_runs_from_setup_to_saved_worksheets(
     assert Path(exports[0].path_for("shifter1")).is_file()
     assert page.primary_button.text() == "Done"
     page.primary_button.click()
-    assert window.home_page.recent_table.item(0, 2).text() == "Worksheets saved r1"
+    assert window.home_page.recent_table.item(0, 2).text() == "Worksheets r1"
 
     second = window.experiments.start_experiment(PlanType.RAW_CRYSTAL)
     window.experiments.go_to_step(WorkflowStep.SELECT_WELLS)

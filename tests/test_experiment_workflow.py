@@ -142,37 +142,58 @@ def test_unreadable_images_stop_the_steps_instead_of_showing_no_wells() -> None:
 
 
 def test_the_experiment_list_names_the_furthest_stage_reached() -> None:
-    assert experiment_progress(WorkflowStep.SELECT_WELLS, None) == "Draft · Select wells"
-    assert experiment_progress(WorkflowStep.REVIEW, 2) == "Finalized r2"
-    assert experiment_progress(
+    def stage(*args, **kwargs):
+        progress = experiment_progress(*args, **kwargs)
+        return progress.headline, progress.state
+
+    assert stage(WorkflowStep.SELECT_WELLS, None) == ("Draft · Select wells", "muted")
+    assert stage(WorkflowStep.REVIEW, 2) == ("Finalized r2", "ok")
+    assert stage(
         WorkflowStep.WORKSHEETS, 2, worksheets_saved=True
-    ) == "Worksheets saved r2"
-    assert experiment_progress(
+    ) == ("Worksheets r2", "ok")
+    assert stage(
         WorkflowStep.WORKSHEETS, 2, worksheets_saved=True,
         worksheets_saved_elsewhere=True,
-    ) == "Worksheets r2 not in instrument folders"
+    ) == ("Worksheets r2 · elsewhere", "attention")
 
     # The upload is the last stage this program can see by itself, but it does
     # not hide worksheets the instruments never received.
-    assert experiment_progress(
+    assert stage(
         WorkflowStep.WORKSHEETS, 2, worksheets_saved=True,
         upload=UploadAvailability.UPLOADED,
-    ) == "Sent to the beamline r2"
-    assert experiment_progress(
+    ) == ("Sent r2", "ok")
+    assert stage(
         WorkflowStep.WORKSHEETS, 2, upload=UploadAvailability.UPLOADED
-    ) == "Sent to the beamline r2 · worksheets not saved"
-    assert experiment_progress(
+    ) == ("Sent r2 · no worksheets", "attention")
+    assert stage(
         WorkflowStep.WORKSHEETS, 2, worksheets_saved=True,
         worksheets_saved_elsewhere=True, upload=UploadAvailability.UPLOADED,
-    ) == "Sent to the beamline r2 · worksheets not in instrument folders"
+    ) == ("Sent r2 · worksheets elsewhere", "attention")
     for availability in (
         UploadAvailability.PARTIAL, UploadAvailability.NEEDS_VERIFICATION
     ):
-        assert experiment_progress(
+        assert stage(
             WorkflowStep.WORKSHEETS, 2, worksheets_saved=True, upload=availability
-        ) == "Upload r2 needs checking on MxLive"
+        ) == ("Upload r2 · check MxLive", "attention")
     # An experiment that may still be uploaded reports where it actually stands.
-    assert experiment_progress(
+    assert stage(
         WorkflowStep.WORKSHEETS, 2, worksheets_saved=True,
         upload=UploadAvailability.AVAILABLE,
-    ) == "Worksheets saved r2"
+    ) == ("Worksheets r2", "ok")
+
+
+def test_every_stage_explains_itself_in_a_sentence() -> None:
+    """The headline is for the column; the detail is what a hover shows."""
+    assert experiment_progress(WorkflowStep.SETUP, None).detail == (
+        "Not finalized yet. The experiment was left at the Setup step."
+    )
+    assert "copy them to the instrument folders" in experiment_progress(
+        WorkflowStep.WORKSHEETS, 1, worksheets_saved=True,
+        worksheets_saved_elsewhere=True,
+    ).detail.lower()
+    assert "no instrument will harvest anything" in experiment_progress(
+        WorkflowStep.WORKSHEETS, 1, upload=UploadAvailability.UPLOADED
+    ).detail
+    assert "no way to remove a labwork" in experiment_progress(
+        WorkflowStep.WORKSHEETS, 1, upload=UploadAvailability.PARTIAL
+    ).detail

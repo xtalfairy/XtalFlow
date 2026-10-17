@@ -46,6 +46,18 @@ SIDEBAR = (
 )
 
 
+# Stage marks for the experiment list. Each has its own shape, so the stage
+# is still readable where colour is not: a tick for a stage that is done, a
+# warning triangle for one that needs a look, an open ring for a draft.
+STAGE_OK = '<path d="M20 6.8 9.8 17 4 11.2"/>'
+STAGE_ATTENTION = (
+    '<path d="M12 4.2 21.2 20H2.8z"/><path d="M12 10v4M12 16.8h.01"/>'
+)
+STAGE_DRAFT = '<circle cx="12" cy="12" r="7"/>'
+
+STAGE_MARKS = {"ok": STAGE_OK, "attention": STAGE_ATTENTION, "muted": STAGE_DRAFT}
+
+
 def svg_pixmap(body: str, size: int, color: str, device_pixel_ratio: float = 2.0) -> QPixmap:
     renderer = QSvgRenderer(QByteArray(_SVG.format(color=color, body=body).encode()))
     pixels = round(size * device_pixel_ratio)

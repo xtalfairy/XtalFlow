@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import getpass
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -38,6 +39,7 @@ from xtalflow.domain.mxlive import MxLiveReadError
 from xtalflow.application.experiment_workflow import (
     STEP_LABELS,
     ExperimentFacts,
+    ExperimentProgress,
     ExperimentStatus,
     StepState,
     WorkflowStep,
@@ -112,6 +114,10 @@ STEP_HINTS = {
     WorkflowStep.REVIEW: "Finalizing fixes this revision for the worksheets; nothing runs yet.",
     WorkflowStep.WORKSHEETS: "",
 }
+
+
+def _when(moment: datetime) -> str:
+    return moment.astimezone().strftime("%Y-%m-%d %H:%M")
 
 
 class ExperimentCoordinator:
@@ -216,11 +222,13 @@ class ExperimentCoordinator:
                 plan_type = PlanType(draft.plan_type)
             except ValueError:
                 continue
+            progress = self._recent_status(draft, locks)
             recent.append(
                 RecentExperiment(
                     draft.project_id, workspaces[draft.project_id], draft.id,
-                    draft.name, plan_type, self._recent_status(draft, locks),
+                    draft.name, plan_type, progress.headline,
                     draft.updated_at, draft.created_at,
+                    progress.state, progress.detail,
                 )
             )
         return tuple(recent)
@@ -239,7 +247,7 @@ class ExperimentCoordinator:
 
     def _recent_status(
         self, draft: PlanningDraft, locks: dict[str, UploadLockState]
-    ) -> str:
+    ) -> ExperimentProgress:
         revision = None
         if self.planning_service is not None:
             try:
@@ -250,16 +258,46 @@ class ExperimentCoordinator:
             step = WorkflowStep(draft.workflow_step)
         except ValueError:
             step = WorkflowStep.SETUP
+        started = f"Started {_when(draft.created_at)}."
         if revision is None:
-            return experiment_progress(step, None)
+            progress = experiment_progress(step, None)
+            return replace(progress, detail=f"{progress.detail}\n\n{started}")
+        export = self._latest_worksheet_export(revision)
         lock = locks.get(revision.experiment_id or "")
-        return experiment_progress(
+        progress = experiment_progress(
             step,
             revision.revision,
             worksheets_saved=self._worksheets_saved(revision),
             worksheets_saved_elsewhere=self._worksheets_saved_elsewhere(revision),
             upload=lock.availability if lock is not None else None,
         )
+        return replace(
+            progress,
+            detail="\n\n".join(
+                (progress.detail, "\n".join(self._stage_history(
+                    started, revision, export, lock
+                )))
+            ),
+        )
+
+    def _stage_history(self, started, revision, export, lock) -> list[str]:
+        """When each stage happened, and which instruments the files reached."""
+        history = [started, f"Finalized r{revision.revision} {_when(revision.finalized_at)}."]
+        if export is not None and export.status == WORKSHEETS_SUCCEEDED:
+            where = ", ".join(
+                self._instrument_label(output.instrument) for output in export.outputs
+            )
+            history.append(
+                f"Worksheets saved {_when(export.exported_at)}"
+                + (f" \u00b7 {where}." if where else ".")
+            )
+        if lock is not None and lock.event is not None:
+            history.append(f"Uploaded to MxLive {_when(lock.event.attempted_at)}.")
+        return history
+
+    def _instrument_label(self, instrument: str) -> str:
+        destination = self.window.settings.instrument(instrument)
+        return destination.label if destination is not None else instrument
 
     def _experiment_names(self) -> dict[str, str]:
         names: dict[str, str] = {}

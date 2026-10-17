@@ -32,6 +32,20 @@ STEP_LABELS = {
 }
 
 
+@dataclass(frozen=True)
+class ExperimentProgress:
+    """How far an experiment has come, for the list of experiments.
+
+    ``headline`` is short enough for a column; ``detail`` is the whole story,
+    shown when the stage mark is hovered or clicked.  ``state`` is a key of
+    ``theme.STATUS_COLORS``: it decides the colour, never the meaning.
+    """
+
+    headline: str
+    detail: str
+    state: str = "muted"
+
+
 def experiment_progress(
     step: WorkflowStep,
     revision_number: int | None,
@@ -39,31 +53,66 @@ def experiment_progress(
     worksheets_saved: bool = False,
     worksheets_saved_elsewhere: bool = False,
     upload: UploadAvailability | None = None,
-) -> str:
-    """One line for the experiment list: how far this experiment has come.
+) -> ExperimentProgress:
+    """The furthest stage this program can see for itself.
 
-    The stages are the ones this program can see for itself, in the order they
-    happen.  What follows the upload - the beamline accepting the samples and
-    collecting data - is MxLive's to tell, and is not shown here.
+    The stages are in the order they happen.  What follows the upload - the
+    beamline accepting the samples and collecting data - is MxLive's to tell,
+    and MxLive's labwork records carry no field for either.
     """
     if revision_number is None:
-        return f"Draft · {STEP_LABELS[step]}"
+        return ExperimentProgress(
+            f"Draft \u00b7 {STEP_LABELS[step]}",
+            "Not finalized yet. The experiment was left at the "
+            f"{STEP_LABELS[step]} step.",
+        )
+    if upload in (UploadAvailability.PARTIAL, UploadAvailability.NEEDS_VERIFICATION):
+        return ExperimentProgress(
+            f"Upload r{revision_number} \u00b7 check MxLive",
+            f"The MxLive upload of r{revision_number} did not finish with a "
+            "known result. Check which records MxLive holds before uploading "
+            "again: there is no way to remove a labwork once it is stored.",
+            "attention",
+        )
     if upload is UploadAvailability.UPLOADED:
-        sent = f"Sent to the beamline r{revision_number}"
+        sent = f"The sample list for r{revision_number} is on MxLive."
         # The samples are registered, but nothing will be harvested for them
         # until the worksheets reach the instruments. Say so here.
         if not worksheets_saved:
-            return f"{sent} · worksheets not saved"
+            return ExperimentProgress(
+                f"Sent r{revision_number} \u00b7 no worksheets",
+                f"{sent} Its worksheets were never saved, so no instrument "
+                "will harvest anything for it.",
+                "attention",
+            )
         if worksheets_saved_elsewhere:
-            return f"{sent} · worksheets not in instrument folders"
-        return sent
-    if upload in (UploadAvailability.PARTIAL, UploadAvailability.NEEDS_VERIFICATION):
-        return f"Upload r{revision_number} needs checking on MxLive"
+            return ExperimentProgress(
+                f"Sent r{revision_number} \u00b7 worksheets elsewhere",
+                f"{sent} Its worksheets went to a folder you chose, not to the "
+                "instruments, so copy them across before running it.",
+                "attention",
+            )
+        return ExperimentProgress(f"Sent r{revision_number}", sent, "ok")
     if worksheets_saved_elsewhere:
-        return f"Worksheets r{revision_number} not in instrument folders"
+        return ExperimentProgress(
+            f"Worksheets r{revision_number} \u00b7 elsewhere",
+            f"The worksheets for r{revision_number} went to a folder you chose "
+            "because an instrument could not be reached. Copy them to the "
+            "instrument folders before running the experiment.",
+            "attention",
+        )
     if worksheets_saved:
-        return f"Worksheets saved r{revision_number}"
-    return f"Finalized r{revision_number}"
+        return ExperimentProgress(
+            f"Worksheets r{revision_number}",
+            f"The worksheets for r{revision_number} are in the instrument "
+            "folders. The sample list has not been sent to MxLive.",
+            "ok",
+        )
+    return ExperimentProgress(
+        f"Finalized r{revision_number}",
+        f"Finalized as r{revision_number}. No worksheets have been saved yet.",
+        "ok",
+    )
 
 
 def steps_for(plan_type: PlanType) -> tuple[WorkflowStep, ...]:

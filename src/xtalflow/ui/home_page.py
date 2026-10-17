@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -144,9 +145,12 @@ class RecentExperiment:
     plan_id: str
     name: str
     plan_type: PlanType
-    status: str
+    stage: str
     updated_at: datetime
     created_at: datetime | None = None
+    # A key of theme.STATUS_COLORS, and the whole story behind the stage.
+    stage_state: str = "muted"
+    stage_detail: str = ""
 
 
 class HomePage(QWidget):
@@ -249,6 +253,7 @@ class HomePage(QWidget):
         self.delete_button.clicked.connect(
             lambda: self._delete_row(self.recent_table.currentRow())
         )
+        self.recent_table.cellClicked.connect(self._show_stage_detail)
         self.recent_table.cellDoubleClicked.connect(lambda row, _: self._resume_row(row))
         self.resume_button.clicked.connect(
             lambda: self._resume_row(self.recent_table.currentRow())
@@ -305,7 +310,7 @@ class HomePage(QWidget):
             values = (
                 experiment.name,
                 labels.get(experiment.plan_type, experiment.plan_type.value),
-                experiment.status,
+                experiment.stage,
                 experiment.workspace_name,
                 _moment(experiment.created_at),
                 _moment(experiment.updated_at),
@@ -314,6 +319,7 @@ class HomePage(QWidget):
                 item = QTableWidgetItem(value)
                 item.setToolTip(value)
                 self.recent_table.setItem(row, column, item)
+            self._mark_stage(row, experiment)
         self.recent_table.setVisible(bool(experiments))
         if self._all_recent:
             self.recent_empty_label.setText("No experiments in this workspace yet.")
@@ -331,6 +337,31 @@ class HomePage(QWidget):
         self.delete_button.setVisible(bool(experiments))
         self.resume_button.setVisible(bool(experiments))
         self._selection_changed()
+
+    def _mark_stage(self, row: int, experiment: RecentExperiment) -> None:
+        """Colour and shape beside the stage, with the detail a hover away."""
+        item = self.recent_table.item(row, 2)
+        mark = icons.STAGE_MARKS.get(experiment.stage_state)
+        if mark is not None:
+            item.setIcon(QIcon(icons.svg_pixmap(
+                mark, 15, theme.STATUS_COLORS[experiment.stage_state]
+            )))
+        if experiment.stage_detail:
+            item.setToolTip(f"{experiment.stage}\n\n{experiment.stage_detail}")
+
+    def _show_stage_detail(self, row: int, column: int) -> None:
+        """A click says the same as a hover, for anyone who does not hover."""
+        if column != 2 or not 0 <= row < len(self._recent):
+            return
+        item = self.recent_table.item(row, column)
+        if item is None or not item.toolTip():
+            return
+        rect = self.recent_table.visualItemRect(item)
+        QToolTip.showText(
+            self.recent_table.viewport().mapToGlobal(rect.bottomLeft()),
+            item.toolTip(),
+            self.recent_table,
+        )
 
     def _selection_changed(self) -> None:
         selected = bool(self.recent_table.selectedItems())

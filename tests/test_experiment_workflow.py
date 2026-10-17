@@ -274,9 +274,13 @@ def test_the_beamline_stages_come_from_mxlive_records() -> None:
     assert (headline, state) == ("Harvested r1", "ok")
     assert "harvested all 36 crystals of r1 into puck 5C-0029" in detail
 
-    # Crystals can go into more than one puck.
-    assert "into pucks 5C-0029 and 5C-0030" in stage(
-        BeamlineProgress(36, 36, ("5C-0029", "5C-0030"))
+    # Crystals go into more than one puck, as the real records show.
+    assert "into pucks 5C-0029, 5C-0030 and 5C-0031" in stage(
+        BeamlineProgress(36, 36, ("5C-0029", "5C-0030", "5C-0031"))
+    )[2]
+    # Past a handful, naming them is noise.
+    assert "into 6 pucks." in stage(
+        BeamlineProgress(96, 96, tuple(f"5C-{29 + index:04d}" for index in range(6)))
     )[2]
 
     # Harvesting that has only started is not a stage of its own: the

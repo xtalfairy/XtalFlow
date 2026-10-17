@@ -38,7 +38,12 @@ def _and_list(names: tuple[str, ...]) -> str:
 
 
 def _pucks(names: tuple[str, ...]) -> str:
-    return ("puck " if len(names) == 1 else "pucks ") + _and_list(names)
+    """Name the pucks, unless there are so many that naming them is noise."""
+    if len(names) == 1:
+        return f"puck {names[0]}"
+    if len(names) > 4:
+        return f"{len(names)} pucks"
+    return f"pucks {_and_list(names)}"
 
 
 @dataclass(frozen=True)

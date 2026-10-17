@@ -1,6 +1,34 @@
 import getpass
+import os
+
+# Decide the installation before anything imports xtalflow: settings read the
+# environment once, when the module is first imported. The operating server
+# exports XTALFLOW_SETTINGS=operating for every login, so a run there would
+# otherwise point the suite at the real image share and write worksheets into
+# the instrument folders, which marks wells on the shared source plates.
+os.environ.pop("XTALFLOW_SETTINGS", None)
 
 import pytest
+
+
+def pytest_configure(config) -> None:
+    """Refuse to run against any folder outside the repository."""
+    from xtalflow.settings import DEFAULT_SETTINGS, PROJECT_ROOT
+
+    outside = [
+        path
+        for path in (
+            DEFAULT_SETTINGS.rmserver_root,
+            DEFAULT_SETTINGS.worksheet_staging_directory,
+            *(item.output_directory for item in DEFAULT_SETTINGS.instruments),
+        )
+        if PROJECT_ROOT not in path.parents
+    ]
+    if outside:
+        raise pytest.UsageError(
+            "the tests would read and write outside the repository: "
+            + " · ".join(str(path) for path in outside)
+        )
 
 
 @pytest.fixture(autouse=True)

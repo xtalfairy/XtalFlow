@@ -172,3 +172,23 @@ def test_installation_is_chosen_by_the_environment() -> None:
 
     with pytest.raises(ValueError, match="XTALFLOW_SETTINGS"):
         settings_from_environment("beamline")
+
+
+def test_the_suite_refuses_to_run_against_the_operating_folders(monkeypatch) -> None:
+    """The guard that keeps a run on the server out of the real shares.
+
+    /etc/profile.d/xtalflow.sh exports XTALFLOW_SETTINGS=operating for every
+    login there, and the settings are decided when xtalflow is first imported.
+    """
+    import conftest
+    import xtalflow.settings as settings_module
+
+    monkeypatch.setattr(
+        settings_module, "DEFAULT_SETTINGS", OPERATING_SERVER_SETTINGS
+    )
+
+    with pytest.raises(pytest.UsageError, match="outside the repository") as error:
+        conftest.pytest_configure(None)
+
+    assert "/smbmount/shifter1" in str(error.value)
+    assert "/smbmount/rmserver/RockMakerStorage/WellImages" in str(error.value)

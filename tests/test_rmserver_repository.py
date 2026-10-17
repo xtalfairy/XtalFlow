@@ -216,6 +216,7 @@ def test_a_missing_image_root_is_the_share_not_the_plate(tmp_path: Path) -> None
     assert raised.value.reason == "the folder is missing"
 
 
+@pytest.mark.requires_rmserver_fixture
 @requires_real_fixture
 def test_a_share_that_drops_mid_read_is_reported_as_the_share(monkeypatch) -> None:
     repository = RockMakerImageRepository(FIXTURE_ROOT)

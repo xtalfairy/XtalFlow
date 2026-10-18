@@ -200,7 +200,10 @@ def test_viewer_loads_and_navigates_images() -> None:
     first_text = window.navigation_label.text()
     first_position = window.position_label.text()
     first_well = window.well_input.text()
-    assert window.auto_advance_input.prefix() == "Next well after "
+    # The count that moves to the next well is the denominator of a reading of
+    # this well, beside the arrows, rather than a setting of its own.
+    assert window.well_progress_label.text() == "This well · 0 of"
+    assert window.auto_advance_input.value() == 2
     assert window.target_summary_button.text() == "Selected wells"
     assert window.previous_button.text() == "◀"
     assert window.next_button.text() == "▶"
@@ -1956,9 +1959,9 @@ def test_target_selection_survives_image_navigation() -> None:
     window._handle_image_click(100, 120, Qt.LeftButton)
     assert len(window.controller.session.targets_for(first_image)) == 1
     window.show_next()
-    assert "This well: 0 positions" in window.review_summary_label.text()
+    assert window.well_progress_label.text() == "This well · 0 of"
     window.show_previous()
-    assert "This well: 1 position " in window.review_summary_label.text()
+    assert window.well_progress_label.text() == "This well · 1 of"
 
     window._handle_image_click(100, 120, Qt.RightButton)
     assert window.controller.session.targets_for(first_image) == ()
@@ -3083,5 +3086,34 @@ def test_mxlive_history_opens_from_the_panel_and_fills_itself(
         for row in range(window.home_page.recent_table.rowCount())
     ]
     assert "FragSC-202603-OLD-01" not in names
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_the_count_that_moves_to_the_next_well_is_read_while_clicking() -> None:
+    """The setting is the denominator, so it cannot be forgotten."""
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT), auto_advance_target_count=2
+    )
+    window.load_plate("2070", SWISSCI_MRC_2_WELL)
+    first_well = window.well_input.text()
+
+    window.controller.add_target(0.5, 0.5, 100, 100)
+    window._update_review_summary()
+    assert window.well_progress_label.text() == "This well · 1 of"
+    assert window.auto_advance_input.value() == 2
+
+    # The second position moves on, and the status bar says why.
+    window._handle_image_click(0.6, 0.6, Qt.LeftButton)
+
+    assert window.well_input.text() != first_well
+    message = window.status_message_label.text()
+    assert "2 positions placed" in message
+    assert first_well in message and window.well_input.text() in message
+    # The reading starts again on the new well.
+    assert window.well_progress_label.text() == "This well · 0 of"
     window.close()
     app.processEvents()

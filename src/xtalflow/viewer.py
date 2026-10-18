@@ -281,16 +281,45 @@ class ViewerWindow(QMainWindow):
         self.next_button.setFixedWidth(36)
         self.next_button.setToolTip("Next image (→)")
         self.next_button.setAccessibleName("Next image")
+        self.review_summary_label = QLabel()
+        self.review_summary_label.setObjectName("Muted")
+        self.examples_button = QToolButton()
+        self.examples_button.setText("Examples")
+        self.examples_button.setToolTip("Lab-approved examples of where to place positions")
+        self.shortcuts_button = HelpButton(
+            "Click a crystal to place a soaking position, right-click to remove it.\n"
+            "← → wells · ↑ ↓ plates · Space+drag pan · 0 fit · ? all shortcuts"
+        )
+
+        # How far this well has come, and the count that moves to the next one:
+        # the setting is the denominator, so it is read while the work happens
+        # rather than being felt only when the view jumps.
+        self.well_progress_label = QLabel("This well · 0 of")
+        self.well_progress_label.setObjectName("Muted")
+        self.auto_advance_input = QSpinBox()
+        self.auto_advance_input.setRange(1, 100)
+        self.auto_advance_input.setValue(self._global_auto_advance_target_count)
+        self.auto_advance_input.setFixedWidth(58)
+        self.auto_advance_input.setAccessibleName("Positions before the next well")
+        self.auto_advance_input.setToolTip(
+            "Move to the next well after this many positions. You can always move "
+            "on with fewer; this is not a required count."
+        )
+
         navigation = QHBoxLayout()
         navigation.setSpacing(theme.SPACING_M)
         navigation.addWidget(self.navigation_label)
         navigation.addWidget(self.position_label)
+        navigation.addWidget(self.review_summary_label)
         navigation.addStretch()
         navigation.addWidget(self.image_filter_input)
         well_label = QLabel("Well")
         well_label.setObjectName("Muted")
         navigation.addWidget(well_label)
         navigation.addWidget(self.well_input)
+        navigation.addSpacing(theme.SPACING_M)
+        navigation.addWidget(self.well_progress_label)
+        navigation.addWidget(self.auto_advance_input)
         navigation.addWidget(self.previous_button)
         navigation.addWidget(self.next_button)
         navigation.addSpacing(theme.SPACING_L)
@@ -377,37 +406,9 @@ class ViewerWindow(QMainWindow):
         display_row.addWidget(self.calibration_label)
         display_row.addWidget(self.calibration_accept_inline_button)
         display_row.addWidget(self.calibration_adjust_button)
-
-        self.auto_advance_input = QSpinBox()
-        self.auto_advance_input.setRange(1, 100)
-        self.auto_advance_input.setValue(self._global_auto_advance_target_count)
-        self.auto_advance_input.setPrefix("Next well after ")
-        self.auto_advance_input.setSuffix(" position")
-        self.auto_advance_input.valueChanged.connect(
-            lambda count: self.auto_advance_input.setSuffix(
-                " position" if count == 1 else " positions"
-            )
-        )
-        self.auto_advance_input.setToolTip(
-            "Move to the next image after this many positions. You can always move "
-            "on with fewer; this is not a required count."
-        )
-        self.review_summary_label = QLabel(
-            "Left-click adds a soaking position · right-click removes · ←/→ images"
-        )
-        self.review_summary_label.setObjectName("Muted")
-        self.examples_button = QToolButton()
-        self.examples_button.setText("Examples")
-        self.examples_button.setToolTip("Lab-approved examples of where to place positions")
-        self.shortcuts_button = HelpButton(
-            "Click a crystal to place a soaking position, right-click to remove it.\n"
-            "← → wells · ↑ ↓ plates · Space+drag pan · 0 fit · ? all shortcuts"
-        )
-        targets_row = QHBoxLayout()
-        targets_row.addWidget(self.auto_advance_input)
-        targets_row.addWidget(self.review_summary_label, 1)
-        targets_row.addWidget(self.examples_button)
-        targets_row.addWidget(self.shortcuts_button)
+        display_row.addSpacing(theme.SPACING_L)
+        display_row.addWidget(self.examples_button)
+        display_row.addWidget(self.shortcuts_button)
 
         viewer_layout = QVBoxLayout()
         viewer_layout.setContentsMargins(0, 0, 0, 0)
@@ -415,7 +416,6 @@ class ViewerWindow(QMainWindow):
         viewer_layout.addLayout(navigation)
         viewer_layout.addWidget(self.image_stack, 1)
         viewer_layout.addLayout(display_row)
-        viewer_layout.addLayout(targets_row)
         viewer_panel = QWidget()
         viewer_panel.setLayout(viewer_layout)
 
@@ -1663,7 +1663,17 @@ class ViewerWindow(QMainWindow):
         self.image_set_model.refresh_counts()
         self._refresh_target_summary()
         if should_auto_advance:
-            if not self.show_next():
+            # Say why the view moved. An image that jumps without a reason
+            # reads as a fault, which is how the count came to be forgotten.
+            left = self._current_well_address or "this well"
+            placed = self.auto_advance_input.value()
+            if self.show_next():
+                self.status_message_label.show_message(
+                    f"{left} · {counted(placed, 'position')} placed → "
+                    f"{self._current_well_address or 'next well'}",
+                    4000,
+                )
+            else:
                 try:
                     self.controller.checkpoint_current(mark_reviewed=True)
                     self.status_message_label.show_message(
@@ -1880,7 +1890,7 @@ class ViewerWindow(QMainWindow):
             self._show_persistence_error(error)
             return
         self.status_message_label.show_message(
-            f"Targets/img saved at {count}", 3000
+            f"Next well after {counted(count, 'position')} · saved", 3000
         )
         self._update_review_summary()
 
@@ -1960,9 +1970,8 @@ class ViewerWindow(QMainWindow):
             matches = "" if filtered == total else f" · {filtered} images match filter"
             others = self.experiments._other_experiments_using_current_image()
             used = f" · △ also used in {', '.join(others)}" if others else ""
-            self.review_summary_label.setText(
-                f"This well: {counted(positions, 'position')} · {review_state}{matches}{used}"
-            )
+            self.well_progress_label.setText(f"This well · {positions} of")
+            self.review_summary_label.setText(f"{review_state}{matches}{used}".lstrip(" ·"))
             self.review_summary_label.setStyleSheet(
                 theme.status_style("attention") if others else ""
             )

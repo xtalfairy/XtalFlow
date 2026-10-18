@@ -525,10 +525,8 @@ def test_each_account_builds_worksheets_in_a_folder_of_its_own(tmp_path, monkeyp
 
     from dataclasses import replace as replace_fields
 
-    from xtalflow.infrastructure.worksheet_exporter import (
-        WorksheetExporter,
-        _refuse_a_folder_that_is_not_ours,
-    )
+    from xtalflow.infrastructure.worksheet_exporter import WorksheetExporter
+    from xtalflow.scratch import refuse_a_folder_that_is_not_ours
 
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
     settings = replace_fields(
@@ -552,9 +550,29 @@ def test_each_account_builds_worksheets_in_a_folder_of_its_own(tmp_path, monkeyp
     shared.mkdir(mode=0o777)
     os.chmod(shared, 0o777)
     with pytest.raises(PermissionError, match="writable by others"):
-        _refuse_a_folder_that_is_not_ours(shared)
+        refuse_a_folder_that_is_not_ours(shared)
 
     # So is one that belongs to somebody else.
     monkeypatch.setattr(os, "geteuid", lambda: os.stat(roots["jjh"]).st_uid + 1)
     with pytest.raises(PermissionError, match="belongs to another account"):
-        _refuse_a_folder_that_is_not_ours(roots["jjh"])
+        refuse_a_folder_that_is_not_ours(roots["jjh"])
+
+
+def test_the_window_draws_its_arrows_from_a_folder_of_its_own(tmp_path, monkeypatch):
+    """The same shared-folder trap, in the one other place that writes files."""
+    import tempfile
+
+    from xtalflow.ui import theme
+
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr("xtalflow.scratch.getpass.getuser", lambda: "kim")
+
+    drawn = theme._chevron("down", theme.TEXT_MUTED)
+
+    assert drawn.startswith(str(tmp_path / "xtalflow-ui-kim"))
+    assert Path(drawn).is_file()
+
+    # A folder somebody else left behind is not written into, and the window
+    # opens without its arrows rather than borrowing their file.
+    monkeypatch.setattr("xtalflow.scratch.os.geteuid", lambda: -1)
+    assert theme._chevron("up", theme.TEXT_MUTED) == ""

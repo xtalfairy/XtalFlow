@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
+from xtalflow.scratch import private_directory
 
 # Follows the ChatGPT app's light theme: white surfaces, neutral greys with no
 # tint, and near-black for the main action. A few accents carry meaning only:
@@ -52,14 +51,18 @@ STATUS_COLORS = {"ok": OK, "attention": ATTENTION, "error": ERROR, "muted": TEXT
 def _chevron(direction: str, color: str) -> str:
     """Path of a small chevron for combo and spin boxes.
 
-    Style sheets cannot embed images, and a styled box loses its native arrow, so
-    the SVG is written once to the temporary folder and referenced by path.
+    Style sheets cannot embed images, and a styled box loses its native arrow,
+    so the SVG is written once to a scratch folder and referenced by path. The
+    folder belongs to this account: on a machine many researchers share, one
+    written by somebody else is neither read from nor written to.
     """
     points = {"down": "4,6 8,10 12,6", "up": "4,10 8,6 12,10"}[direction]
-    path = Path(tempfile.gettempdir()) / "xtalflow-ui" / f"chevron-{direction}-{color[1:]}.svg"
+    try:
+        path = private_directory("xtalflow-ui") / f"chevron-{direction}-{color[1:]}.svg"
+    except OSError:
+        return ""
     if not path.is_file():
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(
                 '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" '
                 f'viewBox="0 0 16 16"><polyline points="{points}" fill="none" '

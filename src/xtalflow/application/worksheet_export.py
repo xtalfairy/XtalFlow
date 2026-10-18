@@ -28,6 +28,7 @@ class InstrumentWorksheetExporter(Protocol):
         experiment_id: str,
         alternate_root: Path | None = None,
         instruments: tuple[str, ...] | None = None,
+        hold_unreachable: bool = False,
     ): ...
 
 
@@ -64,6 +65,7 @@ class WorksheetExportService:
         experiment_id: str,
         alternate_root: Path | None = None,
         instruments: tuple[str, ...] | None = None,
+        hold_unreachable: bool = False,
     ):
         """Save the worksheets; a condition test also records the source wells it takes.
 
@@ -72,7 +74,7 @@ class WorksheetExportService:
         what the ECHO runs, so it records nothing.
         """
         publish = lambda: self.exporter.export(  # noqa: E731
-            plan, experiment_id, alternate_root, instruments
+            plan, experiment_id, alternate_root, instruments, hold_unreachable
         )
         if (
             not isinstance(plan, ConditionTestPlan) or alternate_root is not None

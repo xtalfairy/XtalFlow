@@ -1307,34 +1307,39 @@ def test_fragment_worksheets_are_saved_and_audited(tmp_path: Path, monkeypatch) 
     app.processEvents()
 
 
-def test_offer_of_another_folder_says_the_source_wells_stay_free(
+def test_a_condition_test_waits_for_the_echo_rather_than_booking_blind(
     tmp_path: Path, monkeypatch
 ) -> None:
+    """The record of which source wells are taken lives with the ECHO files."""
     from xtalflow.domain.condition_test import solvent_test_template
-    from xtalflow.infrastructure.worksheet_exporter import InstrumentLocationUnavailable
     from xtalflow.ui.condition_test_editor import ConditionTestEditor
 
     app = QApplication.instance() or QApplication([])
-    window, _store, _editor = _fragment_plan_window(tmp_path, DEFAULT_SETTINGS)
-    asked = []
-    monkeypatch.setattr(
-        QMessageBox, "question",
-        lambda *args, **kwargs: asked.append(args[2]) or QMessageBox.No,
-    )
-
-    declined = window.experiments._offer_another_location(
-        ConditionTestEditor(solvent_test_template()),
-        InstrumentLocationUnavailable(
-            "instrument output location is unavailable: /smbmount/echo650",
-            unreachable=("echo650",),
+    settings = replace(
+        DEFAULT_SETTINGS,
+        instruments=standard_instruments(
+            tmp_path / "missing-echo", tmp_path / "shifter1", tmp_path / "shifter2"
         ),
+        create_missing_instrument_roots=False,
+    )
+    window, _store, _editor = _fragment_plan_window(tmp_path, settings)
+    (tmp_path / "shifter1").mkdir(exist_ok=True)
+    (tmp_path / "shifter2").mkdir(exist_ok=True)
+    said = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda *args, **kwargs: said.append(args[2])
     )
 
-    assert declined == ""
-    assert asked[0].startswith(
-        "Instrument output location is unavailable: /smbmount/echo650."
+    blocked = window.experiments._condition_test_needs_the_echo(
+        ConditionTestEditor(solvent_test_template())
     )
-    assert "source plate wells stay free" in asked[0]
+
+    assert blocked
+    assert "ECHO 650 cannot be reached" in said[0]
+    assert "book the same wells" in said[0]
+    assert "stay free for everyone" in said[0]
+    # Every other kind of experiment saves around the instrument that is away.
+    assert not window.experiments._condition_test_needs_the_echo(_editor)
     window.close()
     app.processEvents()
 
@@ -1354,32 +1359,54 @@ def test_worksheets_go_to_the_instruments_that_are_up(
         ),
         create_missing_instrument_roots=False,
     )
+    settings = replace(settings, pending_worksheet_directory=tmp_path / "pending")
     window, store, editor = _fragment_plan_window(tmp_path, settings)
-    shown, answer = _answers(QMessageBox.Save)
-    monkeypatch.setattr(QMessageBox, "warning", answer)
+    asked = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda *args, **kwargs: asked.append(args[2])
+    )
     assert window.experiments._finalize_plan(editor) is not None
     window.experiments.go_to_step(WorkflowStep.WORKSHEETS)
     step = editor.worksheets_step
 
+    # Before anybody presses save, the page already says which one is away
+    # and where its worksheet will wait.
+    before = {
+        step.instrument_table.item(row, 0).text():
+            step.instrument_table.item(row, 3).text()
+        for row in range(step.instrument_table.rowCount())
+    }
+    assert before["SHIFTER 2"].startswith("not connected · will wait in ")
+    assert str(tmp_path / "pending" / "shifter2") in before["SHIFTER 2"]
+    assert before["SHIFTER 1"].startswith(str(tmp_path / "shifter1"))
+
     window.experiment_page.primary_button.click()
 
-    assert "ECHO 650 and SHIFTER 1 can be reached" in shown[0]
-    assert "SHIFTER 2 will not have the files" in shown[0]
+    # One save, no question: an instrument that is away is the ordinary state.
+    assert asked == []
     exports = store.audit.list_worksheet_exports(editor.last_revision.id)
-    assert [event.status for event in exports] == ["failed", "succeeded"]
+    assert [event.status for event in exports] == ["succeeded"]
     assert [output.instrument for output in exports[-1].outputs] == [
-        "echo650", "shifter1"
+        "echo650", "shifter1", "shifter2"
     ]
     assert Path(exports[-1].path_for("shifter1")).is_file()
+    # SHIFTER 2's worksheet waits for it; its empty mountpoint stays empty,
+    # because a file left there would vanish when the share came back.
+    waiting = Path(exports[-1].path_for("shifter2"))
+    assert waiting.is_file()
+    assert waiting.parent == tmp_path / "pending" / "shifter2"
     assert not (tmp_path / "missing-shifter2").exists()
-    # The step keeps saying so, because nobody must run this on SHIFTER 2.
-    assert "SHIFTER 2 did not receive the worksheets" in step.result_label.text()
+    # The step keeps saying so, and says where the file is, because somebody
+    # has to carry it across before anything runs on SHIFTER 2.
+    result = step.result_label.text()
+    assert "1 file for SHIFTER 2 is not on the instrument yet" in result
+    assert "copy from the folder below" in result
     table = step.instrument_table
     rows = {
         table.item(row, 0).text(): table.item(row, 3).text()
         for row in range(table.rowCount())
     }
-    assert rows["SHIFTER 2"] == "not saved · the instrument could not be reached"
+    assert rows["SHIFTER 2"] == str(waiting)
     # The step is done: the experiment can run on the instruments that have the
     # files. What is missing is said on the page, not held against the step.
     assert (
@@ -1396,13 +1423,15 @@ def test_worksheets_go_to_the_instruments_that_are_up(
     app.processEvents()
 
 
-def test_unavailable_instrument_share_can_use_alternate_root(
+def test_with_no_instrument_reachable_every_worksheet_waits_in_one_place(
     tmp_path: Path, monkeypatch
 ) -> None:
+    """Nothing is connected: the save still happens, in one go and unasked."""
     app = QApplication.instance() or QApplication([])
     settings = replace(
         DEFAULT_SETTINGS,
         worksheet_staging_directory=tmp_path / "staging",
+        pending_worksheet_directory=tmp_path / "pending",
         instruments=standard_instruments(
             tmp_path / "missing-echo",
             tmp_path / "missing-shifter1",
@@ -1411,63 +1440,55 @@ def test_unavailable_instrument_share_can_use_alternate_root(
         create_missing_instrument_roots=False,
     )
     window, store, editor = _fragment_plan_window(tmp_path, settings)
-    folders = []
-    monkeypatch.setattr(
-        "xtalflow.ui.experiment_coordinator.QFileDialog.getExistingDirectory",
-        lambda *args, **kwargs: folders.append(args[2]) or str(tmp_path / "chosen"),
-    )
     asked = []
-    answer = [QMessageBox.No]
-    monkeypatch.setattr(
-        QMessageBox, "question",
-        lambda *args, **kwargs: asked.append(args[2]) or answer[0],
-    )
+    for name in ("warning", "question"):
+        monkeypatch.setattr(
+            QMessageBox, name, lambda *args, **kwargs: asked.append(args[2])
+        )
     assert window.experiments._finalize_plan(editor) is not None
     window.experiments.go_to_step(WorkflowStep.WORKSHEETS)
     step = editor.worksheets_step
 
-    # Declining the offer leaves the failure on the page and nothing saved.
     window.experiment_page.primary_button.click()
 
-    assert "missing-echo" in asked[0]
-    assert "Save the worksheets to another folder for now?" in asked[0]
-    assert folders == []
-    assert step.result_label.text().startswith("! No worksheets were saved.")
-    assert not step.retry_button.isHidden()
-    assert [
-        event.status
-        for event in store.audit.list_worksheet_exports(editor.last_revision.id)
-    ] == ["failed"]
-
-    # Accepting it saves to the folder chosen in the dialog that follows.
-    answer[0] = QMessageBox.Yes
-    step.retry_button.click()
-
-    assert folders == [str(Path.home())]
+    assert asked == []
     exports = store.audit.list_worksheet_exports(editor.last_revision.id)
-    assert [event.status for event in exports] == ["failed", "failed", "succeeded"]
-    assert exports[-1].path_for("echo650").startswith(str(tmp_path / "chosen" / "echo650"))
-    # Saved, but not where the instruments read: the step still asks for attention.
+    assert [event.status for event in exports] == ["succeeded"]
+    for instrument in ("echo650", "shifter1", "shifter2"):
+        waiting = Path(exports[-1].path_for(instrument))
+        assert waiting.parent == tmp_path / "pending" / instrument
+        assert waiting.is_file()
+    # The empty mountpoints stay empty: a file there would vanish when the
+    # share came back over it.
+    assert not (tmp_path / "missing-echo").exists()
+
     result = step.result_label.text()
-    assert "Saved r1 to the folder you chose" in result
-    assert "not in the instrument folders" in result
-    assert window.experiment_page.primary_button.text() == "Save worksheets"
+    assert "ECHO 650, SHIFTER 1 and SHIFTER 2" in result
+    assert "not on the instruments yet" in result
+    assert "copy from the folder below" in result
+    assert not step.copy_paths_button.isHidden()
+    step.copy_paths_button.click()
+    assert QApplication.clipboard().text().splitlines()[0].startswith(
+        str(tmp_path / "pending")
+    )
+    # Nothing reached an instrument, so the step keeps asking for attention.
     assert (
         editor.experiment_status.status_of(WorkflowStep.WORKSHEETS).state
         is StepState.ATTENTION
     )
-    assert not step.retry_button.isHidden()
-    assert not step.copy_paths_button.isHidden()
-    step.copy_paths_button.click()
-    assert QApplication.clipboard().text().splitlines()[0] == exports[-1].path_for("echo650")
 
-    # The folder chosen before is where the next save starts.
-    step.choose_location_button.click()
-    assert folders[-1] == str(tmp_path / "chosen")
-    window.experiments.show_home()
-    assert window.home_page.recent_table.item(0, 2).text() == (
-        "Worksheets r1 · not on instruments"
+    # Choosing a folder by hand still works for anyone who wants one.
+    monkeypatch.setattr(
+        "xtalflow.ui.experiment_coordinator.QFileDialog.getExistingDirectory",
+        lambda *args, **kwargs: str(tmp_path / "chosen"),
     )
+    step.choose_location_button.click()
+
+    exports = store.audit.list_worksheet_exports(editor.last_revision.id)
+    assert exports[-1].path_for("echo650").startswith(
+        str(tmp_path / "chosen" / "echo650")
+    )
+    assert "Saved r1 to the folder you chose" in step.result_label.text()
     window.close()
     app.processEvents()
 

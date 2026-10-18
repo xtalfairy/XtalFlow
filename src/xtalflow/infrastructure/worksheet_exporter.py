@@ -21,6 +21,7 @@ from xtalflow.domain.worksheets import (
     build_shifter_worksheet,
 )
 from xtalflow.infrastructure.mounts import is_network_mount
+from xtalflow.scratch import private_directory
 from xtalflow.settings import ApplicationSettings, InstrumentDestination
 
 
@@ -107,25 +108,16 @@ def worksheets_for(plan: WorksheetPlan) -> dict[WorksheetKind, tuple[WorksheetFi
     return worksheets
 
 
-def _refuse_a_folder_that_is_not_ours(root: Path) -> None:
-    """Never build worksheets in a folder someone else can write to.
+def pending_root(settings: ApplicationSettings) -> Path:
+    """Where a worksheet waits for an instrument that cannot be reached.
 
-    A shared temporary directory is writable by everyone, so a folder there
-    may have been made by another account, or left world-writable, before
-    this one asked for it.
+    It has to outlive a reboot - an instrument can be off for days - so it is
+    the account's own home unless the installation says otherwise. Never a
+    temporary folder, and never the instrument's own empty mountpoint: a file
+    left there would vanish behind the share when it came back.
     """
-    current_user = getattr(os, "geteuid", None)
-    if current_user is None:
-        return
-    info = root.stat()
-    if info.st_uid != current_user():
-        raise PermissionError(
-            f"the folder for building worksheets belongs to another account: {root}"
-        )
-    if info.st_mode & 0o022:
-        raise PermissionError(
-            f"the folder for building worksheets is writable by others: {root}"
-        )
+    configured = settings.pending_worksheet_directory
+    return configured if configured is not None else Path.home() / "xtalflow-pending"
 
 
 class WorksheetExporter:
@@ -143,34 +135,49 @@ class WorksheetExporter:
         experiment_id: str,
         alternate_root: Path | None = None,
         instruments: tuple[str, ...] | None = None,
+        hold_unreachable: bool = False,
     ) -> WorksheetExportResult:
         """Write to the instruments' folders, or below ``alternate_root/<instrument>``.
 
         ``instruments`` limits delivery to those instrument ids, for saving to
         the ones that are up while another is down. Every worksheet the plan
         makes must still have an instrument that reads it.
+
+        ``hold_unreachable`` writes the worksheet of an instrument that cannot
+        be reached into a folder that waits for it, so the experiment can run
+        on the instruments that are up. Nothing is ever written to an empty
+        mountpoint: the file would vanish behind the share when it returns.
         """
         worksheets = worksheets_for(plan)
         destinations = self._destinations_for(worksheets, instruments)
         if alternate_root is None:
             missing = self._unavailable_bases(destinations)
             if missing and not self.settings.create_missing_instrument_roots:
-                reachable = tuple(
-                    item for item in destinations if item.instrument not in missing
+                if not hold_unreachable:
+                    reachable = tuple(
+                        item for item in destinations if item.instrument not in missing
+                    )
+                    raise InstrumentLocationUnavailable(
+                        "instrument output location is unavailable: "
+                        + ", ".join(missing.values()),
+                        unreachable=tuple(missing),
+                        reachable=tuple(item.instrument for item in reachable),
+                        reachable_covers_every_worksheet=(
+                            {item.worksheet for item in reachable} == set(worksheets)
+                        ),
+                    )
+                waiting = self._pending_root()
+                directories = tuple(
+                    waiting / item.instrument if item.instrument in missing
+                    else item.output_directory / self.username
+                    for item in destinations
                 )
-                raise InstrumentLocationUnavailable(
-                    "instrument output location is unavailable: "
-                    + ", ".join(missing.values()),
-                    unreachable=tuple(missing),
-                    reachable=tuple(item.instrument for item in reachable),
-                    reachable_covers_every_worksheet=(
-                        {item.worksheet for item in reachable} == set(worksheets)
-                    ),
+                failure = "could not prepare the folders worksheets wait in"
+            else:
+                directories = tuple(
+                    item.output_directory / self.username for item in destinations
                 )
-            directories = tuple(
-                item.output_directory / self.username for item in destinations
-            )
-            failure = "could not prepare instrument output folders"
+                failure = "could not prepare instrument output folders"
         else:
             directories = tuple(
                 alternate_root / item.instrument / self.username for item in destinations
@@ -184,6 +191,16 @@ class WorksheetExporter:
         return self._export_to_directories(
             experiment_id, worksheets, destinations, directories
         )
+
+    def unreachable_instruments(self) -> dict[str, str]:
+        """Which configured instrument folders cannot be reached, and why.
+
+        Asked before a save and while the Worksheets step is on screen, so
+        that an instrument being away is known before anybody presses save.
+        """
+        if self.settings.create_missing_instrument_roots:
+            return {}
+        return self._unavailable_bases(self.settings.instruments)
 
     def _destinations_for(
         self,
@@ -269,6 +286,11 @@ class WorksheetExporter:
             ),
         )
 
+    def _pending_root(self) -> Path:
+        root = pending_root(self.settings)
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
     def _staging_directory(self, file_stem: str) -> tempfile.TemporaryDirectory:
         return tempfile.TemporaryDirectory(
             prefix=f"{file_stem}.", dir=self._staging_root()
@@ -283,12 +305,10 @@ class WorksheetExporter:
         would decide whether the next one can save at all.
         """
         configured = self.settings.worksheet_staging_directory
-        root = (
-            configured / self.username if configured is not None
-            else Path(tempfile.gettempdir()) / f"xtalflow-{self.username}"
-        )
+        if configured is None:
+            return private_directory("xtalflow", self.username)
+        root = configured / self.username
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        _refuse_a_folder_that_is_not_ours(root)
         return root
 
     @staticmethod

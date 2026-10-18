@@ -91,6 +91,7 @@ from xtalflow.infrastructure.worksheet_exporter import (
     InstrumentLocationUnavailable,
     WorksheetDestinationUnavailable,
     WorksheetExporter,
+    pending_root,
     worksheets_for,
 )
 from xtalflow.infrastructure.source_plate_record import SourcePlateRecord, record_directory
@@ -509,7 +510,10 @@ class ExperimentCoordinator:
         """
         if export is None:
             return 0, ()
-        delivered = {output.instrument for output in export.outputs}
+        delivered = {
+            output.instrument for output in export.outputs
+            if self._on_its_instrument(output)
+        }
         kinds = {
             destination.worksheet
             for destination in map(self.window.settings.instrument, delivered)
@@ -1243,8 +1247,13 @@ class ExperimentCoordinator:
         if delivered is not None:
             for output in delivered.outputs:
                 saved.setdefault(output.instrument, []).append(Path(output.path))
-        # Instruments that read one of these worksheets but received nothing,
-        # because they were down when the user chose to save without them.
+        away = self._unreachable_instruments() if not finalized or not saved else {}
+        # Instruments whose worksheet is written but still waiting for them,
+        # because their folder could not be reached when it was saved.
+        waiting = (
+            {output.instrument for output in self._waiting_outputs(delivered)}
+            if delivered is not None else set()
+        )
         left_out = tuple(
             destination.instrument
             for destination in self._instruments_for(editor.plan_type)
@@ -1263,6 +1272,12 @@ class ExperimentCoordinator:
                 where = f"{paths[0].parent}/{', '.join(path.name for path in paths)}"
             elif destination.instrument in left_out:
                 where = "not saved · the instrument could not be reached"
+            elif destination.instrument in away:
+                # Said before anybody presses save, not only afterwards.
+                where = (
+                    "not connected · will wait in "
+                    f"{pending_root(self.window.settings) / destination.instrument}"
+                )
             else:
                 where = str(destination.output_directory / username)
             rows.append((
@@ -1324,6 +1339,25 @@ class ExperimentCoordinator:
                 can_retry=True,
                 copy_text="\n".join(output.path for output in latest.outputs),
             )
+        elif latest.status == WORKSHEETS_SUCCEEDED and waiting:
+            # The ordinary state here: an instrument is off and its worksheet
+            # waits in a folder of this account's own until somebody carries
+            # it across. Nothing is written to an empty mountpoint.
+            files = tuple(
+                output.path for output in self._waiting_outputs(latest)
+            )
+            editor.worksheets_step.show_result(
+                f"{theme.SYMBOL_ATTENTION} Saved r{revision.revision} · "
+                f"{latest.exported_at:%Y-%m-%d %H:%M} · {latest.username} · "
+                f"{counted(len(files), 'file')} for "
+                f"{self._instrument_names(tuple(sorted(waiting)))} "
+                f"{'are' if len(files) > 1 else 'is'} not on the "
+                f"{'instruments' if len(waiting) > 1 else 'instrument'} yet · "
+                "copy from the folder below before running there",
+                "attention",
+                can_retry=True,
+                copy_text="\n".join(files),
+            )
         elif latest.status == WORKSHEETS_SUCCEEDED and left_out:
             editor.worksheets_step.show_result(
                 f"{theme.SYMBOL_ATTENTION} Saved r{revision.revision} · "
@@ -1359,8 +1393,17 @@ class ExperimentCoordinator:
         return self._successful_worksheet_export(revision) is not None
 
     def _worksheets_saved_elsewhere(self, revision) -> bool:
+        """No file reached an instrument, whichever folder they are all in.
+
+        The step cannot be done either way: nothing can run until somebody
+        carries them across.
+        """
         delivered = self._successful_worksheet_export(revision)
-        return delivered is not None and self._saved_elsewhere(delivered)
+        return (
+            delivered is not None
+            and bool(delivered.outputs)
+            and len(self._waiting_outputs(delivered)) == len(delivered.outputs)
+        )
 
     def _successful_worksheet_export(self, revision):
         """The last save that worked, which is what the instruments hold."""
@@ -1372,16 +1415,30 @@ class ExperimentCoordinator:
             None,
         )
 
+    def _on_its_instrument(self, output) -> bool:
+        destination = self.window.settings.instrument(output.instrument)
+        return (
+            destination is not None
+            and destination.output_directory in Path(output.path).parents
+        )
+
+    def _waiting_outputs(self, event) -> tuple:
+        """Files that are not in their instrument's own folder yet."""
+        return tuple(
+            output for output in event.outputs if not self._on_its_instrument(output)
+        )
+
     def _saved_elsewhere(self, event) -> bool:
-        """True when a file went to a folder the user chose, not an instrument's own."""
-        for output in event.outputs:
-            destination = self.window.settings.instrument(output.instrument)
-            if (
-                destination is None
-                or destination.output_directory not in Path(output.path).parents
-            ):
-                return True
-        return False
+        """True when the whole save went to a folder the user chose.
+
+        Told from the folder worksheets wait in when no instrument can be
+        reached: that one is ours and we know where it is.
+        """
+        waiting = self._waiting_outputs(event)
+        if not event.outputs or len(waiting) != len(event.outputs):
+            return False
+        held = pending_root(self.window.settings)
+        return not all(held in Path(output.path).parents for output in waiting)
 
     def _latest_worksheet_export(self, revision):
         exports = self._worksheet_exports_for(revision)
@@ -1909,8 +1966,10 @@ class ExperimentCoordinator:
     ) -> None:
         """Save every worksheet of the finalized revision, or none of them.
 
-        ``instruments`` names the ones to save to when the user chose to leave
-        out an instrument that is down.
+        An instrument that cannot be reached is the ordinary state here, not
+        an interruption: its worksheet waits in a folder of this account's own
+        and the others are delivered, in one go and without a question. What
+        is waiting, and where, is on the page afterwards.
         """
         revision = editor.last_revision
         if revision is None or self._plan_snapshot(editor) != editor.last_revision_snapshot:
@@ -1926,6 +1985,8 @@ class ExperimentCoordinator:
         except ValueError as error:
             QMessageBox.warning(self.window, "Cannot save worksheets", str(error))
             return
+        if alternate_root is None and self._condition_test_needs_the_echo(editor):
+            return
         service = self._worksheet_export_service()
         destination = (
             str(alternate_root) if alternate_root is not None
@@ -1936,7 +1997,8 @@ class ExperimentCoordinator:
             result = self.window._run_in_background(
                 f"Saving worksheets to {destination}…",
                 lambda: service.deliver(
-                    plan, revision.experiment_id, alternate_root, instruments
+                    plan, revision.experiment_id, alternate_root, instruments,
+                    hold_unreachable=alternate_root is None,
                 ),
             )
         except WorksheetDestinationUnavailable as error:
@@ -1949,12 +2011,6 @@ class ExperimentCoordinator:
             # An unreachable instrument folder is nothing the user can fix
             # here, so offer what can still be done: the instruments that are
             # up, or another folder for the files.
-            if alternate_root is None and isinstance(error, InstrumentLocationUnavailable):
-                choice = self._offer_another_location(editor, error)
-                if choice == "reachable":
-                    self._save_plan_worksheets(editor, instruments=error.reachable)
-                elif choice == "elsewhere":
-                    self._save_worksheets_elsewhere(editor)
             return
         else:
             self._record_worksheet_export(
@@ -1975,6 +2031,42 @@ class ExperimentCoordinator:
         self._refresh_worksheets_step(editor)
         self._refresh_experiment_status(editor)
 
+    def _unreachable_instruments(self) -> dict[str, str]:
+        """Which instrument folders cannot be reached, and why, right now."""
+        try:
+            return WorksheetExporter(
+                self.window.settings, getpass.getuser()
+            ).unreachable_instruments()
+        except (OSError, ValueError):
+            return {}
+
+    def _condition_test_needs_the_echo(self, editor: PlanEditorBase) -> bool:
+        """A condition test cannot book source wells while the ECHO is away.
+
+        The shared record of which wells are taken lives with the ECHO
+        worksheets, so with that folder gone it can be neither read nor
+        written and two experiments could book the same wells.
+        """
+        if not isinstance(editor, ConditionTestEditor):
+            return False
+        away = tuple(
+            instrument for instrument in self._unreachable_instruments()
+            if (destination := self.window.settings.instrument(instrument)) is not None
+            and destination.worksheet is WorksheetKind.ECHO
+        )
+        if not away:
+            return False
+        QMessageBox.warning(
+            self.window,
+            "Cannot save while the ECHO is away",
+            f"{self._instrument_names(away)} cannot be reached.\n\nThis experiment "
+            "takes wells from shared source plates, and the record of which wells "
+            "are taken lives with the ECHO worksheets. While that folder is away "
+            "another experiment could book the same wells without either of you "
+            "seeing it.\n\nThe wells stay free for everyone until this is saved.",
+        )
+        return True
+
     def _instrument_names(self, instruments: tuple[str, ...]) -> str:
         """The instruments as the user knows them: ECHO 650 and SHIFTER 1."""
         labels = []
@@ -1984,50 +2076,6 @@ class ExperimentCoordinator:
         if len(labels) < 2:
             return "".join(labels)
         return f"{', '.join(labels[:-1])} and {labels[-1]}"
-
-    def _offer_another_location(
-        self, editor: PlanEditorBase, error: InstrumentLocationUnavailable
-    ) -> str:
-        """Ask what to do about instruments that are down.
-
-        Returns "reachable" to save to the ones that are up, "elsewhere" to
-        choose a folder, or "" to leave it.
-        """
-        message = str(error)
-        reason = (message[:1].upper() + message[1:]).rstrip(".") + "."
-        wells = (
-            " The source plate wells stay free for everyone else until the "
-            "worksheets reach the instrument folders."
-            if isinstance(editor, ConditionTestEditor) else ""
-        )
-        if error.reachable_covers_every_worksheet:
-            # One instrument of a kind is down and another reads the same
-            # worksheet: the experiment can go ahead on the ones that are up.
-            answer = QMessageBox.warning(
-                self.window,
-                "Instrument folders unavailable",
-                f"{reason}\n\nNothing was saved yet. "
-                f"{self._instrument_names(error.reachable)} can be reached and read "
-                f"the same worksheets.\n\nSave to "
-                f"{self._instrument_names(error.reachable)} only? "
-                f"{self._instrument_names(error.unreachable)} will not have the "
-                f"files, so do not run this experiment there.{wells}",
-                QMessageBox.Save | QMessageBox.Cancel,
-                QMessageBox.Save,
-            )
-            # Cancelling leaves the page's own "Save to another folder…" button.
-            return "reachable" if answer == QMessageBox.Save else ""
-        answer = QMessageBox.question(
-            self.window,
-            "Instrument folders unavailable",
-            f"{reason}\n\nNothing was saved. A copy in another folder is not what "
-            f"the instruments read, so you would have to put the files there "
-            f"yourself.{wells}\n\nSave the worksheets to another folder for now?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes,
-        )
-        return "elsewhere" if answer == QMessageBox.Yes else ""
-
 
     def _save_worksheets_elsewhere(self, editor: PlanEditorBase) -> None:
         selected = QFileDialog.getExistingDirectory(

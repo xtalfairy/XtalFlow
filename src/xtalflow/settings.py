@@ -76,6 +76,11 @@ class ApplicationSettings:
     worksheet_staging_directory: Path | None
     instruments: tuple[InstrumentDestination, ...]
     create_missing_instrument_roots: bool
+    # Where a worksheet waits when its instrument cannot be reached, so that
+    # the experiment can still run on the instruments that are up. None keeps
+    # it in the account's own home, which survives a reboot; a temporary
+    # folder would not.
+    pending_worksheet_directory: Path | None = None
     require_network_instrument_mounts: bool = False
     require_network_image_root: bool = False
     review_database_filename: str = "reviews.sqlite3"
@@ -118,6 +123,7 @@ DEVELOPMENT_SETTINGS = ApplicationSettings(
     rmserver_root=PROJECT_ROOT / "tests" / "fixtures" / "rmserver",
     fragment_library_directory=PROJECT_ROOT / "chems",
     worksheet_staging_directory=PROJECT_ROOT / "tests" / "runtime" / "worksheets",
+    pending_worksheet_directory=PROJECT_ROOT / "tests" / "runtime" / "pending",
     instruments=standard_instruments(
         PROJECT_ROOT / "tests" / "runtime" / "smbmount" / "echo650",
         PROJECT_ROOT / "tests" / "runtime" / "smbmount" / "shifter1",

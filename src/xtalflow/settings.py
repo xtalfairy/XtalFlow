@@ -68,7 +68,12 @@ def standard_instruments(
 class ApplicationSettings:
     rmserver_root: Path
     fragment_library_directory: Path
-    worksheet_staging_directory: Path
+    # Where worksheets are built before they are copied to the instruments.
+    # None asks for a scratch folder of the running account's own, which is
+    # what a machine with many researchers on it needs: a folder below one
+    # they share would be created by whoever saves first, and that account's
+    # umask would then decide whether anybody else can save at all.
+    worksheet_staging_directory: Path | None
     instruments: tuple[InstrumentDestination, ...]
     create_missing_instrument_roots: bool
     require_network_instrument_mounts: bool = False
@@ -125,7 +130,8 @@ DEVELOPMENT_SETTINGS = ApplicationSettings(
 OPERATING_SERVER_SETTINGS = ApplicationSettings(
     rmserver_root=Path("/smbmount/rmserver/RockMakerStorage/WellImages"),
     fragment_library_directory=PROJECT_ROOT / "chems",
-    worksheet_staging_directory=Path("/tmp/xtalflow/worksheets"),
+    # Many researchers share this machine, so each gets a folder of their own.
+    worksheet_staging_directory=None,
     instruments=standard_instruments(
         Path("/smbmount/echo650"),
         Path("/smbmount/shifter1"),

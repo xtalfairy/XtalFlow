@@ -114,7 +114,6 @@ xtalflow-viewer
 xtalflow-viewer \
   --root /smbmount/rmserver/RockMakerStorage/WellImages \
   --library-dir /usr/local/fbdd_apps/XtalViewer/2.0/chems \
-  --worksheet-dir /tmp/xtalflow/worksheets \
   --echo-dir /smbmount/echo650 \
   --shifter1-dir /smbmount/shifter1 \
   --shifter2-dir /smbmount/shifter2
@@ -324,4 +323,4 @@ rm -rf /usr/local/fbdd_apps/XtalFlow
   `~/.config/xtalflow/preferences.json` (`--review-db`로 바꿨다면 그 경로)
 - 장비 폴더에 이미 저장된 worksheet CSV와 `source-plates/` 사용 기록 — 다른
   연구자가 이어서 보는 기록이므로 지우지 마세요.
-- worksheet 임시 폴더 `/tmp/xtalflow/worksheets`
+- worksheet 임시 폴더 — 계정마다 `<임시폴더>/xtalflow-<사용자>`를 쓰고 저장이 끝나면 지웁니다

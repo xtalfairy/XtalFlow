@@ -512,3 +512,49 @@ def test_leaving_out_the_only_instrument_of_a_kind_is_refused(tmp_path: Path) ->
         exporter.export(
             fragment_plan(), "FragSC-202607-BRD4-01", instruments=("shifter1",)
         )
+
+
+def test_each_account_builds_worksheets_in_a_folder_of_its_own(tmp_path, monkeypatch):
+    """Many researchers share the beamline machine and its temporary folder.
+
+    A folder below one they share is made by whoever saves first, and that
+    account's umask then decides whether the next one can save at all.
+    """
+    import os
+    import tempfile
+
+    from dataclasses import replace as replace_fields
+
+    from xtalflow.infrastructure.worksheet_exporter import (
+        WorksheetExporter,
+        _refuse_a_folder_that_is_not_ours,
+    )
+
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    settings = replace_fields(
+        DEFAULT_SETTINGS, worksheet_staging_directory=None,
+    )
+
+    roots = {
+        name: WorksheetExporter(settings, name)._staging_root()
+        for name in ("jjh", "kim")
+    }
+
+    assert roots["jjh"] == tmp_path / "xtalflow-jjh"
+    assert roots["kim"] == tmp_path / "xtalflow-kim"
+    # Neither sits below a folder the other had to create first.
+    assert roots["jjh"].parent == roots["kim"].parent == tmp_path
+    assert all(path.is_dir() for path in roots.values())
+    assert roots["jjh"].stat().st_mode & 0o077 == 0
+
+    # A folder anyone can write to is refused, whoever made it.
+    shared = tmp_path / "xtalflow-shared"
+    shared.mkdir(mode=0o777)
+    os.chmod(shared, 0o777)
+    with pytest.raises(PermissionError, match="writable by others"):
+        _refuse_a_folder_that_is_not_ours(shared)
+
+    # So is one that belongs to somebody else.
+    monkeypatch.setattr(os, "geteuid", lambda: os.stat(roots["jjh"]).st_uid + 1)
+    with pytest.raises(PermissionError, match="belongs to another account"):
+        _refuse_a_folder_that_is_not_ours(roots["jjh"])

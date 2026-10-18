@@ -107,6 +107,27 @@ def worksheets_for(plan: WorksheetPlan) -> dict[WorksheetKind, tuple[WorksheetFi
     return worksheets
 
 
+def _refuse_a_folder_that_is_not_ours(root: Path) -> None:
+    """Never build worksheets in a folder someone else can write to.
+
+    A shared temporary directory is writable by everyone, so a folder there
+    may have been made by another account, or left world-writable, before
+    this one asked for it.
+    """
+    current_user = getattr(os, "geteuid", None)
+    if current_user is None:
+        return
+    info = root.stat()
+    if info.st_uid != current_user():
+        raise PermissionError(
+            f"the folder for building worksheets belongs to another account: {root}"
+        )
+    if info.st_mode & 0o022:
+        raise PermissionError(
+            f"the folder for building worksheets is writable by others: {root}"
+        )
+
+
 class WorksheetExporter:
     """Deliver each worksheet to every configured instrument that reads its kind."""
 
@@ -249,9 +270,26 @@ class WorksheetExporter:
         )
 
     def _staging_directory(self, file_stem: str) -> tempfile.TemporaryDirectory:
-        root = self.settings.worksheet_staging_directory / self.username
-        root.mkdir(parents=True, exist_ok=True)
-        return tempfile.TemporaryDirectory(prefix=f"{file_stem}.", dir=root)
+        return tempfile.TemporaryDirectory(
+            prefix=f"{file_stem}.", dir=self._staging_root()
+        )
+
+    def _staging_root(self) -> Path:
+        """A scratch folder of this account's own.
+
+        Worksheets are built here and copied to the instruments, so it only
+        has to be local and writable. On a machine many researchers share it
+        must not sit below a folder one of them created: that account's umask
+        would decide whether the next one can save at all.
+        """
+        configured = self.settings.worksheet_staging_directory
+        root = (
+            configured / self.username if configured is not None
+            else Path(tempfile.gettempdir()) / f"xtalflow-{self.username}"
+        )
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _refuse_a_folder_that_is_not_ours(root)
+        return root
 
     @staticmethod
     def _publish(files: tuple[tuple[Path, Path], ...]) -> None:

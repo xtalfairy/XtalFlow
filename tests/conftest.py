@@ -19,7 +19,9 @@ def pytest_configure(config) -> None:
         path
         for path in (
             DEFAULT_SETTINGS.rmserver_root,
-            DEFAULT_SETTINGS.worksheet_staging_directory,
+            # None asks for a folder of the running account's own, which is
+            # never a folder of this repository's.
+            DEFAULT_SETTINGS.worksheet_staging_directory or PROJECT_ROOT / "x",
             *(item.output_directory for item in DEFAULT_SETTINGS.instruments),
         )
         if PROJECT_ROOT not in path.parents

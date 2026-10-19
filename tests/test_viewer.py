@@ -1793,6 +1793,80 @@ def test_valid_automatic_wells_can_be_confirmed_in_bulk(
 
 @pytest.mark.requires_rmserver_fixture
 @pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_confirming_a_boundary_stops_the_step_asking_for_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The step kept a count of its own, so a confirmed well stayed a warning."""
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        auto_advance_target_count=10,
+    )
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    page = window.experiment_page
+    window.workspace_sidebar.start_buttons[PlanType.RAW_CRYSTAL.value].click()
+    editor = window.experiments.current_editor
+    editor.protein_input.setText("BRD4")
+    page.primary_button.click()
+    window.load_plate("2070", SWISSCI_MRC_2_WELL)
+    window.auto_confirm_plate_checkbox.setChecked(False)
+    window._auto_detect_calibration()
+    window._handle_image_click(600, 500, Qt.LeftButton)
+    window.experiments._sync_current_selection()
+    # The sync a placed position schedules has already run; only confirming
+    # the boundary is left to bring the step up to date.
+    window._selection_sync_timer.stop()
+    assert editor.wells_needing_attention == 1
+    assert page.primary_button.text() == "Check 1 well"
+
+    window._accept_current_calibration()
+    QTest.qWait(600)
+    app.processEvents()
+
+    assert editor.wells_needing_attention == 0
+    assert page.footer_status_label.text() == "\u2713 1 well \u00b7 1 position"
+    assert page.primary_button.text() == "Use 1 well"
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_a_warning_with_nothing_left_to_check_says_so(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An empty warning list cannot answer for the step; the step is corrected."""
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        auto_advance_target_count=10,
+    )
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    window.workspace_sidebar.start_buttons[PlanType.RAW_CRYSTAL.value].click()
+    editor = window.experiments.current_editor
+    editor.protein_input.setText("BRD4")
+    window.experiment_page.primary_button.click()
+    window.load_plate("2070", SWISSCI_MRC_2_WELL)
+    window.auto_confirm_plate_checkbox.setChecked(False)
+    window._auto_detect_calibration()
+    window._accept_current_calibration()
+    window._handle_image_click(600, 500, Qt.LeftButton)
+    window.experiments._sync_current_selection()
+    assert editor.wells_needing_attention == 0
+
+    editor.wells_needing_attention = 1
+    window.experiments._review_target_warnings()
+
+    assert window.target_summary_table.rowCount() == 0
+    assert editor.wells_needing_attention == 0
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
 def test_trusted_plate_auto_confirms_well_above_user_threshold(
     tmp_path: Path,
 ) -> None:

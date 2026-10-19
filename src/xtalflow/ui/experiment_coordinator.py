@@ -2141,3 +2141,10 @@ class ExperimentCoordinator:
         if self.window.target_summary_table.rowCount():
             self.window.target_summary_table.setCurrentCell(0, 0)
             self.window.target_summary_table.setFocus(Qt.OtherFocusReason)
+        elif self.current_editor is not None:
+            # The step's count can only be older than the dock, so say the
+            # wells are ready rather than leave an empty list to answer for it.
+            self.window.status_message_label.show_message(
+                "No well needs attention any more", 4000
+            )
+            self._sync_editor_selection(self.current_editor)

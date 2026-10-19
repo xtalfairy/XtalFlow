@@ -1748,7 +1748,22 @@ class ViewerWindow(QMainWindow):
         self.current_calibration = calibration
         self.image_canvas.set_calibration(calibration)
         self._show_calibration_status(calibration)
+        self._calibration_changed()
+
+    def _calibration_changed(self) -> None:
+        """A boundary moved or was confirmed, so which wells are ready moved too.
+
+        The dock reads the wells again from the database, but the experiment's
+        steps keep a count of their own.  A count left behind by a confirmed
+        boundary goes on asking for the confirmation it already has, and the
+        dock it sends the user to has nothing left in it to confirm.
+        """
         self._refresh_target_summary()
+        if (
+            self.experiments.current_editor is not None
+            and self.experiments._current_step is WorkflowStep.SELECT_WELLS
+        ):
+            self._selection_sync_timer.start()
 
     def _show_calibration_status(
         self, calibration: ImageCalibration | None, unavailable_reason: str = ""
@@ -1800,7 +1815,7 @@ class ViewerWindow(QMainWindow):
             self.status_message_label.show_message(
                 "Automatic well confirmation disabled for this plate", 3000
             )
-        self._refresh_target_summary()
+        self._calibration_changed()
 
     def _change_auto_confirm_confidence(self, percent: int) -> None:
         preferences = replace(

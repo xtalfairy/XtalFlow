@@ -1704,6 +1704,9 @@ def test_target_summary_uses_hidden_right_dock_and_jumps_to_image(
     app.processEvents()
 
     window._handle_image_click(600, 500, Qt.LeftButton)
+    # The automatic jump holds at an unconfirmed boundary, so move by hand:
+    # this test wants the first well left unconfirmed.
+    window.show_next()
     second_target_image_key = window.controller.current_image.image_key
     window._handle_image_click(610, 510, Qt.LeftButton)
     # One row per well, however many positions it holds.
@@ -3238,6 +3241,8 @@ def test_the_count_that_moves_to_the_next_well_is_read_while_clicking() -> None:
         RockMakerImageRepository(FIXTURE_ROOT), auto_advance_target_count=2
     )
     window.load_plate("2070", SWISSCI_MRC_2_WELL)
+    # A confirmed boundary leaves the jump free; see the test below it.
+    window._accept_current_calibration()
     first_well = window.well_input.text()
 
     window.controller.add_target(0.5, 0.5, 100, 100)
@@ -3254,6 +3259,43 @@ def test_the_count_that_moves_to_the_next_well_is_read_while_clicking() -> None:
     assert first_well in message and window.well_input.text() in message
     # The reading starts again on the new well.
     assert window.well_progress_label.text() == "This well · 0 of"
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_the_view_does_not_leave_a_well_whose_boundary_is_unconfirmed(
+    tmp_path: Path,
+) -> None:
+    """Moving on pointed the boundary controls at the next well and locked them."""
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        auto_advance_target_count=1,
+    )
+    window.load_plate("2070", SWISSCI_MRC_2_WELL)
+    window.auto_confirm_plate_checkbox.setChecked(False)
+    held = window.well_input.text()
+    image_key = window.controller.current_image.image_key
+
+    window._handle_image_click(600, 500, Qt.LeftButton)
+
+    assert window.well_input.text() == held
+    assert (
+        window.status_message_label.toolTip()
+        == f"{held} \u00b7 confirm the boundary to move on"
+    )
+    # The status line names the well, so a confirmation cannot land elsewhere.
+    assert window.calibration_label.text().startswith(f"{held} \u00b7")
+    assert window.accept_calibration_button.isEnabled()
+
+    window.accept_calibration_button.click()
+
+    assert window.controller.store.load_calibration(image_key).confirmed
+    assert window.well_input.text() != held
+    assert f"{held} \u00b7 boundary confirmed" in window.status_message_label.toolTip()
     window.close()
     app.processEvents()
 

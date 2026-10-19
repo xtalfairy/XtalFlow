@@ -272,6 +272,9 @@ class ViewerWindow(QMainWindow):
         self._well_escape_shortcut.activated.connect(self._restore_current_well_address)
         self._well_destinations: dict[str, tuple[str, int]] = {}
         self._current_well_address = ""
+        # Set when auto-advance held for an unconfirmed boundary; confirming
+        # the boundary then moves on in its place.
+        self._advance_once_confirmed = False
         self._refreshing_target_summary = False
         self.previous_button = QPushButton("◀")
         self.previous_button.setFixedWidth(36)
@@ -1629,6 +1632,9 @@ class ViewerWindow(QMainWindow):
         self._manual_calibration_points = None
         self.image_canvas.set_calibration_points(())
         plate_format = self._active_plate_format()
+        # A boundary belongs to one well, and the view has just moved: whoever
+        # is about to confirm one reads the well's name off the status line.
+        self._advance_once_confirmed = False
         if plate_format is None:
             self.calibration_service = None
             self.current_calibration = None
@@ -1636,6 +1642,11 @@ class ViewerWindow(QMainWindow):
             self._show_calibration_status(None, "unsupported plate format")
             image_label = image.navigation_label
         else:
+            address = str(
+                plate_format.address_for(image.well_number, image.drop_number)
+            )
+            self._current_well_address = address
+            self.well_input.setText(address)
             lens = plate_format.lens_for(image.drop_number)
             self.calibration_service = WellCalibrationService(
                 OpenCVWellDetector(),
@@ -1643,15 +1654,7 @@ class ViewerWindow(QMainWindow):
                 self.controller.store,
             )
             self._load_current_calibration()
-            address = str(
-                plate_format.address_for(image.well_number, image.drop_number)
-            )
             image_label = f"Plate {image.plate_code} · {address}"
-        if plate_format is not None:
-            self._current_well_address = str(
-                plate_format.address_for(image.well_number, image.drop_number)
-            )
-            self.well_input.setText(self._current_well_address)
         self.navigation_label.setText(image_label)
         self.navigation_label.setToolTip(
             f"RockMaker well {image.well_number}, drop {image.drop_number}"
@@ -1703,6 +1706,21 @@ class ViewerWindow(QMainWindow):
             # reads as a fault, which is how the count came to be forgotten.
             left = self._current_well_address or "this well"
             placed = self.auto_advance_input.value()
+            if (
+                self.current_calibration is not None
+                and not self.current_calibration.confirmed
+            ):
+                # Moving on would point the boundary controls at the next well
+                # while this one goes on needing attention, and the confirm
+                # button - locked by the next well, which is already
+                # confirmed - would have nothing to say about it.
+                self._advance_once_confirmed = True
+                # Short enough to be read where it is shown, not only in the
+                # tooltip: the well progress label already holds the count.
+                self.status_message_label.show_message(
+                    f"{left} · confirm the boundary to move on", 6000
+                )
+                return
             if self.show_next():
                 self.status_message_label.show_message(
                     f"{left} · {counted(placed, 'position')} placed → "
@@ -1769,6 +1787,8 @@ class ViewerWindow(QMainWindow):
         self, calibration: ImageCalibration | None, unavailable_reason: str = ""
     ) -> None:
         text, kind = calibration_status(calibration, unavailable_reason)
+        if calibration is not None and self._current_well_address:
+            text = f"{self._current_well_address} · {text}"
         self.calibration_label.setText(text)
         self.calibration_label.setToolTip(unavailable_reason or text)
         self.calibration_label.setStyleSheet(theme.status_style(kind))
@@ -1868,6 +1888,16 @@ class ViewerWindow(QMainWindow):
             return
         self.image_canvas.set_calibration(self.current_calibration)
         self._load_current_calibration()
+        if self._advance_once_confirmed:
+            self._advance_once_confirmed = False
+            left = self._current_well_address or "this well"
+            if self.show_next():
+                self.status_message_label.show_message(
+                    f"{left} · boundary confirmed → "
+                    f"{self._current_well_address or 'next well'}",
+                    4000,
+                )
+                return
         self.status_message_label.show_message("Well calibration confirmed", 3000)
 
     def _start_manual_calibration(self) -> None:

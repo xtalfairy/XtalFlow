@@ -67,3 +67,75 @@ def test_the_order_is_always_a_permutation() -> None:
     for scores in ({}, partial, {key: _score(key, 0.5) for key in keys}):
         order = crystal_first_order(keys, scores)
         assert sorted(order) == list(range(len(keys)))
+
+
+def test_the_check_passes_when_the_marks_sit_near_the_front() -> None:
+    from xtalflow.domain.crystal_score import self_check
+
+    keys = tuple(f"i{index}" for index in range(100))
+    # Probability falls with the index, so key i0 ranks 1 and i99 ranks 100.
+    scores = {key: _score(key, 1.0 - index / 100) for index, key in enumerate(keys)}
+
+    check = self_check(keys, scores, ["i1", "i2", "i4"])
+
+    assert check.state == "pass"
+    assert check.ranks == (2, 3, 5)
+    assert check.sentence() == (
+        "◆ Crystal first · your 3 marked drops rank 2, 3 and 5 of 100"
+    )
+
+
+def test_the_check_fails_and_says_so_rather_than_going_quiet() -> None:
+    from xtalflow.domain.crystal_score import self_check
+
+    keys = tuple(f"i{index}" for index in range(100))
+    scores = {key: _score(key, 1.0 - index / 100) for index, key in enumerate(keys)}
+
+    check = self_check(keys, scores, ["i40", "i60", "i80"])
+
+    assert check.state == "fail"
+    assert check.sentence().startswith("△ Crystal first not used on this plate")
+    assert "41, 61 and 81 of 100" in check.sentence()
+
+
+def test_too_few_marks_is_unverified_rather_than_a_verdict() -> None:
+    """One marked drop proves neither that the order works nor that it does not."""
+    from xtalflow.domain.crystal_score import self_check
+
+    keys = tuple(f"i{index}" for index in range(100))
+    scores = {key: _score(key, 1.0 - index / 100) for index, key in enumerate(keys)}
+
+    for marks in ([], ["i1"], ["i1", "i2"]):
+        check = self_check(keys, scores, marks)
+        assert check.state == "unverified"
+        assert check.sentence() == "Crystal first · not yet checked against your marks"
+
+
+def test_images_nobody_could_score_are_left_out_of_the_count() -> None:
+    """They sort to the front by rule, so counting them would drag every rank down."""
+    from xtalflow.domain.crystal_score import self_check
+
+    keys = tuple(f"i{index}" for index in range(100))
+    scores = {
+        key: _score(key, 1.0 - index / 100)
+        for index, key in enumerate(keys)
+        if index % 2  # half the plate unreadable, as a flaky share would leave it
+    }
+
+    check = self_check(keys, scores, ["i1", "i3", "i5"])
+
+    assert check.total == 50, "the denominator is what was scored"
+    assert check.ranks == (1, 2, 3)
+    assert check.state == "pass"
+
+
+def test_many_marks_are_given_as_a_range_and_a_median() -> None:
+    from xtalflow.domain.crystal_score import self_check
+
+    keys = tuple(f"i{index}" for index in range(288))
+    scores = {key: _score(key, 1.0 - index / 288) for index, key in enumerate(keys)}
+
+    check = self_check(keys, scores, [f"i{index}" for index in range(2, 61, 3)])
+
+    assert len(check.ranks) == 20
+    assert "rank 3–60 of 288, median" in check.sentence()

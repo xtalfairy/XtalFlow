@@ -102,7 +102,12 @@ from xtalflow.settings import (
 )
 from xtalflow.text import counted
 from xtalflow.application.crystal_scoring import CrystalScoringService
-from xtalflow.domain.crystal_score import crystal_first_order
+from xtalflow.domain.crystal_score import (
+    CRYSTAL_FIRST,
+    WELL_ORDER,
+    crystal_first_order,
+    self_check,
+)
 from xtalflow.infrastructure.crystal_score_store import (
     CrystalScoreStoreUnavailable,
     SQLiteCrystalScoreStore,
@@ -217,6 +222,7 @@ class ViewerWindow(QMainWindow):
         self._crystal_stop_scoring = False
         self._crystal_scoring_timer: QTimer | None = None
         self._crystal_scored_set: str | None = None
+        self._crystal_failed_set: str | None = None
         self._crystal_scoring_text = ""
         self._share_check_busy = False
         self._share_check_timer = QTimer(self)
@@ -1087,6 +1093,7 @@ class ViewerWindow(QMainWindow):
         self._crystal_stop_scoring = True
         self._crystal_scores = {}
         self._crystal_scoring_text = ""
+        self._crystal_failed_set = None
         if self.controller is None:
             self.calibration_service = None
             self.current_calibration = None
@@ -1814,6 +1821,7 @@ class ViewerWindow(QMainWindow):
             return
         if button == Qt.LeftButton:
             pixmap = self.image_canvas.pixmap()
+            self._remember_mark_ordering(self.controller.current_image.image_key)
             should_auto_advance = self.controller.add_target(
                 x_px, y_px, pixmap.width(), pixmap.height()
             )
@@ -1943,9 +1951,70 @@ class ViewerWindow(QMainWindow):
             ).physical_diameter_mm
         self.calibration_inspector.show_calibration(calibration, lens_diameter)
 
+    def _remember_mark_ordering(self, image_key: str) -> None:
+        """Note which walk led here, so the self-check is not circular."""
+        service = self._crystal_scoring
+        image_set = self.project_controller.active_image_set
+        if service is None or image_set is None:
+            return
+        service.store.remember_mark_ordering(
+            image_set.id,
+            image_key,
+            CRYSTAL_FIRST if self.crystal_first_input.isChecked() else WELL_ORDER,
+        )
+
+    def _crystal_self_check(self):
+        """Rank the user's own well-order marks against the plate."""
+        service = self._crystal_scoring
+        image_set = self.project_controller.active_image_set
+        if service is None or image_set is None or self.controller is None:
+            return None
+        if not self._crystal_scores:
+            return None
+        skip = service.store.marked_in_crystal_order(image_set.id)
+        marked = [
+            image.image_key
+            for image in self.controller.plate.images
+            if self.controller.session.target_count_for(image)
+            and image.image_key not in skip
+        ]
+        keys = [image.image_key for image in self.controller.plate.images]
+        return self_check(keys, self._crystal_scores, marked)
+
+    def _show_crystal_self_check(self, announce: bool = False) -> None:
+        """Say how the order did, and leave a failing plate unticked.
+
+        Never turned off under the user: on a failure the box is cleared and
+        carries a mark, but stays usable - it is a permutation, so it hides
+        nothing even when it is wrong.
+        """
+        check = self._crystal_self_check()
+        if check is None:
+            self.crystal_first_input.setText("Crystal first")
+            return
+        sentence = check.sentence()
+        failed = check.state == "fail"
+        self.crystal_first_input.setText(
+            f"{theme.SYMBOL_ATTENTION} Crystal first" if failed else "Crystal first"
+        )
+        self.crystal_first_input.setToolTip(
+            f"{sentence}\n\nWalk this plate by crystal score, highest first. "
+            "Nothing is hidden; every image is still reached."
+        )
+        if failed and self._crystal_failed_set != self._crystal_scored_set:
+            # Cleared when a plate first turns out to fail, and not again:
+            # someone who ticks it back on after reading why has decided.
+            self._crystal_failed_set = self._crystal_scored_set
+            self.crystal_first_input.setChecked(False)
+        if hasattr(self, "plate_map_panel") and check.state != "unverified":
+            self.plate_map_panel.show_status(sentence)
+        if announce and check.state != "unverified":
+            self.status_message_label.show_message(sentence, 8000)
+
     def _crystal_first_toggled(self, checked: bool) -> None:
         """Change where next and previous go. The view does not move."""
         self._apply_crystal_order()
+        self._show_crystal_self_check(announce=checked)
         if checked and not self._crystal_scores:
             self.status_message_label.show_message(
                 "Crystal first · from when scoring finishes", 4000
@@ -2051,6 +2120,7 @@ class ViewerWindow(QMainWindow):
         if hasattr(self, "plate_map_panel"):
             self.plate_map_panel.show_status(summary)
         self._apply_crystal_order()
+        self._show_crystal_self_check(announce=True)
         self._update_review_summary()
         self._refresh_plate_map()
 

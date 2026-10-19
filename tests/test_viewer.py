@@ -10,6 +10,8 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+
+from xtalflow.domain.crystal_score import crystal_first_order
 from PyQt5.QtCore import QPoint, Qt
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtTest import QTest
@@ -4009,3 +4011,107 @@ def test_closing_the_window_stops_a_plate_that_is_still_being_scored(
         app.processEvents()
         QTest.qWait(50)
     assert not window._crystal_scoring_busy, "scoring went on after the window closed"
+
+
+def _scored_window(tmp_path: Path):
+    """A window with fixture plate 2070 scored by the real model."""
+    from xtalflow.ui.load_plates_dialog import PlateSource
+
+    model = Path(__file__).resolve().parent.parent / "models" / "crystal3.onnx"
+    if not model.is_file():
+        pytest.skip("no models/crystal3.onnx; make it with codex/export_crystal_onnx.py")
+    app = QApplication.instance() or QApplication([])
+    settings = replace(DEFAULT_SETTINGS, crystal_model_path=model)
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT), store, settings=settings
+    )
+    window.show()
+    app.processEvents()
+    window.load_plates(SWISSCI_MIDI_3_LENS, (
+        (PlateSource("2070", 14122, "profileID_1"),
+         RockMakerImageRepository(FIXTURE_ROOT).load_plate("2070")),
+    ))
+    deadline = time.monotonic() + 120
+    while window._crystal_scoring_busy and time.monotonic() < deadline:
+        app.processEvents()
+        QTest.qWait(100)
+    assert window._crystal_scores
+    return app, window
+
+
+def test_marks_placed_while_walking_crystal_first_do_not_count_for_the_check(
+    tmp_path: Path,
+) -> None:
+    """Otherwise the check marks its own homework and always passes.
+
+    Walking crystal first shows the top-ranked images first, so marks made
+    there rank 1, 2, 3 by construction and say nothing about the model.
+    """
+    from xtalflow.domain.crystal_score import CRYSTAL_FIRST, WELL_ORDER
+
+    app, window = _scored_window(tmp_path)
+    image_set_id = window.project_controller.active_image_set.id
+    order = crystal_first_order(
+        [image.image_key for image in window.controller.plate.images],
+        window._crystal_scores,
+    )
+    best = [window.controller.plate.images[index] for index in order[:4]]
+    store = window._crystal_scoring.store
+
+    # Four marks on the four best images - but placed while crystal first was on.
+    for image in best:
+        window.controller.session.add_target(image, 10, 10, 100, 100)
+        store.remember_mark_ordering(image_set_id, image.image_key, CRYSTAL_FIRST)
+
+    assert window._crystal_self_check().state == "unverified", (
+        "marks made under crystal first must not be counted"
+    )
+
+    # The same four, placed in well order, are a real measurement.
+    for image in best:
+        store.remember_mark_ordering(image_set_id, image.image_key, WELL_ORDER)
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "UPDATE mark_ordering SET ordering = ? WHERE image_set_id = ?",
+            (WELL_ORDER, image_set_id),
+        )
+    check = window._crystal_self_check()
+    assert check.state == "pass"
+    assert check.ranks == (1, 2, 3, 4)
+    window.close()
+    app.processEvents()
+
+
+def test_a_plate_the_order_gets_wrong_says_so_and_unticks_itself(
+    tmp_path: Path,
+) -> None:
+    """Never turned off under the user: it stays usable, it just stops claiming."""
+    app, window = _scored_window(tmp_path)
+    order = crystal_first_order(
+        [image.image_key for image in window.controller.plate.images],
+        window._crystal_scores,
+    )
+    # Mark the four the model liked least - in well order, so they count.
+    for index in order[-4:]:
+        window.controller.session.add_target(
+            window.controller.plate.images[index], 10, 10, 100, 100
+        )
+
+    window.crystal_first_input.setChecked(True)
+    app.processEvents()
+
+    check = window._crystal_self_check()
+    assert check.state == "fail"
+    assert not window.crystal_first_input.isChecked(), "a failing plate starts unticked"
+    assert window.crystal_first_input.text().startswith(theme.SYMBOL_ATTENTION)
+    assert "not used on this plate" in window.crystal_first_input.toolTip()
+    # Still usable: it is a permutation, so it hides nothing even when wrong.
+    assert window.crystal_first_input.isEnabled()
+    window.crystal_first_input.setChecked(True)
+    app.processEvents()
+    assert window.controller.walk_order != tuple(
+        range(len(window.controller.plate.images))
+    )
+    window.close()
+    app.processEvents()

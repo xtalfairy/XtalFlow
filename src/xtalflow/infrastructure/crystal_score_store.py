@@ -22,7 +22,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from xtalflow.domain.crystal_score import CrystalScore
+from xtalflow.domain.crystal_score import WELL_ORDER, CrystalScore
 
 SCHEMA_VERSION = 1
 
@@ -77,6 +77,20 @@ class SQLiteCrystalScoreStore:
                     probabilities TEXT NOT NULL,
                     label TEXT NOT NULL,
                     scored_at TEXT NOT NULL,
+                    PRIMARY KEY (image_set_id, image_key)
+                )
+                """
+            )
+            # Which order the walk was in when an image first got a mark.
+            # Without it the self-check marks its own homework: walking
+            # crystal first puts the user on the top-ranked images, so their
+            # marks rank first by construction.
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS mark_ordering (
+                    image_set_id TEXT NOT NULL,
+                    image_key TEXT NOT NULL,
+                    ordering TEXT NOT NULL,
                     PRIMARY KEY (image_set_id, image_key)
                 )
                 """
@@ -149,6 +163,42 @@ class SQLiteCrystalScoreStore:
             ) from error
         return len(rows)
 
+    def remember_mark_ordering(
+        self, image_set_id: str, image_key: str, ordering: str
+    ) -> None:
+        """Note the order in force the first time this image was marked.
+
+        The first one wins: it is the walk that led the user to the image,
+        and what they did afterwards does not change that.
+        """
+        try:
+            with self._open() as connection, connection:
+                connection.execute(
+                    "INSERT OR IGNORE INTO mark_ordering "
+                    "(image_set_id, image_key, ordering) VALUES (?, ?, ?)",
+                    (image_set_id, image_key, ordering),
+                )
+        except sqlite3.Error:
+            pass  # Advisory: losing it makes a plate unverified, nothing worse.
+
+    def marked_in_crystal_order(self, image_set_id: str) -> set[str]:
+        """Images first marked while walking crystal first, to be left out.
+
+        An image with no row was marked before any of this existed, which is
+        well order - and those plates are the only uncontaminated sample this
+        model will ever be measured against.
+        """
+        try:
+            with self._open() as connection:
+                rows = connection.execute(
+                    "SELECT image_key FROM mark_ordering "
+                    "WHERE image_set_id = ? AND ordering != ?",
+                    (image_set_id, WELL_ORDER),
+                ).fetchall()
+        except sqlite3.Error:
+            return set()
+        return {row[0] for row in rows}
+
     def forget_other_models(self, image_set_id: str, model_id: str) -> int:
         """Drop scores from models no longer in use, once the new ones are in."""
         try:
@@ -172,6 +222,7 @@ class MemoryCrystalScoreStore:
 
     def __init__(self) -> None:
         self._scores: dict[tuple[str, str], CrystalScore] = {}
+        self._orderings: dict[tuple[str, str], str] = {}
 
     def scores_for(self, image_set_id: str, model_id: str) -> dict[str, CrystalScore]:
         return {
@@ -187,6 +238,18 @@ class MemoryCrystalScoreStore:
             saved += 1
         return saved
 
+    def remember_mark_ordering(
+        self, image_set_id: str, image_key: str, ordering: str
+    ) -> None:
+        self._orderings.setdefault((image_set_id, image_key), ordering)
+
+    def marked_in_crystal_order(self, image_set_id: str) -> set[str]:
+        return {
+            image_key
+            for (stored_set, image_key), ordering in self._orderings.items()
+            if stored_set == image_set_id and ordering != WELL_ORDER
+        }
+
     def forget_other_models(self, image_set_id: str, model_id: str) -> int:
         stale = [
             key for key, score in self._scores.items()
@@ -198,6 +261,7 @@ class MemoryCrystalScoreStore:
 
     def close(self) -> None:
         self._scores.clear()
+        self._orderings.clear()
 
 
 def crystal_score_database(review_database_path: Path, filename: str) -> Path:

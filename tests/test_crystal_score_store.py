@@ -116,7 +116,7 @@ def test_the_score_file_sits_beside_the_review_database_and_not_inside_it(
         )
     }
     connection.close()
-    assert tables == {"image_score"}
+    assert tables == {"image_score", "mark_ordering"}
 
 
 def test_the_store_can_be_used_from_a_worker_thread(tmp_path: Path) -> None:
@@ -147,3 +147,24 @@ def test_the_store_can_be_used_from_a_worker_thread(tmp_path: Path) -> None:
 
     assert not failures, failures
     assert len(store.scores_for("set-1", MODEL)) == 60
+
+
+def test_the_order_a_mark_was_placed_in_is_remembered_once(store) -> None:
+    """Otherwise the self-check marks its own homework.
+
+    Walking crystal first puts the user on the top-ranked images, so their
+    marks rank first by construction and the check passes with nothing in it.
+    """
+    from xtalflow.domain.crystal_score import CRYSTAL_FIRST, WELL_ORDER
+
+    store.remember_mark_ordering("set-1", "a", WELL_ORDER)
+    store.remember_mark_ordering("set-1", "b", CRYSTAL_FIRST)
+    # The first one wins: it is the walk that led the user to the image.
+    store.remember_mark_ordering("set-1", "a", CRYSTAL_FIRST)
+    store.remember_mark_ordering("set-2", "a", CRYSTAL_FIRST)
+
+    assert store.marked_in_crystal_order("set-1") == {"b"}
+    assert store.marked_in_crystal_order("set-2") == {"a"}
+    # An image with no row at all was marked before any of this existed,
+    # which is well order - and those are the only honest sample there is.
+    assert "c" not in store.marked_in_crystal_order("set-1")

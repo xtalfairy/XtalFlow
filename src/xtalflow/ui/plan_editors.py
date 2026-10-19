@@ -338,19 +338,24 @@ class PlanEditorBase(QWidget):
         in the review database rather than in the editor.
         """
         revision = self.last_revision
+        # Named, not positional: a field added to ExperimentFacts in the
+        # middle would otherwise shift every value after it, quietly.
         return ExperimentFacts(
-            self.plan_type,
-            self.protein_input.text(),
-            self.selected_well_count,
-            self.selected_position_count,
-            self.wells_needing_attention,
-            self.conditions_error(),
-            0,
-            revision.revision if revision is not None else None,
-            revision is not None and self.plan_snapshot() == self.last_revision_snapshot,
-            worksheets_saved,
-            self.save_failed,
-            worksheets_saved_elsewhere,
+            plan_type=self.plan_type,
+            protein=self.protein_input.text(),
+            well_count=self.selected_well_count,
+            position_count=self.selected_position_count,
+            wells_needing_attention=self.wells_needing_attention,
+            conditions_error=self.conditions_error(),
+            unused_fragment_count=0,
+            revision_number=revision.revision if revision is not None else None,
+            revision_matches_current=(
+                revision is not None
+                and self.plan_snapshot() == self.last_revision_snapshot
+            ),
+            worksheets_saved_for_revision=worksheets_saved,
+            local_save_failed=self.save_failed,
+            worksheets_saved_elsewhere=worksheets_saved_elsewhere,
             images_unavailable=self.images_unavailable,
         )
 
@@ -500,6 +505,7 @@ class FragmentScreeningEditor(PlanEditorBase):
         return replace(
             facts,
             unused_fragment_count=len(plan.unused_fragments) if plan is not None else 0,
+            unassigned_well_count=len(plan.unassigned_wells) if plan is not None else 0,
         )
 
     def _snapshot_of(self, plan, protein: str) -> str:
@@ -792,6 +798,11 @@ class FragmentScreeningEditor(PlanEditorBase):
             )
             if plan.unused_fragments:
                 fragments += f" · last {len(plan.unused_fragments)} not used"
+            if plan.unassigned_wells:
+                fragments += (
+                    f" · {counted(len(plan.unassigned_wells), 'crystal')} with no "
+                    "fragment, left out"
+                )
             rows[2:2] = [
                 ("Fragments", fragments),
                 (
@@ -865,6 +876,12 @@ class FragmentScreeningEditor(PlanEditorBase):
                 )
                 for assignment in plan.assignments
             ]
+            # Wells the fragments did not reach stay on the table, so nobody
+            # has to count the rows to see what is left out.
+            rows += [
+                (well, "—", "—", "no fragment · not soaked or harvested")
+                for well in plan.unassigned_wells
+            ]
         else:
             fragments = library.fragments if library is not None else ()
             units = volume / TRANSFER_INCREMENT_NL
@@ -909,9 +926,13 @@ class FragmentScreeningEditor(PlanEditorBase):
 
     def _show_counts(self, fragments: int, wells: int) -> None:
         if fragments < wells:
+            # Not a mistake: the plan takes the wells the fragments reach. The
+            # rest are left out of it, which is worth seeing before saving.
             text = (
-                f"{theme.SYMBOL_ATTENTION} {wells} wells, {fragments} fragments — choose "
-                f"{wells - fragments} more rows or use fewer wells"
+                f"{theme.SYMBOL_ATTENTION} {wells} wells · "
+                f"{counted(fragments, 'fragment')} · "
+                f"{counted(wells - fragments, 'crystal')} with no fragment, "
+                "left out of this experiment"
             )
             kind = "attention"
         elif fragments > wells:

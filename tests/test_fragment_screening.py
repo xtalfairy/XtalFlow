@@ -107,14 +107,25 @@ def test_plan_rejects_zero_volume_transfers() -> None:
         )
 
 
-def test_plan_rejects_too_few_fragments() -> None:
+def test_crystals_the_fragments_do_not_reach_are_left_out_of_the_plan() -> None:
+    """Fewer fragments than crystals is a smaller experiment, not a mistake."""
     now = datetime.now(timezone.utc)
-    with pytest.raises(ValueError, match="enough fragments"):
-        build_fragment_screen_plan(
-            FragmentLibrary("Library", (fragment(1),)),
-            (crystal("one", now, 1), crystal("two", now, 1)),
-            Decimal("10"),
-        )
+
+    plan = build_fragment_screen_plan(
+        FragmentLibrary("Library", (fragment(1),)),
+        (crystal("one", now, 1), crystal("two", now, 1)),
+        Decimal("10"),
+    )
+
+    assert len(plan.assignments) == 1
+    assert plan.assignments[0].selected_well.image_key == "one"
+    # The second crystal keeps its place in the selection and gets nothing.
+    assert [well.image_key for well in plan.unassigned_wells] == ["two"]
+    assert plan.unused_fragments == ()
+    # Everything downstream reads the assignments, so the crystal that got no
+    # fragment is in no worksheet and no upload: not dispensed into, not
+    # harvested, not registered.
+    assert [item.selected_well.image_key for item in plan.assignments] == ["one"]
 
 
 def test_library_rows_are_one_based_data_rows_not_fragment_numbers() -> None:

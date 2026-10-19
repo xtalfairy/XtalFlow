@@ -145,13 +145,25 @@ def test_fragment_editor_previews_and_reassigns_by_plate_well() -> None:
     assert editor.all_rows_radio.isChecked() and not editor.rows_input.isEnabled()
     editor.choose_rows_radio.setChecked(True)
     editor.rows_input.setText("2")
-    assert editor.current_plan is None
-    assert "enough fragments" in editor.error_label.text()
-    assert editor.count_label.text() == "△ 2 wells, 1 fragments — choose 1 more rows or use fewer wells"
+    # One fragment for two crystals builds the smaller experiment: the first
+    # well in assignment order is soaked and the other is left out of it.
+    assert editor.current_plan is not None
+    assert len(editor.current_plan.assignments) == 1
+    assert [
+        well.well_address for well in editor.current_plan.unassigned_wells
+    ] == [editor.assignment_table.item(1, 0).text().split()[-1]]
+    assert editor.count_label.text() == (
+        "△ 2 wells · 1 fragment · 1 crystal with no fragment, left out of this "
+        "experiment"
+    )
     assert editor.rows_error_label.isHidden()
-    assert editor.assignment_table.item(1, 4).text() == "△ no fragment left in the chosen rows"
-    assert editor.echo_table.rowCount() == 0
-    assert editor.shifter_table.rowCount() == 0
+    assert editor.assignment_table.item(1, 2).text() == "—"
+    assert editor.assignment_table.item(1, 4).text() == (
+        "△ no fragment · not soaked or harvested"
+    )
+    # And it is in neither worksheet.
+    assert editor.echo_table.rowCount() == 1
+    assert editor.shifter_table.rowCount() == 1
     editor.close()
     app.processEvents()
 

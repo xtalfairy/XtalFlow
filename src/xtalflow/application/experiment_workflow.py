@@ -253,6 +253,8 @@ class ExperimentFacts:
     wells_needing_attention: int = 0
     conditions_error: str | None = None
     unused_fragment_count: int = 0
+    # Selected wells the fragments did not reach: not soaked, not harvested.
+    unassigned_well_count: int = 0
     revision_number: int | None = None
     revision_matches_current: bool = False
     worksheets_saved_for_revision: bool = False
@@ -369,7 +371,17 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
                 "Select wells to check the fragment assignment.",
             )
         else:
-            message = f"Fragments assigned to {counted(facts.well_count, 'well')}"
+            assigned = facts.well_count - facts.unassigned_well_count
+            message = f"Fragments assigned to {counted(assigned, 'well')}"
+            if facts.unassigned_well_count:
+                message += (
+                    f" · {counted(facts.unassigned_well_count, 'crystal')} left out"
+                )
+                notes.append(
+                    f"{counted(facts.unassigned_well_count, 'selected crystal')} "
+                    "will not be soaked or harvested: the chosen rows ran out of "
+                    "fragments."
+                )
             if facts.unused_fragment_count:
                 notes.append(
                     f"The last {counted(facts.unused_fragment_count, 'fragment')} "

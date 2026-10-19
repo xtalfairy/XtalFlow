@@ -108,6 +108,17 @@ class FragmentScreenPlan:
         """Selected library rows left over after one fragment per well."""
         return self.library.fragments[len(self.assignments):]
 
+    @property
+    def unassigned_wells(self) -> tuple:
+        """Selected wells left without a fragment, when the rows run out.
+
+        They are not soaked, not harvested and not uploaded: the plan simply
+        stops where the fragments do. They keep their place in the selection
+        so that choosing more rows later picks up where this left off.
+        """
+        ordered = order_selected_wells(self.selection, self.assignment_order)
+        return tuple(ordered[len(self.assignments):])
+
 
 def build_fragment_screen_plan(
     library: FragmentLibrary,
@@ -124,9 +135,8 @@ def build_fragment_screen_plan(
     units = volume_per_crystal_nl / TRANSFER_INCREMENT_NL
     if units != units.to_integral_value():
         raise ValueError("volume per crystal must use 2.5 nL increments")
-    if len(library.fragments) < len(selection.wells):
-        raise ValueError("the library does not contain enough fragments")
-
+    # Fewer fragments than wells is not a mistake: the plan takes the wells
+    # the fragments reach, in assignment order, and leaves the rest alone.
     ordered_wells = order_selected_wells(selection, assignment_order)
     assignments: list[FragmentAssignment] = []
     total_units = int(units)

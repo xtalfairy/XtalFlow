@@ -3406,6 +3406,51 @@ def test_a_confirmed_boundary_with_a_position_outside_it_says_so(
     app.processEvents()
 
 
+def test_the_panel_marks_each_share_with_a_symbol_and_a_colour(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Which shares are up decides what can be done, so the panel says it first."""
+    app = QApplication.instance() or QApplication([])
+    (tmp_path / "echo650").mkdir()
+    settings = replace(
+        DEFAULT_SETTINGS,
+        instruments=standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
+        ),
+    )
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        settings=settings,
+    )
+    # The reading runs off this thread, so a dropped mount cannot freeze the
+    # window; give the worker its moment.
+    QTest.qWait(1500)
+    app.processEvents()
+    buttons = window.workspace_sidebar.share_buttons
+
+    assert set(buttons) == {"rmserver", "echo650", "shifter1", "shifter2"}
+    # The symbol travels with the name: the meaning never rests on the colour.
+    assert buttons["echo650"].text().startswith(theme.SYMBOL_ATTENTION)
+    assert "ECHO 650" in buttons["echo650"].text()
+    assert theme.ATTENTION in buttons["echo650"].styleSheet()
+    assert buttons["shifter2"].text().startswith(theme.SYMBOL_ERROR)
+    assert theme.ERROR in buttons["shifter2"].styleSheet()
+    assert "the folder is not there" in buttons["shifter2"].toolTip()
+    assert str(tmp_path / "shifter2") in buttons["shifter2"].toolTip()
+    assert not window._share_check_busy
+
+    # Pressing one says what the reading found, in words, in the status bar.
+    buttons["shifter2"].click()
+    QTest.qWait(1200)
+    app.processEvents()
+    assert "SHIFTER 2" in window.status_message_label.toolTip()
+    assert "the folder is not there" in window.status_message_label.toolTip()
+    window.close()
+    app.processEvents()
+    assert not window._share_check_timer.isActive()
+
+
 def test_a_blocked_button_says_why_it_cannot_be_pressed(tmp_path: Path) -> None:
     """The reason is on the button, not only in the line above it."""
     app = QApplication.instance() or QApplication([])

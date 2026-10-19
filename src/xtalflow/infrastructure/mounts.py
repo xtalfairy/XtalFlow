@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -80,3 +81,62 @@ def bsd_mount_table(output: str) -> str:
             mountpoint = match["mountpoint"].replace("\\", "\\134").replace(" ", "\\040")
             lines.append(f"device {mountpoint} {match['type']}")
     return "\n".join(lines)
+
+
+IMAGE_SHARE = "rmserver"
+IMAGE_SHARE_LABEL = "RMServer"
+
+
+@dataclass(frozen=True)
+class ShareState:
+    """One share as it looks from this machine, right now.
+
+    ``mounted`` is the only state worth a green mark.  A folder that is there
+    but is not a mounted share is the quiet failure this module exists for: a
+    worksheet written into it is saved locally and the instrument never sees
+    it.  A missing folder at least says so the moment anyone looks.
+    """
+
+    key: str
+    label: str
+    path: Path
+    mounted: bool
+    exists: bool
+    detail: str
+
+    @property
+    def state(self) -> str:
+        """"ok", "attention" or "error", as the theme names its three marks."""
+        if self.mounted:
+            return "ok"
+        return "attention" if self.exists else "error"
+
+
+def share_state(key: str, label: str, path: Path) -> ShareState:
+    """Look at one share. Slow enough on a dropped mount to belong off the GUI thread."""
+    try:
+        exists = path.is_dir()
+    except OSError as error:
+        return ShareState(key, label, path, False, False, str(error))
+    if not exists:
+        return ShareState(key, label, path, False, False, "the folder is not there")
+    try:
+        mounted = is_network_mount(path)
+    except OSError as error:
+        return ShareState(key, label, path, False, True, str(error))
+    return ShareState(
+        key, label, path, mounted, True,
+        "mounted" if mounted else "a local folder, not a mounted share",
+    )
+
+
+def share_states(settings) -> tuple[ShareState, ...]:
+    """Every share this installation depends on: the images first, then the instruments."""
+    states = [
+        share_state(IMAGE_SHARE, IMAGE_SHARE_LABEL, settings.rmserver_root)
+    ]
+    states.extend(
+        share_state(item.instrument, item.label, item.output_directory)
+        for item in settings.instruments
+    )
+    return tuple(states)

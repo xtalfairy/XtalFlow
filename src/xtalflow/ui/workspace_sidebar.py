@@ -7,6 +7,7 @@ from PyQt5.QtGui import QColor, QIcon
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -49,7 +50,19 @@ QListWidget#WorkspaceList::item:selected, QListWidget#HiddenWorkspaceList::item:
 QPushButton#HiddenToggle {{ border: none; background: transparent; color: {theme.TEXT_MUTED};
     text-align: left; padding: 4px 10px; }}
 QPushButton#HiddenToggle:hover {{ color: {theme.TEXT}; }}
+QPushButton#ShareButton {{ background: transparent; border: 1px solid {theme.BORDER};
+    border-radius: 6px; padding: 3px 6px; text-align: left; font-size: 11px; }}
+QPushButton#ShareButton:hover {{ background: {theme.SUBTLE}; }}
+QLabel#SharesStatus {{ color: {theme.TEXT_MUTED}; font-size: 11px; }}
 """
+
+# Shown with the share's name, never on its own: the mark says which state it
+# is without anyone having to tell the three colours apart.
+SHARE_MARKS = {
+    "ok": (theme.SYMBOL_OK, theme.OK),
+    "attention": (theme.SYMBOL_ATTENTION, theme.ATTENTION),
+    "error": (theme.SYMBOL_ERROR, theme.ERROR),
+}
 
 
 class _CountDelegate(QStyledItemDelegate):
@@ -80,6 +93,8 @@ class WorkspaceSidebar(QWidget):
     hide_workspace_requested = pyqtSignal(str)
     restore_workspace_requested = pyqtSignal(str)
     collapse_requested = pyqtSignal()
+    # A share's own button was pressed: look at that one again, now.
+    share_check_requested = pyqtSignal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -98,6 +113,30 @@ class WorkspaceSidebar(QWidget):
         top.addWidget(app_name)
         top.addStretch()
         top.addWidget(self.collapse_button)
+
+        # Which shares are up decides what can be done at all, so it is the
+        # first thing in the panel rather than something to go looking for.
+        self.share_buttons: dict[str, QPushButton] = {}
+        self._share_states: dict[str, object] = {}
+        shares_title = QLabel("Shares")
+        shares_title.setObjectName("SidebarTitle")
+        shares_title.setContentsMargins(10, 0, 0, theme.SPACING_S)
+        self.shares_grid = QGridLayout()
+        self.shares_grid.setContentsMargins(8, 0, 0, 0)
+        self.shares_grid.setHorizontalSpacing(theme.SPACING_S)
+        self.shares_grid.setVerticalSpacing(theme.SPACING_S)
+        shares = QVBoxLayout()
+        shares.setSpacing(2)
+        shares.addWidget(shares_title)
+        shares.addLayout(self.shares_grid)
+        self.shares_status = QLabel()
+        self.shares_status.setObjectName("SharesStatus")
+        self.shares_status.setContentsMargins(10, theme.SPACING_S, 0, 0)
+        self.shares_status.hide()
+        shares.addWidget(self.shares_status)
+        shares_divider = QFrame()
+        shares_divider.setObjectName("SidebarDivider")
+        shares_divider.setFixedHeight(1)
 
         # New experiments sit at the top of the panel, like a chat app's New chat.
         # Keyed by choice: a plan type for the single-template types, else a name.
@@ -170,6 +209,10 @@ class WorkspaceSidebar(QWidget):
         layout.setSpacing(theme.SPACING_S)
         layout.addLayout(top)
         layout.addSpacing(theme.SPACING_L)
+        layout.addLayout(shares)
+        layout.addSpacing(theme.SPACING_L)
+        layout.addWidget(shares_divider)
+        layout.addSpacing(theme.SPACING_L)
         layout.addLayout(new_buttons)
         layout.addSpacing(theme.SPACING_L)
         layout.addWidget(divider)
@@ -199,6 +242,44 @@ class WorkspaceSidebar(QWidget):
         self.hidden_list.customContextMenuRequested.connect(self._show_hidden_menu)
         self._counts: dict[str | None, int] = {}
         self.show_workspaces((), None, {})
+
+    def show_share_states(self, states: tuple, checking: bool = False) -> None:
+        """Set each share's mark, colour and tooltip from a fresh reading.
+
+        The buttons are made on the first reading, because which shares exist
+        comes from the site's settings rather than from this file.
+        """
+        for index, state in enumerate(states):
+            button = self.share_buttons.get(state.key)
+            if button is None:
+                button = QPushButton()
+                button.setObjectName("ShareButton")
+                button.setCursor(Qt.PointingHandCursor)
+                button.clicked.connect(
+                    lambda _checked=False, key=state.key: self.share_check_requested.emit(key)
+                )
+                self.share_buttons[state.key] = button
+                self.shares_grid.addWidget(button, index // 2, index % 2)
+            self._share_states[state.key] = state
+            symbol, colour = SHARE_MARKS[state.state]
+            button.setText(f"{symbol} {state.label}")
+            button.setStyleSheet(f"color: {colour}; border-color: {colour};")
+            button.setToolTip(
+                f"{state.label} · {state.detail}\n{state.path}\n\n"
+                "Click to look again"
+            )
+            button.setAccessibleName(f"{state.label}: {state.detail}")
+        # The buttons carry the names, so the line under them only counts:
+        # it is there to be caught by the eye, not read twice.
+        away = sum(1 for state in states if state.state != "ok")
+        summary = f"{away} share{'' if away == 1 else 's'} not mounted" if away else ""
+        self.shares_status.setText("Looking…" if checking else summary)
+        self.shares_status.setVisible(bool(checking or summary))
+
+    def share_state_detail(self, key: str) -> str:
+        """What the last reading said about one share, for the status bar."""
+        state = self._share_states.get(key)
+        return f"{state.label} · {state.detail} · {state.path}" if state else ""
 
     def _new_experiment_button(self, choice: ExperimentChoice) -> QPushButton:
         button = QPushButton(choice.title)

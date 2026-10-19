@@ -87,6 +87,7 @@ from xtalflow.infrastructure import (
     SQLiteReviewStore,
 )
 from xtalflow.infrastructure.instrument_config import load_instrument_destinations
+from xtalflow.infrastructure.mounts import ShareState, share_states
 from xtalflow.infrastructure.examples import load_examples
 from xtalflow.infrastructure.user_preferences import JsonUserPreferencesStore
 from xtalflow.presentation import ProjectImageSetListModel
@@ -128,6 +129,11 @@ from xtalflow.ui.shortcuts_dialog import ShortcutsDialog
 
 
 T = TypeVar("T")
+
+# How often the panel looks at the shares again. A share drops without telling
+# anyone, so often enough to notice before the next save, and rarely enough
+# that a slow mount is not being asked constantly.
+SHARE_CHECK_MILLISECONDS = 60_000
 
 
 class ViewerWindow(QMainWindow):
@@ -184,6 +190,13 @@ class ViewerWindow(QMainWindow):
         self._selection_sync_timer.setSingleShot(True)
         self._selection_sync_timer.setInterval(400)
         self._selection_sync_timer.timeout.connect(self.experiments._sync_current_selection)
+        # A share can go away between one save and the next, so the panel asks
+        # again on its own rather than only when something has already failed.
+        self._share_states: tuple[ShareState, ...] = ()
+        self._share_check_busy = False
+        self._share_check_timer = QTimer(self)
+        self._share_check_timer.setInterval(SHARE_CHECK_MILLISECONDS)
+        self._share_check_timer.timeout.connect(self._check_shares)
 
         self.pages = QStackedWidget()
         self.pages.addWidget(self.home_page)
@@ -208,6 +221,8 @@ class ViewerWindow(QMainWindow):
         self.set_workspace_panel_visible(self.user_preferences.workspace_panel_visible)
         self.experiments.show_home()
         self.experiments._show_planning_migration_status()
+        self._check_shares()
+        self._share_check_timer.start()
 
     # -- Layout -----------------------------------------------------------------
 
@@ -520,6 +535,7 @@ class ViewerWindow(QMainWindow):
         self.load_plates_form.submitted.connect(self._load_plates_from_form)
         self.examples_button.clicked.connect(self.show_examples)
         self.workspace_sidebar.start_requested.connect(self.experiments.start_experiment_choice)
+        self.workspace_sidebar.share_check_requested.connect(self._share_pressed)
         self.home_page.resume_requested.connect(self.experiments.resume_experiment)
         self.home_page.delete_requested.connect(self.experiments.delete_experiment)
         self.experiment_page.home_requested.connect(self.experiments.show_home)
@@ -1814,6 +1830,55 @@ class ViewerWindow(QMainWindow):
             ).physical_diameter_mm
         self.calibration_inspector.show_calibration(calibration, lens_diameter)
 
+    def _share_pressed(self, key: str) -> None:
+        """Say what the last reading found, then look again."""
+        detail = self.workspace_sidebar.share_state_detail(key)
+        if detail:
+            self.status_message_label.show_message(detail, 8000)
+        self._check_shares()
+
+    def _check_shares(self) -> None:
+        """Read every share on a worker thread and mark the panel's buttons.
+
+        Never on this thread: asking a dropped SMB mount whether it is a
+        folder can take the best part of a minute, and the window would be
+        frozen for all of it. One reading at a time, so a share that never
+        answers cannot pile threads up behind it.
+        """
+        if self._share_check_busy:
+            return
+        settings = self.settings
+        found: dict[str, object] = {}
+
+        def work() -> None:
+            try:
+                found["states"] = share_states(settings)
+            except OSError as error:  # a mount table that cannot be read
+                found["error"] = error
+
+        self._share_check_busy = True
+        self.workspace_sidebar.show_share_states(
+            self._share_states, checking=bool(self._share_states)
+        )
+        worker = threading.Thread(target=work, name="xtalflow-shares", daemon=True)
+        poll = QTimer(self)
+        poll.setInterval(200)
+        poll.timeout.connect(
+            lambda: None if worker.is_alive() else self._shares_read(poll, found)
+        )
+        worker.start()
+        poll.start()
+
+    def _shares_read(self, poll: QTimer, found: dict) -> None:
+        poll.stop()
+        self._share_check_busy = False
+        states = found.get("states")
+        if states is None:
+            self.workspace_sidebar.show_share_states(self._share_states)
+            return
+        self._share_states = states
+        self.workspace_sidebar.show_share_states(states)
+
     def _positions_outside(self, calibration) -> int:
         """How many of this image's positions fall beyond the well boundary."""
         if calibration is None or self.controller is None:
@@ -2113,6 +2178,7 @@ class ViewerWindow(QMainWindow):
             self.experiments._refresh_experiment_status(self.experiments.current_editor)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        self._share_check_timer.stop()
         for editor in tuple(self.experiments._editors.values()):
             self.experiments._leave_experiment(editor)
         while self.controller is not None:

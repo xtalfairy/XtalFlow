@@ -30,3 +30,57 @@ def test_bsd_mount_output_is_understood() -> None:
 
     assert is_network_mount(Path("/Volumes/echo 650/scientist"), table)
     assert not is_network_mount(Path("/Users/fbdd/echo650"), table)
+
+
+def test_each_share_is_read_as_mounted_local_or_missing(tmp_path, monkeypatch) -> None:
+    """Three states, because a folder that is there is not the same as a share."""
+    from dataclasses import replace
+
+    from xtalflow.infrastructure import mounts
+    from xtalflow.settings import DEFAULT_SETTINGS, standard_instruments
+
+    mounted = tmp_path / "echo650"
+    local = tmp_path / "shifter1"
+    for directory in (mounted, local):
+        directory.mkdir()
+    monkeypatch.setattr(
+        mounts, "is_network_mount", lambda path, table=None: path == mounted
+    )
+    settings = replace(
+        DEFAULT_SETTINGS,
+        rmserver_root=mounted,
+        instruments=standard_instruments(mounted, local, tmp_path / "gone"),
+    )
+
+    states = {state.key: state for state in mounts.share_states(settings)}
+
+    assert [state.key for state in mounts.share_states(settings)] == [
+        "rmserver", "echo650", "shifter1", "shifter2"
+    ]
+    assert states["echo650"].state == "ok"
+    assert states["echo650"].detail == "mounted"
+    # There, writable, and the instrument would never see the file.
+    assert states["shifter1"].state == "attention"
+    assert "not a mounted share" in states["shifter1"].detail
+    assert states["shifter2"].state == "error"
+    assert states["shifter2"].detail == "the folder is not there"
+    assert states["rmserver"].label == "RMServer"
+
+
+def test_a_share_that_cannot_be_asked_is_not_called_mounted(tmp_path, monkeypatch) -> None:
+    """A dropped mount raises instead of answering; that is not a green light."""
+    from xtalflow.infrastructure import mounts
+
+    share = tmp_path / "echo650"
+    share.mkdir()
+
+    def refuse(path, table=None):
+        raise OSError(112, "Host is down")
+
+    monkeypatch.setattr(mounts, "is_network_mount", refuse)
+
+    state = mounts.share_state("echo650", "ECHO 650", share)
+
+    assert not state.mounted
+    assert state.state == "attention"
+    assert "Host is down" in state.detail

@@ -2210,6 +2210,12 @@ class ExperimentCoordinator:
         shared = self._source_plate_record()
         if shared is None:
             return
+        # This runs on the window's thread, so it must not sit out the usual
+        # ten seconds of lock polling. The merge is opportunistic: a record
+        # someone else holds is merged into on one of the next tries.
+        shared = SourcePlateRecord(
+            shared.directory, create_root=shared.create_root, lock_timeout=1.0
+        )
         held = SourcePlateRecord(
             record_directory(pending_root(self.window.settings)), create_root=True
         )

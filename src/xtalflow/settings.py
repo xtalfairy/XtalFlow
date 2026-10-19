@@ -81,6 +81,14 @@ class ApplicationSettings:
     # it in the account's own home, which survives a reboot; a temporary
     # folder would not.
     pending_worksheet_directory: Path | None = None
+    # The shared record of which source plate wells are taken. It used to sit
+    # under the ECHO folder, for no reason beyond everyone already being able
+    # to write there, and it went away with that share - taking the booking of
+    # shared source wells with it. Everyone plans from the one workstation, so
+    # a group-writable folder on its own disk meets the same requirement and
+    # has the availability of the application itself. None keeps the old place
+    # under the ECHO folder, which is what an unmigrated site still has.
+    source_plate_record_directory: Path | None = None
     require_network_instrument_mounts: bool = False
     require_network_image_root: bool = False
     review_database_filename: str = "reviews.sqlite3"
@@ -130,6 +138,7 @@ DEVELOPMENT_SETTINGS = ApplicationSettings(
         PROJECT_ROOT / "tests" / "runtime" / "smbmount" / "shifter2",
     ),
     create_missing_instrument_roots=True,
+    source_plate_record_directory=PROJECT_ROOT / "tests" / "runtime" / "source-plates",
 )
 
 
@@ -144,6 +153,10 @@ OPERATING_SERVER_SETTINGS = ApplicationSettings(
         Path("/smbmount/shifter2"),
     ),
     create_missing_instrument_roots=False,
+    # Made once by an administrator, group-writable and setgid so that every
+    # researcher's lines land in a folder they can all append to. Until it
+    # exists the record keeps to its old place under the ECHO folder.
+    source_plate_record_directory=Path("/var/lib/xtalflow/source-plates"),
     require_network_instrument_mounts=True,
     require_network_image_root=True,
     mxlive_base_url="https://mxlive.postech.ac.kr",

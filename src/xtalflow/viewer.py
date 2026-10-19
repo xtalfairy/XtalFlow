@@ -2363,6 +2363,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Local worksheet staging directory",
     )
     parser.add_argument(
+        "--source-plate-dir",
+        type=Path,
+        default=DEFAULT_SETTINGS.source_plate_record_directory,
+        help="Shared source plate record directory (default: "
+             f"{DEFAULT_SETTINGS.source_plate_record_directory})",
+    )
+    parser.add_argument(
         "--echo-dir",
         type=Path,
         help="ECHO 650 worksheet output directory (overrides the configured echo650)",
@@ -2423,6 +2430,7 @@ def settings_from_arguments(args: argparse.Namespace) -> ApplicationSettings:
         rmserver_root=args.root,
         fragment_library_directory=args.library_dir,
         worksheet_staging_directory=args.worksheet_dir,
+        source_plate_record_directory=args.source_plate_dir,
         mxlive_base_url=args.mxlive_url,
         mxlive_key_path=args.mxlive_key,
         mxlive_ca_bundle=args.mxlive_ca,

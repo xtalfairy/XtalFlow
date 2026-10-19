@@ -857,7 +857,7 @@ class ExperimentCoordinator:
             editor = ConditionTestEditor(
                 CONDITION_TEMPLATES[template or "solvent"](), self.editor_holder
             )
-            self._merge_held_source_entries()
+            self._catch_up_source_record()
             editor.set_source_record(self._source_plate_record(), getpass.getuser())
             editor.conditions_requested.connect(
                 lambda: self.go_to_step(WorkflowStep.CONDITIONS)
@@ -1415,14 +1415,14 @@ class ExperimentCoordinator:
                     for additive in plan.design.additives if additive.id in allocations
                 ),
             )
-            if self._echo_is_away(unreachable):
+            if self._source_record_is_away():
                 # The bench instruction that the missing record turns into:
                 # nobody can say which wells are free, so start from a plate
                 # where every well is.
                 preparation = (
                     f"{theme.SYMBOL_ATTENTION} Use a fresh source plate · the shared "
-                    "record is away with the ECHO folder, so the wells below are "
-                    "taken as free; what this takes waits in "
+                    "record cannot be reached, so the wells below are taken as "
+                    "free; what this takes waits in "
                     f"{record_directory(pending_root(self.window.settings))}",
                     *preparation,
                 )
@@ -2139,7 +2139,7 @@ class ExperimentCoordinator:
             if isinstance(editor, ConditionTestEditor) and alternate_root is None:
                 # Its wells are on the shared record now - and if the record
                 # was reachable this time, so is anything held from before.
-                self._merge_held_source_entries()
+                self._catch_up_source_record()
                 editor.refresh_plate_records()
             self.window.status_message_label.show_message(
                 f"Worksheets for {result.experiment_id} saved to the folder you chose"
@@ -2159,14 +2159,16 @@ class ExperimentCoordinator:
         except (OSError, ValueError):
             return {}
 
-    def _echo_is_away(self, unreachable: dict[str, str] | None = None) -> bool:
-        """Whether the ECHO folder, and with it the shared source plate record, is gone."""
-        away = self._unreachable_instruments() if unreachable is None else unreachable
-        return any(
-            (destination := self.window.settings.instrument(instrument)) is not None
-            and destination.worksheet is WorksheetKind.ECHO
-            for instrument in away
-        )
+    def _source_record_is_away(self) -> bool:
+        """Whether the record of which source wells are taken can be reached at all.
+
+        Where it lives decides this, not which instrument is down. With the
+        record on this machine the ECHO can be away all week and source wells
+        are still booked; only a site that has not moved it yet loses both
+        together.
+        """
+        record = self._source_plate_record()
+        return record is None or not record.reachable()
 
     def _instrument_names(self, instruments: tuple[str, ...]) -> str:
         """The instruments as the user knows them: ECHO 650 and SHIFTER 1."""
@@ -2199,17 +2201,25 @@ class ExperimentCoordinator:
             ),
         )
 
-    def _merge_held_source_entries(self) -> None:
-        """Put wells taken while the record was away onto it, once it is back.
+    def _catch_up_source_record(self) -> None:
+        """Bring the record up to date: what was held, and what is still in its old place.
 
         Asked whenever a condition test is opened and after every save that
-        reached the record: those are the moments it is known to be there.
-        Costs one look at a local folder when nothing is held, which is the
-        ordinary case.
+        reached the record. Costs one look at a local folder when there is
+        nothing to do, which is the ordinary case.
         """
         shared = self._source_plate_record()
-        if shared is None:
+        if shared is None or not shared.reachable():
             return
+        old = self._echo_source_plate_record()
+        if old is not None and old.directory != shared.directory and old.reachable():
+            # The move, done a plate at a time whenever the old share is up.
+            # Copied, not taken: a client that has not been moved over yet
+            # keeps writing there, and this keeps picking it up.
+            try:
+                merge_held(old, shared, consume=False)
+            except WorksheetDestinationUnavailable:
+                pass
         # This runs on the window's thread, so it must not sit out the usual
         # ten seconds of lock polling. The merge is opportunistic: a record
         # someone else holds is merged into on one of the next tries.
@@ -2244,7 +2254,23 @@ class ExperimentCoordinator:
             )
 
     def _source_plate_record(self) -> SourcePlateRecord | None:
-        """Shared source plates' well records, kept with the ECHO worksheets everyone saves."""
+        """The shared source plates' well record, wherever this site keeps it.
+
+        A folder of its own on this machine's disk once an administrator has
+        made one, group-writable so everyone's lines land in the same place.
+        It is not created here: whoever created it first would decide with
+        their umask whether anybody else could append at all.
+        """
+        configured = self.window.settings.source_plate_record_directory
+        if configured is not None:
+            if configured.is_dir():
+                return SourcePlateRecord(configured)
+            if self.window.settings.create_missing_instrument_roots:
+                return SourcePlateRecord(configured, create_root=True)
+        return self._echo_source_plate_record()
+
+    def _echo_source_plate_record(self) -> SourcePlateRecord | None:
+        """Where the record used to live: under the ECHO worksheets everyone saves."""
         echo = next(
             (
                 item for item in self.window.settings.instruments

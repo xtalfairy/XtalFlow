@@ -1344,13 +1344,16 @@ def test_fragment_worksheets_are_saved_and_audited(tmp_path: Path, monkeypatch) 
     app.processEvents()
 
 
-def test_a_condition_test_takes_a_fresh_plate_when_the_echo_is_away(
+def test_a_condition_test_takes_a_fresh_plate_only_when_the_record_itself_is_away(
     tmp_path: Path, monkeypatch
 ) -> None:
     """Without the record nobody can say which wells are free, so start where all are.
 
     This used to refuse the save outright, which only moved the problem: the
-    plan is already finalized and the plate is already on the bench.
+    plan is already finalized and the plate is already on the bench. And it
+    used to ask after the ECHO, which is only where the record happened to
+    live: with the record on this machine the ECHO can be away all week and
+    source wells are still booked.
     """
     app = QApplication.instance() or QApplication([])
     settings = replace(
@@ -1358,6 +1361,7 @@ def test_a_condition_test_takes_a_fresh_plate_when_the_echo_is_away(
         instruments=standard_instruments(
             tmp_path / "missing-echo", tmp_path / "shifter1", tmp_path / "shifter2"
         ),
+        source_plate_record_directory=tmp_path / "source-plates",
         create_missing_instrument_roots=False,
     )
     window, _store, _editor = _fragment_plan_window(tmp_path, settings)
@@ -1371,7 +1375,11 @@ def test_a_condition_test_takes_a_fresh_plate_when_the_echo_is_away(
     from xtalflow.infrastructure.source_plate_record import record_directory
     from xtalflow.infrastructure.worksheet_exporter import pending_root
 
-    assert window.experiments._echo_is_away()
+    # The ECHO is away and the record is not: nothing to assume, nothing to say.
+    (tmp_path / "source-plates").mkdir()
+    assert not window.experiments._source_record_is_away()
+    (tmp_path / "source-plates").rmdir()
+    assert window.experiments._source_record_is_away()
     # Nothing is said in a box any more: there is no question to answer.
     assert not said
     # The service is given somewhere of our own to keep the entries.
@@ -2883,6 +2891,7 @@ def test_solvent_test_runs_from_conditions_to_saved_worksheets_and_reopens(
         instruments=standard_instruments(
             tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
         ),
+        source_plate_record_directory=tmp_path / "source-plates",
         create_missing_instrument_roots=True,
     )
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
@@ -2983,10 +2992,12 @@ def test_solvent_test_runs_from_conditions_to_saved_worksheets_and_reopens(
     (export,) = store.audit.list_worksheet_exports(editor.last_revision.id)
     assert export.status == "succeeded", export.error_message
     assert Path(export.path_for("echo650")).is_file()
-    # The source wells are now on the shared plate record, for everyone planning next.
-    from xtalflow.infrastructure.source_plate_record import SourcePlateRecord, record_directory
+    # The source wells are now on the shared plate record, for everyone planning
+    # next - in its own folder on this machine, not under the ECHO share.
+    from xtalflow.infrastructure.source_plate_record import SourcePlateRecord
 
-    (used,) = SourcePlateRecord(record_directory(tmp_path / "echo650")).entries("LDV-1")
+    assert not (tmp_path / "echo650" / "source-plates").exists()
+    (used,) = SourcePlateRecord(tmp_path / "source-plates").entries("LDV-1")
     assert (used.kind, used.wells, used.experiment_id) == (
         "used", ("A1",), editor.last_revision.experiment_id
     )
@@ -3595,6 +3606,7 @@ def test_a_solvent_test_says_to_take_a_fresh_plate_while_the_echo_is_away(
         instruments=standard_instruments(
             tmp_path / "missing-echo", tmp_path / "shifter1", tmp_path / "shifter2"
         ),
+        source_plate_record_directory=tmp_path / "unmade" / "source-plates",
         create_missing_instrument_roots=False,
     )
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
@@ -3650,6 +3662,7 @@ def test_opening_a_solvent_test_puts_held_source_wells_back_on_the_record(
         instruments=standard_instruments(
             tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
         ),
+        source_plate_record_directory=tmp_path / "source-plates",
         create_missing_instrument_roots=True,
     )
     held = SourcePlateRecord(record_directory(tmp_path / "pending"), create_root=True)
@@ -3662,11 +3675,49 @@ def test_opening_a_solvent_test_puts_held_source_wells_back_on_the_record(
 
     window.workspace_sidebar.start_buttons["solvent_test"].click()
 
-    shared = SourcePlateRecord(record_directory(tmp_path / "echo650"))
+    shared = SourcePlateRecord(tmp_path / "source-plates")
     (recorded,) = shared.entries("SOLVENT-09")
     assert (recorded.wells, recorded.experiment_id) == (("A1",), "SolventTest-07")
     assert "SOLVENT-09" in window.status_message_label.toolTip()
     # Held no longer: the shared record is the only copy now.
     assert held.entries("SOLVENT-09") == ()
+    window.close()
+    app.processEvents()
+
+
+def test_the_record_moves_off_the_echo_share_a_plate_at_a_time(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The move happens whenever the old share is up, and leaves it whole."""
+    from xtalflow.domain.echo_source import PlateRecordEntry
+    from xtalflow.infrastructure.source_plate_record import SourcePlateRecord, record_directory
+
+    app = QApplication.instance() or QApplication([])
+    (tmp_path / "echo650").mkdir()
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        pending_worksheet_directory=tmp_path / "pending",
+        instruments=standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
+        ),
+        source_plate_record_directory=tmp_path / "source-plates",
+        create_missing_instrument_roots=True,
+    )
+    old = SourcePlateRecord(record_directory(tmp_path / "echo650"), create_root=True)
+    old.append("SOLVENT-01", [PlateRecordEntry(
+        "used", ("A1",), "park", datetime.now(timezone.utc), "Before-01", "DMSO",
+    )])
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store, settings=settings)
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+
+    window.workspace_sidebar.start_buttons["solvent_test"].click()
+
+    (moved,) = SourcePlateRecord(tmp_path / "source-plates").entries("SOLVENT-01")
+    assert (moved.wells, moved.experiment_id) == (("A1",), "Before-01")
+    # Copied, not taken: the old place is still readable by whoever has not
+    # been moved over yet.
+    assert [entry.wells for entry in old.entries("SOLVENT-01")] == [("A1",)]
     window.close()
     app.processEvents()

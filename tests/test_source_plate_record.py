@@ -204,3 +204,27 @@ def test_a_well_two_experiments_both_took_is_reported_rather_than_hidden(tmp_pat
     ]
     # B5 is nobody else's, so it is not reported.
     assert "B5" not in merged.clashes[0]
+
+
+def test_a_record_being_moved_is_copied_so_the_old_place_stays_whole(tmp_path) -> None:
+    """A client that has not been moved over yet keeps writing to the old place."""
+    from xtalflow.infrastructure.source_plate_record import (
+        SourcePlateRecord,
+        merge_held,
+        record_directory,
+    )
+
+    old = SourcePlateRecord(record_directory(tmp_path / "echo650"), create_root=True)
+    new = SourcePlateRecord(tmp_path / "source-plates", create_root=True)
+    old.append("SOLVENT-01", [_used(["A1"], experiment="Before-01")])
+
+    assert merge_held(old, new, consume=False).plates == ("SOLVENT-01",)
+
+    assert [entry.wells for entry in new.entries("SOLVENT-01")] == [("A1",)]
+    assert [entry.wells for entry in old.entries("SOLVENT-01")] == [("A1",)]
+    # Asked again, nothing has moved, so nothing is reported.
+    assert merge_held(old, new, consume=False).plates == ()
+    # And a straggler still writing to the old place is picked up next time.
+    old.append("SOLVENT-01", [_used(["B1"], experiment="Straggler-02")])
+    assert merge_held(old, new, consume=False).plates == ("SOLVENT-01",)
+    assert [entry.wells for entry in new.entries("SOLVENT-01")] == [("A1",), ("B1",)]

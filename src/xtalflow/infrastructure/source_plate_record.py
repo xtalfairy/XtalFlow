@@ -94,6 +94,14 @@ class SourcePlateRecord:
                 f"the shared source plate record in {self.directory.parent} cannot be reached"
             )
 
+    def reachable(self) -> bool:
+        """Whether the record can be read at all, asked before relying on it."""
+        try:
+            self._require_root()
+        except SourcePlateRecordUnavailable:
+            return False
+        return True
+
     def entries(self, plate: str) -> tuple[PlateRecordEntry, ...]:
         self._require_root()
         return self._read(self._path(plate), plate)[1]
@@ -233,12 +241,20 @@ class MergeResult:
         return bool(self.plates or self.clashes)
 
 
-def merge_held(held: SourcePlateRecord, shared: SourcePlateRecord) -> MergeResult:
-    """Put entries written while the shared record was away onto it.
+def merge_held(
+    held: SourcePlateRecord, shared: SourcePlateRecord, consume: bool = True
+) -> MergeResult:
+    """Put entries written somewhere else onto the shared record.
+
+    ``consume`` removes each source file once its lines are on the shared
+    record, which is right for entries held while the record was away: they
+    were only ever waiting. A record being moved from one place to another is
+    copied instead, so the old place stays whole and a client that has not
+    been told about the move yet keeps being picked up.
+
 
     Entries already there are skipped, so this can be run again after being
-    interrupted: a held file is only removed once its entries are on the
-    shared record, and a removal that fails costs a repeat, not a duplicate.
+    interrupted, and so either way it can be run again at all.
 
     A well that someone else took meanwhile is reported, not hidden and not
     refused.  ``commit`` can turn a clash away because nothing has happened
@@ -261,7 +277,8 @@ def merge_held(held: SourcePlateRecord, shared: SourcePlateRecord) -> MergeResul
     for path in paths:
         plate, entries = held._read(path, path.stem)
         if not entries:
-            path.unlink(missing_ok=True)
+            if consume:
+                path.unlink(missing_ok=True)
             continue
         with shared._locked(plate):
             recorded = shared.entries(plate)
@@ -281,10 +298,13 @@ def merge_held(held: SourcePlateRecord, shared: SourcePlateRecord) -> MergeResul
                     history[well].describe(well, plate)
                     for well in entry.wells if well in history
                 )
-            shared._append(plate, new)
+            if new:
+                shared._append(plate, new)
         # Only now: until the lines are there, the held file is the only copy.
-        path.unlink(missing_ok=True)
-        merged.append(plate)
+        if consume:
+            path.unlink(missing_ok=True)
+        if new:
+            merged.append(plate)
     return MergeResult(tuple(merged), tuple(clashes))
 
 

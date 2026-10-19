@@ -153,10 +153,15 @@ OPERATING_SERVER_SETTINGS = ApplicationSettings(
         Path("/smbmount/shifter2"),
     ),
     create_missing_instrument_roots=False,
-    # Made once by an administrator, group-writable and setgid so that every
-    # researcher's lines land in a folder they can all append to. Until it
-    # exists the record keeps to its old place under the ECHO folder.
-    source_plate_record_directory=Path("/var/lib/xtalflow/source-plates"),
+    # Kept under the ECHO folder, and None is what asks for that. A folder on
+    # this machine would survive the share dropping, but every researcher has
+    # an account of their own and a group of their own, so one of them would
+    # have to be told who may append - a group made and joined, an ACL, or the
+    # whole machine. The share answers that for free: everyone reaches it as
+    # the mount's own identity. What it costs is paid at the other end, where
+    # a record that cannot be reached now holds its entries and merges them
+    # back, and names a fresh plate so nothing is booked blind. Set
+    # --source-plate-dir to move it the day that trade stops being worth it.
     require_network_instrument_mounts=True,
     require_network_image_root=True,
     mxlive_base_url="https://mxlive.postech.ac.kr",

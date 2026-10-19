@@ -3779,3 +3779,40 @@ def test_a_dropped_echo_share_is_never_asked_about_from_the_window_thread(
     ]
     window.close()
     app.processEvents()
+
+
+def test_a_record_under_a_dropped_share_is_called_away_without_asking_the_share(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The Worksheets step asks this on every refresh; it must never be a stat."""
+    from xtalflow.infrastructure.mounts import ShareState
+
+    app = QApplication.instance() or QApplication([])
+    (tmp_path / "echo650").mkdir()
+    settings = replace(
+        DEFAULT_SETTINGS,
+        instruments=standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
+        ),
+        source_plate_record_directory=None,
+        create_missing_instrument_roots=False,
+        require_network_instrument_mounts=True,
+    )
+    window, _store, _editor = _fragment_plan_window(tmp_path, settings)
+    asked = []
+    monkeypatch.setattr(
+        Path, "is_dir",
+        lambda self: asked.append(self) or Path.exists(self),
+    )
+
+    # The folder is there, but no reading says the share is mounted.
+    assert window.experiments._source_record_is_away()
+    assert not any(str(path).startswith(str(tmp_path / "echo650")) for path in asked)
+
+    window._share_states = (
+        ShareState("echo650", "ECHO 650", tmp_path / "echo650", True, "mounted"),
+    )
+    assert not window.experiments._source_record_is_away()
+    assert not any(str(path).startswith(str(tmp_path / "echo650")) for path in asked)
+    window.close()
+    app.processEvents()

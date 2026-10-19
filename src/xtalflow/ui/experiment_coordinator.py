@@ -2162,13 +2162,32 @@ class ExperimentCoordinator:
     def _source_record_is_away(self) -> bool:
         """Whether the record of which source wells are taken can be reached at all.
 
-        Where it lives decides this, not which instrument is down. With the
-        record on this machine the ECHO can be away all week and source wells
-        are still booked; only a site that has not moved it yet loses both
-        together.
+        Where it lives decides this, not which instrument is down. A site that
+        keeps it under the ECHO folder loses both together; one that keeps it
+        on this machine can have the ECHO away all week and still book wells.
         """
         record = self._source_plate_record()
-        return record is None or not record.reachable()
+        return record is None or not self._record_is_reachable(record)
+
+    def _record_is_reachable(self, record: SourcePlateRecord) -> bool:
+        """Can the record be read, asked in whatever way does not block.
+
+        Under the ECHO folder on a site whose instrument folders are network
+        shares, the question goes to the reading the panel's lamps already
+        make on a worker thread: ``is_dir`` on a dropped SMB mount answers
+        only after the best part of a minute, and this is asked on every
+        refresh of the Worksheets step. Anywhere else it is a local folder
+        and the question is free.
+        """
+        if self._record_is_on_the_echo_share(record):
+            return self.window.share_is_mounted(ECHO_650)
+        return record.reachable()
+
+    def _record_is_on_the_echo_share(self, record: SourcePlateRecord) -> bool:
+        if not self.window.settings.require_network_instrument_mounts:
+            return False
+        echo = self._echo_source_plate_record()
+        return echo is not None and echo.directory == record.directory
 
     def _instrument_names(self, instruments: tuple[str, ...]) -> str:
         """The instruments as the user knows them: ECHO 650 and SHIFTER 1."""
@@ -2209,7 +2228,7 @@ class ExperimentCoordinator:
         nothing to do, which is the ordinary case.
         """
         shared = self._source_plate_record()
-        if shared is None or not shared.reachable():
+        if shared is None or not self._record_is_reachable(shared):
             return
         # This runs on the window's thread, so it must not sit out the usual
         # ten seconds of lock polling. The merge is opportunistic: a record

@@ -1344,13 +1344,14 @@ def test_fragment_worksheets_are_saved_and_audited(tmp_path: Path, monkeypatch) 
     app.processEvents()
 
 
-def test_a_condition_test_waits_for_the_echo_rather_than_booking_blind(
+def test_a_condition_test_takes_a_fresh_plate_when_the_echo_is_away(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """The record of which source wells are taken lives with the ECHO files."""
-    from xtalflow.domain.condition_test import solvent_test_template
-    from xtalflow.ui.condition_test_editor import ConditionTestEditor
+    """Without the record nobody can say which wells are free, so start where all are.
 
+    This used to refuse the save outright, which only moved the problem: the
+    plan is already finalized and the plate is already on the bench.
+    """
     app = QApplication.instance() or QApplication([])
     settings = replace(
         DEFAULT_SETTINGS,
@@ -1367,16 +1368,16 @@ def test_a_condition_test_waits_for_the_echo_rather_than_booking_blind(
         QMessageBox, "warning", lambda *args, **kwargs: said.append(args[2])
     )
 
-    blocked = window.experiments._condition_test_needs_the_echo(
-        ConditionTestEditor(solvent_test_template())
-    )
+    from xtalflow.infrastructure.source_plate_record import record_directory
+    from xtalflow.infrastructure.worksheet_exporter import pending_root
 
-    assert blocked
-    assert "ECHO 650 cannot be reached" in said[0]
-    assert "book the same wells" in said[0]
-    assert "stay free for everyone" in said[0]
-    # Every other kind of experiment saves around the instrument that is away.
-    assert not window.experiments._condition_test_needs_the_echo(_editor)
+    assert window.experiments._echo_is_away()
+    # Nothing is said in a box any more: there is no question to answer.
+    assert not said
+    # The service is given somewhere of our own to keep the entries.
+    service = window.experiments._worksheet_export_service()
+    assert service.held_record is not None
+    assert service.held_record.directory == record_directory(pending_root(settings))
     window.close()
     app.processEvents()
 
@@ -3574,5 +3575,60 @@ def test_the_dock_lists_wells_and_deletes_all_of_a_wells_positions(
     window._refresh_target_summary()
     assert table.rowCount() == 1
     assert table.item(0, 3).text() == "1"
+    window.close()
+    app.processEvents()
+
+
+def test_a_solvent_test_says_to_take_a_fresh_plate_while_the_echo_is_away(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The missing record turns into one bench instruction, above the wells it doubts."""
+    from xtalflow.ui.condition_test_editor import ConditionTestEditor
+
+    app = QApplication.instance() or QApplication([])
+    (tmp_path / "shifter1").mkdir()
+    (tmp_path / "shifter2").mkdir()
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        pending_worksheet_directory=tmp_path / "pending",
+        instruments=standard_instruments(
+            tmp_path / "missing-echo", tmp_path / "shifter1", tmp_path / "shifter2"
+        ),
+        create_missing_instrument_roots=False,
+    )
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store, settings=settings)
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+
+    window.workspace_sidebar.start_buttons["solvent_test"].click()
+    editor = window.experiments.current_editor
+    assert isinstance(editor, ConditionTestEditor)
+    editor.protein_input.setText("BRD4")
+    editor.drop_volume_input.setValue(100)
+    editor.update_additive(
+        source_plate="SOLVENT-09", source_well="a1", source_plate_type="384PP_DMSO2"
+    )
+    editor.replicates_input.setValue(1)
+    required = editor.design.required_crystals
+    now = datetime.now(timezone.utc)
+    crystals = tuple(
+        SelectedCrystal(
+            f"image-{index}", "2070", f"{'ABCDEFGH'[index // 12]}{index % 12 + 1:02d}a",
+            (CrystalTarget(f"target-{index}", Decimal(0), Decimal(0), now + timedelta(seconds=index)),),
+            SWISSCI_MIDI_3_LENS.id,
+        )
+        for index in range(required)
+    )
+    window.experiments.go_to_step(WorkflowStep.REVIEW)
+    window.experiments._sync_editor_selection(editor, crystals)
+    window.experiments.go_to_step(WorkflowStep.WORKSHEETS)
+
+    preparation = editor.worksheets_step.schedule_label.text().split("\n\n")[0].splitlines()
+    assert preparation[1].startswith(f"{theme.SYMBOL_ATTENTION} Use a fresh source plate")
+    assert "taken as free" in preparation[1]
+    assert str(tmp_path / "pending" / "source-plates") in preparation[1]
+    # Said above the wells it doubts, not instead of them.
+    assert preparation[2] == f"Crystal drops · {required}, one per well"
     window.close()
     app.processEvents()

@@ -776,3 +776,29 @@ def test_too_few_wells_for_the_conditions_themselves_are_sent_back_to_conditions
     editor.include_button.click()
     assert not editor.go_to_conditions_button.isVisibleTo(review)
     assert editor.fit_button.isVisibleTo(review)
+
+
+def test_a_record_that_is_away_asks_for_a_fresh_plate_rather_than_a_second_check(tmp_path) -> None:
+    """With the ECHO folder gone there is no second check, so say what to do instead."""
+    from xtalflow.infrastructure.source_plate_record import SourcePlateRecord, record_directory
+    from xtalflow.ui.condition_test_editor import AWAY_NOTE, RECHECK_NOTE
+
+    # No echo650 folder: the record's own folder may be made, its parent may not.
+    record = SourcePlateRecord(record_directory(tmp_path / "echo650"))
+    editor = _editor(percents=("0", "10"), times=(0,), replicates=2)
+    editor.set_source_record(record, "lee")
+
+    combo = editor.source_plate_input
+    combo.opening.emit()
+    note = editor.record_note_label.text()
+    assert "cannot be reached" in note
+    assert note.endswith(AWAY_NOTE)
+    assert RECHECK_NOTE not in note
+    # And the list points at the one choice left.
+    assert "use New plate…" in [combo.itemText(index) for index in range(combo.count())][1]
+
+    # Naming a plate goes on as usual; its wells start at A1 because nothing
+    # can say otherwise.
+    editor.enter_new_plate("SOLVENT-09")
+    additive = editor.design.additives[0]
+    assert (additive.source_plate, additive.source_wells) == ("SOLVENT-09", ("A1",))

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Union
 
-from xtalflow.application import ReviewPersistenceError
+from xtalflow.application.worksheet_export import WorksheetDestinationUnavailable
 from xtalflow.domain.condition_test import ConditionTestPlan
 from xtalflow.domain.fragment_screening import FragmentScreenPlan
 from xtalflow.domain.instruments import InstrumentOutput, WorksheetKind
@@ -26,10 +26,6 @@ from xtalflow.settings import ApplicationSettings, InstrumentDestination
 
 
 WorksheetPlan = Union[FragmentScreenPlan, RawCrystalPlan, ConditionTestPlan]
-
-
-class WorksheetDestinationUnavailable(ReviewPersistenceError):
-    pass
 
 
 class InstrumentLocationUnavailable(WorksheetDestinationUnavailable):

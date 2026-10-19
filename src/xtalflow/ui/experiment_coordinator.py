@@ -1349,7 +1349,8 @@ class ExperimentCoordinator:
         if delivered is not None:
             for output in delivered.outputs:
                 saved.setdefault(output.instrument, []).append(Path(output.path))
-        away = self._unreachable_instruments() if not finalized or not saved else {}
+        unreachable = self._unreachable_instruments()
+        away = unreachable if not finalized or not saved else {}
         # Instruments whose worksheet is written but still waiting for them,
         # because their folder could not be reached when it was saved.
         waiting = (
@@ -1409,6 +1410,17 @@ class ExperimentCoordinator:
                     for additive in plan.design.additives if additive.id in allocations
                 ),
             )
+            if self._echo_is_away(unreachable):
+                # The bench instruction that the missing record turns into:
+                # nobody can say which wells are free, so start from a plate
+                # where every well is.
+                preparation = (
+                    f"{theme.SYMBOL_ATTENTION} Use a fresh source plate · the shared "
+                    "record is away with the ECHO folder, so the wells below are "
+                    "taken as free; what this takes waits in "
+                    f"{record_directory(pending_root(self.window.settings))}",
+                    *preparation,
+                )
         editor.worksheets_step.show_schedule(
             tuple(f"T+{format_minutes(minute)} · {action}" for minute, action in schedule),
             preparation,
@@ -2087,8 +2099,6 @@ class ExperimentCoordinator:
         except ValueError as error:
             QMessageBox.warning(self.window, "Cannot save worksheets", str(error))
             return
-        if alternate_root is None and self._condition_test_needs_the_echo(editor):
-            return
         service = self._worksheet_export_service()
         destination = (
             str(alternate_root) if alternate_root is not None
@@ -2142,32 +2152,14 @@ class ExperimentCoordinator:
         except (OSError, ValueError):
             return {}
 
-    def _condition_test_needs_the_echo(self, editor: PlanEditorBase) -> bool:
-        """A condition test cannot book source wells while the ECHO is away.
-
-        The shared record of which wells are taken lives with the ECHO
-        worksheets, so with that folder gone it can be neither read nor
-        written and two experiments could book the same wells.
-        """
-        if not isinstance(editor, ConditionTestEditor):
-            return False
-        away = tuple(
-            instrument for instrument in self._unreachable_instruments()
-            if (destination := self.window.settings.instrument(instrument)) is not None
+    def _echo_is_away(self, unreachable: dict[str, str] | None = None) -> bool:
+        """Whether the ECHO folder, and with it the shared source plate record, is gone."""
+        away = self._unreachable_instruments() if unreachable is None else unreachable
+        return any(
+            (destination := self.window.settings.instrument(instrument)) is not None
             and destination.worksheet is WorksheetKind.ECHO
+            for instrument in away
         )
-        if not away:
-            return False
-        QMessageBox.warning(
-            self.window,
-            "Cannot save while the ECHO is away",
-            f"{self._instrument_names(away)} cannot be reached.\n\nThis experiment "
-            "takes wells from shared source plates, and the record of which wells "
-            "are taken lives with the ECHO worksheets. While that folder is away "
-            "another experiment could book the same wells without either of you "
-            "seeing it.\n\nThe wells stay free for everyone until this is saved.",
-        )
-        return True
 
     def _instrument_names(self, instruments: tuple[str, ...]) -> str:
         """The instruments as the user knows them: ECHO 650 and SHIFTER 1."""
@@ -2195,6 +2187,9 @@ class ExperimentCoordinator:
             self.window.review_store.audit if self.window.review_store is not None else None,
             getpass.getuser(),
             self._source_plate_record(),
+            SourcePlateRecord(
+                record_directory(pending_root(self.window.settings)), create_root=True
+            ),
         )
 
     def _source_plate_record(self) -> SourcePlateRecord | None:

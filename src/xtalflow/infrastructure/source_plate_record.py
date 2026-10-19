@@ -28,18 +28,14 @@ from xtalflow.domain.echo_source import (
     summarize_plate,
     well_history,
 )
-from xtalflow.infrastructure.worksheet_exporter import WorksheetDestinationUnavailable
+from xtalflow.application.worksheet_export import (  # noqa: F401  (re-exported)
+    SourcePlateRecordUnavailable,
+    SourceRecordBusy,
+    SourceWellsTaken,
+)
 
 T = TypeVar("T")
 RECORD_DIRECTORY = "source-plates"
-
-
-class SourcePlateRecordUnavailable(WorksheetDestinationUnavailable):
-    """The shared record cannot be read or written, e.g. the ECHO share is not mounted."""
-
-
-class SourceWellsTaken(WorksheetDestinationUnavailable):
-    """Wells planned for this experiment were used or skipped by someone else meanwhile."""
 
 
 def _file_key(plate: str) -> str:
@@ -168,7 +164,7 @@ class SourcePlateRecord:
                 except FileNotFoundError:
                     continue
                 if time.monotonic() > deadline:
-                    raise SourcePlateRecordUnavailable(
+                    raise SourceRecordBusy(
                         f"the record of {plate} is in use by someone else; try again"
                     ) from None
                 time.sleep(0.1)
@@ -225,5 +221,6 @@ class SourcePlateRecord:
         return result
 
 
-def record_directory(echo_root: Path) -> Path:
-    return echo_root / RECORD_DIRECTORY
+def record_directory(root: Path) -> Path:
+    """The record's folder under a root: the ECHO folder, or the folder we hold in."""
+    return root / RECORD_DIRECTORY

@@ -90,6 +90,9 @@ ADD_EDITOR_WIDTH = CELL_WIDTH
 DURATION_HINT = "Minutes or hours: 30, 45 min, 1 h, 1.5 h, 1 h 30 min."
 MAX_WELLS_PER_CONDITION = 24
 RECHECK_NOTE = "Wells are checked again when worksheets are saved."
+# Said in place of RECHECK_NOTE when the record itself is gone: there will be
+# no second check, so the only safe plate is one nobody has drawn from yet.
+AWAY_NOTE = "Use a fresh source plate: its wells are taken as free."
 NEW_PLATE = "\u0000new plate"
 NAMING_NOTE = "Type the new plate's name, then press Enter; its wells start at A1."
 
@@ -938,11 +941,11 @@ class ConditionTestEditor(PlanEditorBase):
         if fresh or plate not in self._plate_records:
             try:
                 self._plate_records[plate] = self._source_record.entries(plate)
-                if self.record_note_label.text().endswith(RECHECK_NOTE):
+                if self.record_note_label.text().endswith((RECHECK_NOTE, AWAY_NOTE)):
                     _show_message(self.record_note_label, "")
             except SourcePlateRecordUnavailable as error:
                 self._plate_records[plate] = None
-                _show_message(self.record_note_label, f"{_sentence(error)} {RECHECK_NOTE}")
+                _show_message(self.record_note_label, f"{_sentence(error)} {AWAY_NOTE}")
         return self._plate_records[plate]
 
     def _records_for_checks(self) -> dict[str, tuple[PlateRecordEntry, ...]]:
@@ -966,7 +969,7 @@ class ConditionTestEditor(PlanEditorBase):
         try:
             return self._source_record.plates()
         except SourcePlateRecordUnavailable as error:
-            _show_message(self.record_note_label, f"{_sentence(error)} {RECHECK_NOTE}")
+            _show_message(self.record_note_label, f"{_sentence(error)} {AWAY_NOTE}")
             return None
 
     def _shared_plate_hint(self) -> str:
@@ -1003,7 +1006,7 @@ class ConditionTestEditor(PlanEditorBase):
             if current and summary.name.casefold() == current.casefold():
                 selected = combo.count() - 1
         if self._plate_list is None and self._source_record is not None:
-            combo.addItem("Shared plates cannot be read now", None)
+            combo.addItem("Shared plates cannot be read now · use New plate…", None)
             combo.model().item(combo.count() - 1).setEnabled(False)
         if current and not selected:
             shared = self._source_record is not None

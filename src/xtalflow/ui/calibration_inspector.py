@@ -22,7 +22,8 @@ from xtalflow.ui.forms import form_layout
 
 
 def calibration_status(
-    calibration: ImageCalibration | None, unavailable_reason: str = ""
+    calibration: ImageCalibration | None, unavailable_reason: str = "",
+    positions_outside: int = 0,
 ) -> tuple[str, str]:
     """Short status text and its kind ("ok", "attention", "error")."""
     if calibration is None:
@@ -33,9 +34,18 @@ def calibration_status(
         method = "manual"
     else:
         method = f"auto, outline fit {calibration.confidence:.0%}"
-    if calibration.confirmed:
-        return f"{theme.SYMBOL_OK} Well boundary confirmed · {method}", "ok"
-    return f"{theme.SYMBOL_ATTENTION} Confirm well boundary · {method}", "attention"
+    if not calibration.confirmed:
+        return f"{theme.SYMBOL_ATTENTION} Confirm well boundary · {method}", "attention"
+    if positions_outside:
+        # Green here while the well sat in the list read as a contradiction,
+        # so the boundary says it: the mark matches the words.
+        outside = "position" if positions_outside == 1 else "positions"
+        return (
+            f"{theme.SYMBOL_ATTENTION} Well boundary confirmed · {method} · "
+            f"{positions_outside} {outside} outside it",
+            "attention",
+        )
+    return f"{theme.SYMBOL_OK} Well boundary confirmed · {method}", "ok"
 
 
 class CalibrationInspector(QFrame):

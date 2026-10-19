@@ -43,6 +43,19 @@ class TargetValidationIssue(str, Enum):
     OUTSIDE_WELL = "outside_well"
 
 
+# Without a confirmed boundary there are no millimetres to send an instrument,
+# so these two stop a plan being built. A position beyond the boundary does
+# not: the detected outline is often smaller than the well, and only the
+# person looking at the image can say whether the position is where they
+# meant it. The SHIFTER worksheet carries no coordinates at all, and the ECHO
+# dispenses without touching the plate, so the cost of being wrong is a
+# misplaced drop - the user's call to make, with the warning in front of them.
+BLOCKING_ISSUES = (
+    TargetValidationIssue.CALIBRATION_MISSING,
+    TargetValidationIssue.CALIBRATION_UNCONFIRMED,
+)
+
+
 @dataclass(frozen=True)
 class ProjectTargetSummary:
     image_set_id: str
@@ -59,19 +72,18 @@ class ProjectTargetSummary:
         issues: list[TargetValidationIssue] = []
         if not calibration.confirmed:
             issues.append(TargetValidationIssue.CALIBRATION_UNCONFIRMED)
-        normalized_distance = (
-            ((self.target.x_px - calibration.center_x_px) / calibration.radius_x_px)
-            ** 2
-            + ((self.target.y_px - calibration.center_y_px) / calibration.radius_y_px)
-            ** 2
-        )
-        if normalized_distance > 1:
+        if not calibration.contains(self.target.x_px, self.target.y_px):
             issues.append(TargetValidationIssue.OUTSIDE_WELL)
         return tuple(issues)
 
     @property
     def is_ready(self) -> bool:
         return not self.validation_issues
+
+    @property
+    def blocks_planning(self) -> bool:
+        """Whether this position stops the experiment being planned at all."""
+        return any(issue in BLOCKING_ISSUES for issue in self.validation_issues)
 
 
 @dataclass(frozen=True)
@@ -97,17 +109,21 @@ class ProjectWellSummary:
         return not self.issues
 
     @property
+    def blocks_planning(self) -> bool:
+        return any(issue in BLOCKING_ISSUES for issue in self.issues)
+
+    @property
     def selected_at(self):
         """When the first position in this well was placed."""
         return min(target.selected_at for target in self.targets)
 
     @property
     def worst_issue(self) -> "TargetValidationIssue | None":
-        """The one to show, worst first: no boundary, then outside, then unconfirmed."""
+        """The one to show: what blocks the plan first, then what only warns."""
         for issue in (
             TargetValidationIssue.CALIBRATION_MISSING,
-            TargetValidationIssue.OUTSIDE_WELL,
             TargetValidationIssue.CALIBRATION_UNCONFIRMED,
+            TargetValidationIssue.OUTSIDE_WELL,
         ):
             if issue in self.issues:
                 return issue
@@ -444,9 +460,9 @@ class ProjectController:
         image_sets = {item.id: item for item in project.active_image_sets}
         grouped: dict[str, list[ProjectTargetSummary]] = {}
         for summary in self.project_target_summaries():
-            if not summary.is_ready:
+            if summary.blocks_planning:
                 raise ValueError(
-                    "all targets need confirmed, valid well calibration before planning"
+                    "all targets need a confirmed well boundary before planning"
                 )
             grouped.setdefault(summary.image.image_key, []).append(summary)
 

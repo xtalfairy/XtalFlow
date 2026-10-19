@@ -231,8 +231,15 @@ def steps_for(plan_type: PlanType) -> tuple[WorkflowStep, ...]:
 
 class StepState(str, Enum):
     COMPLETE = "complete"
+    # Finished, and carrying something the user should see: it does not hold
+    # the experiment up, because only the user can judge it.
+    WARNING = "warning"
     ATTENTION = "attention"
     INCOMPLETE = "incomplete"
+
+
+# The states that let the steps after them run.
+FINISHED_STATES = (StepState.COMPLETE, StepState.WARNING)
 
 
 @dataclass(frozen=True)
@@ -273,6 +280,13 @@ class ExperimentFacts:
     # Why confirmed wells still cannot be made into a plan - an unsupported
     # plate format, say. Not the wells' fault, and not fixed by checking them.
     wells_unusable: str | None = None
+    # What the wells needing attention actually need: a count alone cannot be
+    # acted on, and the three reasons are not fixed in the same way.
+    wells_attention_reason: str = ""
+    # Positions beyond their well boundary. A warning, never a block: the
+    # detected outline is often smaller than the well, so only the person
+    # looking at the image can say whether the position is where they meant.
+    outside_positions_warning: str = ""
 
 
 @dataclass(frozen=True)
@@ -287,7 +301,7 @@ class ExperimentStatus:
     @property
     def first_unfinished(self) -> WorkflowStep:
         return next(
-            (status.step for status in self.steps if status.state is not StepState.COMPLETE),
+            (status.step for status in self.steps if status.state not in FINISHED_STATES),
             self.steps[-1].step,
         )
 
@@ -337,13 +351,19 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
         statuses[WorkflowStep.SELECT_WELLS] = StepStatus(
             WorkflowStep.SELECT_WELLS, StepState.ATTENTION,
             f"{counted(facts.wells_needing_attention, 'well')} "
-            f"{'needs' if facts.wells_needing_attention == 1 else 'need'} attention · {selection}",
+            f"{'needs' if facts.wells_needing_attention == 1 else 'need'} attention · "
+            f"{facts.wells_attention_reason or selection}",
         )
     elif facts.wells_unusable:
         # The wells are confirmed and in bounds; something else about them
         # stops a plan being made, so say that rather than blame the wells.
         statuses[WorkflowStep.SELECT_WELLS] = StepStatus(
             WorkflowStep.SELECT_WELLS, StepState.ATTENTION, facts.wells_unusable
+        )
+    elif facts.outside_positions_warning:
+        statuses[WorkflowStep.SELECT_WELLS] = StepStatus(
+            WorkflowStep.SELECT_WELLS, StepState.WARNING,
+            f"{selection} · {facts.outside_positions_warning}",
         )
     else:
         statuses[WorkflowStep.SELECT_WELLS] = StepStatus(
@@ -403,8 +423,11 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
         # Plans without a conditions step still report build problems at Review.
         notes.append(facts.conditions_error)
 
+    if facts.outside_positions_warning:
+        notes.append(facts.outside_positions_warning)
+
     earlier_complete = all(
-        statuses[step].state is StepState.COMPLETE
+        statuses[step].state in FINISHED_STATES
         for step in steps
         if step not in (WorkflowStep.REVIEW, WorkflowStep.WORKSHEETS)
     )

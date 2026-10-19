@@ -37,6 +37,7 @@ from xtalflow.infrastructure import (
 )
 from xtalflow.application.experiment_workflow import StepState, WorkflowStep
 from xtalflow.domain.mxlive import MxLiveLabwork, MxLiveReadError
+from xtalflow.ui import theme
 from xtalflow.ui.plan_editors import FragmentScreeningEditor
 from xtalflow.ui.load_plates_dialog import LoadPlatesDialog
 from xtalflow.viewer import ViewerWindow
@@ -3340,6 +3341,67 @@ def test_wells_that_cannot_be_planned_are_not_counted_as_wells_to_check(
     assert "supported plate format" in page.footer_status_label.text()
     assert not page.primary_button.isEnabled()
     assert page.primary_button.toolTip() == page.footer_status_label.text()
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_a_confirmed_boundary_with_a_position_outside_it_says_so(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Green above the image while the well stayed in the list read as a fault."""
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        auto_advance_target_count=10,
+    )
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    page = window.experiment_page
+    window.workspace_sidebar.start_buttons[PlanType.RAW_CRYSTAL.value].click()
+    editor = window.experiments.current_editor
+    editor.protein_input.setText("BRD4")
+    page.primary_button.click()
+    window.load_plate("2070", SWISSCI_MRC_2_WELL)
+    window.auto_confirm_plate_checkbox.setChecked(False)
+    window._auto_detect_calibration()
+    window._accept_current_calibration()
+    calibration = window.current_calibration
+    assert calibration.confirmed
+
+    window._handle_image_click(
+        calibration.center_x_px, calibration.center_y_px, Qt.LeftButton
+    )
+    # A corner of the picture is inside the image and outside the well.
+    assert not calibration.contains(5, 5)
+    window._handle_image_click(5, 5, Qt.LeftButton)
+    window.experiments._sync_current_selection()
+
+    # A warning, not a bar: nothing to check, and the way on stays open.
+    assert editor.wells_needing_attention == 0
+    assert "1 position outside the boundary" in editor.outside_positions_warning
+    assert "A01a" in editor.outside_positions_warning
+    assert "mm" in editor.outside_positions_warning
+    assert page.primary_button.text() == "Use 1 well"
+    assert page.primary_button.isEnabled()
+    # Said where it is seen, with the mark matching the words.
+    assert theme.SYMBOL_ATTENTION in page.footer_status_label.text()
+    assert "1 position outside the boundary" in page.footer_status_label.text()
+    assert "1 position outside it" in window.calibration_label.text()
+    assert theme.SYMBOL_OK not in window.calibration_label.text()
+    # And the plan keeps the position, as it is.
+    crystals = window.project_controller.selected_crystals_for_plan()
+    assert len(crystals) == 1
+    assert len(crystals[0].targets) == 2
+
+    page.primary_button.click()
+    assert window.experiments._current_step is WorkflowStep.REVIEW
+    # Worth seeing again where finalizing is decided.
+    assert any(
+        "outside the boundary" in note
+        for note in editor.experiment_status.notes
+    )
     window.close()
     app.processEvents()
 

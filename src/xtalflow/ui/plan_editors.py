@@ -142,6 +142,10 @@ class PlanEditorBase(QWidget):
         self.images_unavailable: str | None = None
         # Set when confirmed wells still cannot be made into a plan.
         self.wells_unusable: str | None = None
+        # What those wells need, in words: "1 boundary to confirm".
+        self.wells_attention_reason = ""
+        # Positions beyond their boundary: shown, never a bar.
+        self.outside_positions_warning = ""
         # What the editor held when opened, to tell an edit from a look.
         self.initial_details: str | None = None
         self.autosave_timer: QTimer | None = None
@@ -362,6 +366,8 @@ class PlanEditorBase(QWidget):
             worksheets_saved_elsewhere=worksheets_saved_elsewhere,
             images_unavailable=self.images_unavailable,
             wells_unusable=self.wells_unusable,
+            wells_attention_reason=self.wells_attention_reason,
+            outside_positions_warning=self.outside_positions_warning,
         )
 
     def has_plan_specific_content(self) -> bool:

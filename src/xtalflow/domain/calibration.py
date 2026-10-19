@@ -65,6 +65,13 @@ class ImageCalibration:
         if not 0 <= self.confidence <= 1:
             raise ValueError("confidence must be between zero and one")
 
+    def contains(self, x_px: float, y_px: float) -> bool:
+        """Whether a point falls within the well outline, boundary included."""
+        return (
+            ((x_px - self.center_x_px) / self.radius_x_px) ** 2
+            + ((y_px - self.center_y_px) / self.radius_y_px) ** 2
+        ) <= 1
+
     @classmethod
     def automatic(
         cls,

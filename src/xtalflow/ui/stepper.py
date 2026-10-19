@@ -19,6 +19,7 @@ _BUTTON_PADDING = 10
 
 STATE_SYMBOLS = {
     StepState.COMPLETE: theme.SYMBOL_OK,
+    StepState.WARNING: theme.SYMBOL_ATTENTION,
     StepState.ATTENTION: theme.SYMBOL_ATTENTION,
     StepState.INCOMPLETE: "",
 }
@@ -64,6 +65,7 @@ class Stepper(QWidget):
             # Only a real problem is coloured; done and not-yet steps stay quiet.
             color = {
                 StepState.COMPLETE: theme.TEXT_MUTED,
+                StepState.WARNING: theme.ATTENTION,
                 StepState.ATTENTION: theme.ATTENTION,
                 StepState.INCOMPLETE: theme.TEXT_MUTED,
             }[status.state]

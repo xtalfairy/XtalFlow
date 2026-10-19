@@ -16,6 +16,7 @@ import threading
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
+from math import sqrt
 from pathlib import Path
 from uuid import uuid4
 
@@ -23,6 +24,8 @@ from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtWidgets import QFileDialog, QMessageBox, QWidget
 
 from xtalflow.application import ReviewPersistenceError
+from xtalflow.application.project_controller import TargetValidationIssue
+from xtalflow.domain.plate_format import plate_format_by_id
 from xtalflow.domain import (
     CrystalSelection,
     PlanType,
@@ -153,6 +156,86 @@ def _years_of(experiment_ids) -> set[int]:
 
 def _when(moment: datetime) -> str:
     return moment.astimezone().strftime("%Y-%m-%d %H:%M")
+
+
+def _what_the_wells_need(summaries) -> str:
+    """Name what the blocked wells need, not just how many there are.
+
+    A count alone cannot be acted on, and the two reasons are not fixed the
+    same way: a missing boundary has to be drawn, an unconfirmed one
+    confirmed.
+    """
+    missing = {
+        summary.image.image_key for summary in summaries
+        if TargetValidationIssue.CALIBRATION_MISSING in summary.validation_issues
+    }
+    unconfirmed = {
+        summary.image.image_key for summary in summaries
+        if TargetValidationIssue.CALIBRATION_UNCONFIRMED in summary.validation_issues
+    }
+    reasons = []
+    if missing:
+        reasons.append(f"{counted(len(missing), 'well')} without a boundary")
+    if unconfirmed:
+        reasons.append(f"{counted(len(unconfirmed), 'boundary')} to confirm")
+    return " · ".join(reasons)
+
+
+def _outside_warning(summaries, image_sets) -> str:
+    """Name the wells holding a position beyond their boundary, and how far.
+
+    A warning, not a bar: the detected outline is often smaller than the well,
+    so whether the position is where it was meant to be is something only the
+    person looking at the image can say. Naming the well saves hunting for it.
+    """
+    outside = [
+        summary for summary in summaries
+        if TargetValidationIssue.OUTSIDE_WELL in summary.validation_issues
+    ]
+    if not outside:
+        return ""
+    wells = []
+    beyond_mm = 0.0
+    for summary in outside:
+        wells.append(_well_address(summary, image_sets))
+        calibration = summary.calibration
+        if calibration is not None:
+            beyond_mm = max(beyond_mm, _distance_beyond_mm(summary, calibration))
+    named = ", ".join(dict.fromkeys(wells))
+    return (
+        f"{counted(len(outside), 'position')} outside the boundary "
+        f"(up to {beyond_mm:.2f} mm) · {named}"
+    )
+
+
+def _well_address(summary, image_sets) -> str:
+    """The well as the user reads it, or the RockMaker numbers if it cannot be."""
+    image_set = image_sets.get(summary.image_set_id)
+    plate_format = (
+        plate_format_by_id(image_set.plate_format_id, image_set.plate_format_version)
+        if image_set is not None else None
+    )
+    if plate_format is None:
+        return f"{summary.image.well_number}/d{summary.image.drop_number}"
+    return str(
+        plate_format.address_for(
+            summary.image.well_number, summary.image.drop_number
+        )
+    )
+
+
+def _distance_beyond_mm(summary, calibration) -> float:
+    """How far past the boundary the position sits, in millimetres.
+
+    In millimetres the boundary is a circle of half the lens diameter, because
+    each axis is scaled by its own radius, so the normalised distance is the
+    millimetre distance over that half-diameter.
+    """
+    normalized = sqrt(
+        ((summary.target.x_px - calibration.center_x_px) / calibration.radius_x_px) ** 2
+        + ((summary.target.y_px - calibration.center_y_px) / calibration.radius_y_px) ** 2
+    )
+    return max(0.0, (normalized - 1) * calibration.physical_diameter_mm / 2)
 
 
 class ExperimentCoordinator:
@@ -1118,6 +1201,7 @@ class ExperimentCoordinator:
         current = status.status_of(step)
         symbol, kind = {
             StepState.COMPLETE: (theme.SYMBOL_OK, "ok"),
+            StepState.WARNING: (theme.SYMBOL_ATTENTION, "attention"),
             StepState.ATTENTION: (theme.SYMBOL_ATTENTION, "attention"),
             StepState.INCOMPLETE: ("", "muted"),
         }[current.state]
@@ -1160,8 +1244,15 @@ class ExperimentCoordinator:
                 return
             editor.images_unavailable = None
             attention = {
-                summary.image.image_key for summary in summaries if not summary.is_ready
+                summary.image.image_key for summary in summaries
+                if summary.blocks_planning
             }
+            editor.wells_attention_reason = _what_the_wells_need(summaries)
+            project = self.window.project_controller.active_project
+            editor.outside_positions_warning = _outside_warning(
+                summaries,
+                {item.id: item for item in project.image_sets} if project else {},
+            )
             editor.selected_well_count = len(
                 {summary.image.image_key for summary in summaries}
             )
@@ -1185,6 +1276,8 @@ class ExperimentCoordinator:
             editor.selected_position_count = sum(len(item.targets) for item in crystals)
             editor.wells_needing_attention = 0
             editor.wells_unusable = None
+            editor.wells_attention_reason = ""
+            editor.outside_positions_warning = ""
         signature = tuple(
             (
                 crystal.image_key,

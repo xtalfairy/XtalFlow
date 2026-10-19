@@ -1700,6 +1700,8 @@ class ViewerWindow(QMainWindow):
         if self.controller.has_unsaved_changes:
             self._set_save_status("unsaved")
         self.image_set_model.refresh_counts()
+        if self.current_calibration is not None:
+            self._show_calibration_status(self.current_calibration)
         self._refresh_target_summary()
         if should_auto_advance:
             # Say why the view moved. An image that jumps without a reason
@@ -1786,11 +1788,20 @@ class ViewerWindow(QMainWindow):
     def _show_calibration_status(
         self, calibration: ImageCalibration | None, unavailable_reason: str = ""
     ) -> None:
-        text, kind = calibration_status(calibration, unavailable_reason)
+        outside = self._positions_outside(calibration)
+        text, kind = calibration_status(calibration, unavailable_reason, outside)
         if calibration is not None and self._current_well_address:
             text = f"{self._current_well_address} · {text}"
         self.calibration_label.setText(text)
-        self.calibration_label.setToolTip(unavailable_reason or text)
+        self.calibration_label.setToolTip(
+            unavailable_reason
+            or (
+                f"{text}\n\nA position outside the outline is a warning, not a "
+                "problem to fix: the detected outline is often smaller than the "
+                "well. Move it, redraw the boundary, or go on as it is."
+                if outside else text
+            )
+        )
         self.calibration_label.setStyleSheet(theme.status_style(kind))
         self.calibration_accept_inline_button.setVisible(
             calibration is not None and not calibration.confirmed
@@ -1802,6 +1813,15 @@ class ViewerWindow(QMainWindow):
                 self.controller.current_image.drop_number
             ).physical_diameter_mm
         self.calibration_inspector.show_calibration(calibration, lens_diameter)
+
+    def _positions_outside(self, calibration) -> int:
+        """How many of this image's positions fall beyond the well boundary."""
+        if calibration is None or self.controller is None:
+            return 0
+        return sum(
+            1 for target in self.controller.current_targets
+            if not calibration.contains(target.x_px, target.y_px)
+        )
 
     def _open_calibration_inspector(self) -> None:
         self.calibration_inspector.open_below(self.calibration_adjust_button)

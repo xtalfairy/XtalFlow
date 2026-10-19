@@ -143,13 +143,31 @@ class SourcePlateRecord:
     def _append(self, plate: str, entries: Sequence[PlateRecordEntry]) -> None:
         if not entries:
             return
+        path = self._path(plate)
         try:
-            with self._path(plate).open("a", encoding="utf-8") as handle:
+            with path.open("a", encoding="utf-8") as handle:
                 handle.write("".join(_entry_to_line(plate, entry) + "\n" for entry in entries))
                 handle.flush()
                 os.fsync(handle.fileno())
         except OSError as error:
             raise SourcePlateRecordUnavailable(f"could not write the record of {plate}: {error}") from error
+        self._match_directory_mode(path)
+
+    def _match_directory_mode(self, path: Path) -> None:
+        """Leave a line of the record as writable as the folder it is in.
+
+        Who may append is the site's decision, made once when the folder is
+        created - a group everyone who plans belongs to, or a folder open to
+        the machine. A file made under one account's umask would narrow that
+        for everybody else, and the second person to use a plate would find
+        the record unwritable for no reason they could see.
+        """
+        try:
+            wanted = self.directory.stat().st_mode & 0o666
+            if path.stat().st_mode & 0o666 != wanted:
+                os.chmod(path, wanted)
+        except OSError:
+            pass  # Somebody else's file. The lines are written, which is the point.
 
     @contextmanager
     def _locked(self, plate: str):

@@ -3721,3 +3721,59 @@ def test_the_record_moves_off_the_echo_share_a_plate_at_a_time(
     assert [entry.wells for entry in old.entries("SOLVENT-01")] == [("A1",)]
     window.close()
     app.processEvents()
+
+
+def test_a_dropped_echo_share_is_never_asked_about_from_the_window_thread(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """is_dir on a dead SMB mount takes the best part of a minute; the lamps know instead."""
+    from xtalflow.infrastructure import source_plate_record as record_module
+    from xtalflow.infrastructure.mounts import ShareState
+    from xtalflow.infrastructure.source_plate_record import record_directory
+    from xtalflow.infrastructure.worksheet_exporter import pending_root
+
+    app = QApplication.instance() or QApplication([])
+    (tmp_path / "echo650").mkdir()
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        pending_worksheet_directory=tmp_path / "pending",
+        instruments=standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
+        ),
+        source_plate_record_directory=tmp_path / "source-plates",
+        create_missing_instrument_roots=True,
+        require_network_instrument_mounts=True,
+    )
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store, settings=settings)
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    looked = []
+    monkeypatch.setattr(
+        record_module, "merge_held",
+        lambda held, shared, consume=True: looked.append(held.directory)
+        or record_module.MergeResult(),
+    )
+    monkeypatch.setattr(
+        "xtalflow.ui.experiment_coordinator.merge_held", record_module.merge_held
+    )
+
+    # No reading has come back yet, so the ECHO share is not known to be up.
+    assert not window.share_is_mounted("echo650")
+    window.workspace_sidebar.start_buttons["solvent_test"].click()
+
+    # The held entries are still swept - that folder is ours and local - but
+    # the old place under the share is left alone.
+    assert looked == [record_directory(pending_root(settings))]
+
+    # Once a reading says it is mounted, the move is attempted again.
+    window._share_states = (
+        ShareState("echo650", "ECHO 650", tmp_path / "echo650", True, "mounted"),
+    )
+    assert window.share_is_mounted("echo650")
+    window.experiments._catch_up_source_record()
+    assert looked[1:] == [
+        record_directory(tmp_path / "echo650"), record_directory(pending_root(settings))
+    ]
+    window.close()
+    app.processEvents()

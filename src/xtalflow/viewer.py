@@ -1879,6 +1879,19 @@ class ViewerWindow(QMainWindow):
         self._share_states = states
         self.workspace_sidebar.show_share_states(states)
 
+    def share_is_mounted(self, key: str) -> bool:
+        """Whether the last reading found this share mounted.
+
+        From the reading the panel's lamps already make on a worker thread,
+        so that asking costs nothing and cannot block: a dropped SMB mount
+        answers ``is_dir`` only after the best part of a minute. Unknown
+        before the first reading has come back, which reads as not mounted -
+        whatever waits on it waits for the next pass instead of the window.
+        """
+        return any(
+            state.key == key and state.mounted for state in self._share_states
+        )
+
     def _positions_outside(self, calibration) -> int:
         """How many of this image's positions fall beyond the well boundary."""
         if calibration is None or self.controller is None:

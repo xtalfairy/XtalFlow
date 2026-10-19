@@ -39,7 +39,7 @@ from xtalflow.domain.plan_lifecycle import (
     PlanRevision,
     WebDBUploadEvent,
 )
-from xtalflow.domain.instruments import WorksheetKind
+from xtalflow.domain.instruments import ECHO_650, WorksheetKind
 from xtalflow.domain.mxlive import MxLiveReadError
 from xtalflow.application.experiment_workflow import (
     STEP_LABELS,
@@ -2211,21 +2211,13 @@ class ExperimentCoordinator:
         shared = self._source_plate_record()
         if shared is None or not shared.reachable():
             return
-        old = self._echo_source_plate_record()
-        if old is not None and old.directory != shared.directory and old.reachable():
-            # The move, done a plate at a time whenever the old share is up.
-            # Copied, not taken: a client that has not been moved over yet
-            # keeps writing there, and this keeps picking it up.
-            try:
-                merge_held(old, shared, consume=False)
-            except WorksheetDestinationUnavailable:
-                pass
         # This runs on the window's thread, so it must not sit out the usual
         # ten seconds of lock polling. The merge is opportunistic: a record
         # someone else holds is merged into on one of the next tries.
         shared = SourcePlateRecord(
             shared.directory, create_root=shared.create_root, lock_timeout=1.0
         )
+        self._move_record_off_the_old_share(shared)
         held = SourcePlateRecord(
             record_directory(pending_root(self.window.settings)), create_root=True
         )
@@ -2252,6 +2244,33 @@ class ExperimentCoordinator:
                 f"record now · {plates}",
                 6000,
             )
+
+    def _move_record_off_the_old_share(self, shared: SourcePlateRecord) -> None:
+        """Copy what is still under the ECHO folder, a plate at a time.
+
+        Copied, not taken: a client that has not been moved over yet keeps
+        writing there, and the next pass picks it up.
+
+        Where the instrument folders are network shares, only while the share
+        is known to be mounted, and known from the reading the panel's lamps
+        already make on a worker thread. Asking the share itself is what must
+        not happen there: ``is_dir`` on a dropped SMB mount can take the best
+        part of a minute, and this is the window's own thread, on opening a
+        condition test and again after every save. Where they are ordinary
+        folders the question is free, so it is asked directly.
+        """
+        old = self._echo_source_plate_record()
+        if old is None or old.directory == shared.directory:
+            return
+        if self.window.settings.require_network_instrument_mounts:
+            if not self.window.share_is_mounted(ECHO_650):
+                return
+        elif not old.reachable():
+            return
+        try:
+            merge_held(old, shared, consume=False)
+        except WorksheetDestinationUnavailable:
+            pass
 
     def _source_plate_record(self) -> SourcePlateRecord | None:
         """The shared source plates' well record, wherever this site keeps it.

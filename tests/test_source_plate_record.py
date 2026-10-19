@@ -228,3 +228,23 @@ def test_a_record_being_moved_is_copied_so_the_old_place_stays_whole(tmp_path) -
     old.append("SOLVENT-01", [_used(["B1"], experiment="Straggler-02")])
     assert merge_held(old, new, consume=False).plates == ("SOLVENT-01",)
     assert [entry.wells for entry in new.entries("SOLVENT-01")] == [("A1",), ("B1",)]
+
+
+def test_a_record_file_is_left_as_writable_as_the_folder_it_is_in(tmp_path) -> None:
+    """The second person to use a plate must not find it unwritable."""
+    import os
+    import stat
+
+    directory = tmp_path / "echo650" / "source-plates"
+    directory.mkdir(parents=True)
+    os.chmod(directory, 0o2775)
+    record = SourcePlateRecord(directory)
+
+    record.append("SOLVENT-01", [_used(["A1"])])
+
+    mode = stat.S_IMODE((directory / "solvent-01.log").stat().st_mode)
+    assert mode & 0o666 == 0o664, oct(mode)
+    # A folder open to the whole machine leaves its lines open too.
+    os.chmod(directory, 0o777)
+    record.append("SOLVENT-02", [_used(["A1"])])
+    assert stat.S_IMODE((directory / "solvent-02.log").stat().st_mode) & 0o666 == 0o666

@@ -130,12 +130,14 @@ def test_wells_taken_while_the_record_was_away_go_onto_it_when_it_is_back(tmp_pa
     held.append("SOLVENT-01", [_used(["B1"], experiment="Offline-01")])
     held.append("SOLVENT-02", [_used(["A1"], experiment="Offline-01")])
 
-    assert sorted(merge_held(held, shared)) == ["SOLVENT-01", "SOLVENT-02"]
+    merged = merge_held(held, shared)
+    assert sorted(merged.plates) == ["SOLVENT-01", "SOLVENT-02"]
+    assert merged.clashes == ()
 
     assert [entry.wells for entry in shared.entries("SOLVENT-01")] == [("A1",), ("B1",)]
     assert [entry.wells for entry in shared.entries("SOLVENT-02")] == [("A1",)]
     # Nothing is held any more, and asking again is a no-op.
-    assert merge_held(held, shared) == ()
+    assert not merge_held(held, shared)
 
 
 def test_a_merge_run_twice_does_not_record_the_same_wells_twice(tmp_path) -> None:
@@ -175,3 +177,30 @@ def test_a_merge_leaves_the_entries_held_while_the_record_is_still_away(tmp_path
         merge_held(held, shared)
 
     assert [entry.wells for entry in held.entries("SOLVENT-01")] == [("B1",)]
+
+
+def test_a_well_two_experiments_both_took_is_reported_rather_than_hidden(tmp_path) -> None:
+    """The liquid has already left the well: record both takes, and say so."""
+    from xtalflow.infrastructure.source_plate_record import (
+        SourcePlateRecord,
+        merge_held,
+        record_directory,
+    )
+
+    (tmp_path / "echo650").mkdir()
+    shared = SourcePlateRecord(record_directory(tmp_path / "echo650"))
+    held = SourcePlateRecord(record_directory(tmp_path / "pending"), create_root=True)
+    # Someone else booked A5 while this user was offline and took it too.
+    shared.append("SOLVENT-01", [_used(["A5"], experiment="Other-02", user="park")])
+    held.append("SOLVENT-01", [_used(["A5", "B5"], experiment="Offline-01")])
+
+    merged = merge_held(held, shared)
+
+    assert merged.plates == ("SOLVENT-01",)
+    assert merged.clashes == ("SOLVENT-01 A5 was used by park on 2026-09-18 (Other-02)",)
+    # Both takes are on the record: hiding one would make it less true, not more.
+    assert [entry.experiment_id for entry in shared.entries("SOLVENT-01")] == [
+        "Other-02", "Offline-01"
+    ]
+    # B5 is nobody else's, so it is not reported.
+    assert "B5" not in merged.clashes[0]

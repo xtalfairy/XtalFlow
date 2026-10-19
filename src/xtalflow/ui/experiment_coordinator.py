@@ -2217,8 +2217,20 @@ class ExperimentCoordinator:
             merged = merge_held(held, shared)
         except WorksheetDestinationUnavailable:
             return  # Still away. The entries keep waiting; nothing is lost.
-        if merged:
-            plates = ", ".join(sorted(set(merged)))
+        if merged.clashes:
+            # Two experiments drew from the same well and neither could see
+            # the other. Both takes are on the record now; what is wrong is
+            # on the plate, where only a person can look.
+            QMessageBox.warning(
+                self.window,
+                "The same source wells were taken twice",
+                "Wells taken while the ECHO was away were also taken by someone "
+                "else:\n\n" + "\n".join(merged.clashes) + "\n\nBoth are on the "
+                "shared record now. Check the plate before dispensing from it "
+                "again: one of the two dispenses drew less than it asked for.",
+            )
+        if merged.plates:
+            plates = ", ".join(sorted(set(merged.plates)))
             self.window.status_message_label.show_message(
                 f"Source wells taken while the ECHO was away are on the shared "
                 f"record now · {plates}",

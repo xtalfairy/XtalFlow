@@ -17,6 +17,7 @@ import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TypeVar
@@ -221,12 +222,29 @@ class SourcePlateRecord:
         return result
 
 
-def merge_held(held: SourcePlateRecord, shared: SourcePlateRecord) -> tuple[str, ...]:
-    """Put entries written while the shared record was away onto it, and say which plates.
+@dataclass(frozen=True)
+class MergeResult:
+    """Which plates were merged, and every well two experiments both took."""
+
+    plates: tuple[str, ...] = ()
+    clashes: tuple[str, ...] = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.plates or self.clashes)
+
+
+def merge_held(held: SourcePlateRecord, shared: SourcePlateRecord) -> MergeResult:
+    """Put entries written while the shared record was away onto it.
 
     Entries already there are skipped, so this can be run again after being
     interrupted: a held file is only removed once its entries are on the
     shared record, and a removal that fails costs a repeat, not a duplicate.
+
+    A well that someone else took meanwhile is reported, not hidden and not
+    refused.  ``commit`` can turn a clash away because nothing has happened
+    yet; here the liquid has already left the well, and a record that leaves
+    that out is further from the truth than one that shows both takes.  What
+    it cannot be is silent: this is the collision the record exists to catch.
 
     Raises SourcePlateRecordUnavailable if the shared record is still away,
     which is the ordinary case and why this is asked again and again.
@@ -234,26 +252,40 @@ def merge_held(held: SourcePlateRecord, shared: SourcePlateRecord) -> tuple[str,
     try:
         paths = sorted(held.directory.glob("*.log"))
     except OSError:
-        return ()
+        return MergeResult()
     if not paths:
-        return ()
+        return MergeResult()
     shared._require_root()
-    merged = []
+    merged: list[str] = []
+    clashes: list[str] = []
     for path in paths:
         plate, entries = held._read(path, path.stem)
         if not entries:
             path.unlink(missing_ok=True)
             continue
         with shared._locked(plate):
-            already = {_entry_to_line(plate, entry) for entry in shared.entries(plate)}
-            shared._append(
-                plate,
-                [entry for entry in entries if _entry_to_line(plate, entry) not in already],
+            recorded = shared.entries(plate)
+            already = {_entry_to_line(plate, entry) for entry in recorded}
+            new = [
+                entry for entry in entries
+                if _entry_to_line(plate, entry) not in already
+            ]
+            ours = {entry.experiment_id for entry in new}
+            history = well_history(
+                entry for entry in recorded if entry.experiment_id not in ours
             )
+            for entry in new:
+                if entry.kind != USED:
+                    continue
+                clashes.extend(
+                    history[well].describe(well, plate)
+                    for well in entry.wells if well in history
+                )
+            shared._append(plate, new)
         # Only now: until the lines are there, the held file is the only copy.
         path.unlink(missing_ok=True)
         merged.append(plate)
-    return tuple(merged)
+    return MergeResult(tuple(merged), tuple(clashes))
 
 
 def record_directory(root: Path) -> Path:

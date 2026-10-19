@@ -437,9 +437,9 @@ class ViewerWindow(QMainWindow):
     def _build_target_summary_dock(self) -> None:
         self.target_summary_table = QTableWidget(0, 6)
         self.target_summary_table.setHorizontalHeaderLabels(
-            ("Plate", "Well", "Pos", "X (mm)", "Y (mm)", "Status")
+            ("Plate", "Well", "Boundary", "Positions", "Outside", "Status")
         )
-        self.target_summary_table.setAccessibleName("Selected soaking positions")
+        self.target_summary_table.setAccessibleName("Selected wells")
         self.target_summary_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.target_summary_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.target_summary_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -449,17 +449,19 @@ class ViewerWindow(QMainWindow):
             QHeaderView.ResizeToContents
         )
         self.target_summary_table.horizontalHeader().setStretchLastSection(True)
-        self.target_summary_status_label = QLabel("No positions selected")
+        self.target_summary_status_label = QLabel("No wells selected")
         self.target_summary_status_label.setObjectName("Muted")
         self.target_summary_filter = QComboBox()
-        self.target_summary_filter.addItem("All positions", "all")
-        self.target_summary_filter.addItem("Warnings", "warnings")
+        self.target_summary_filter.addItem("All wells", "all")
+        self.target_summary_filter.addItem("Needs attention", "warnings")
         self.target_summary_filter.setAccessibleName("Summary filter")
         target_summary_controls = QHBoxLayout()
         target_summary_controls.addWidget(self.target_summary_status_label, 1)
         target_summary_controls.addWidget(self.target_summary_filter)
-        self.remove_targets_button = QPushButton("Delete Selected")
-        self.remove_targets_button.setToolTip("Delete the selected positions (Delete)")
+        self.remove_targets_button = QPushButton("Delete well positions")
+        self.remove_targets_button.setToolTip(
+            "Delete every soaking position in the selected wells (Delete)"
+        )
         self.remove_targets_button.setEnabled(False)
         self.accept_valid_auto_wells_button = QPushButton("Confirm detected boundaries")
         target_summary_layout = QVBoxLayout()
@@ -1272,29 +1274,32 @@ class ViewerWindow(QMainWindow):
         current_item = self.target_summary_table.item(
             self.target_summary_table.currentRow(), 0
         )
-        current_target_id = (
-            current_item.data(Qt.UserRole + 2) if current_item is not None else None
+        # Remembered by well, not by position: the positions of a well come
+        # and go while its row stays.
+        current_well = (
+            (current_item.data(Qt.UserRole), current_item.data(Qt.UserRole + 1))
+            if current_item is not None else None
         )
         try:
-            all_summaries = self.project_controller.project_target_summaries()
+            all_wells = self.project_controller.project_well_summaries()
         except IMAGE_SOURCE_ERRORS as error:
             self.status_message_label.show_message(
                 f"Target summary unavailable: {error}"
             )
             return
-        ready_count = sum(summary.is_ready for summary in all_summaries)
-        warning_count = len(all_summaries) - ready_count
-        well_count = len({summary.image.image_key for summary in all_summaries})
+        warning_count = sum(not well.is_ready for well in all_wells)
+        position_count = sum(len(well.targets) for well in all_wells)
         self.target_summary_status_label.setText(
-            f"{counted(len(all_summaries), 'position')} in {counted(well_count, 'well')} · "
+            f"{counted(len(all_wells), 'well')} · "
+            f"{counted(position_count, 'position')} · "
             + (f"{warning_count} need attention" if warning_count else "all ready")
-            if all_summaries else "No positions selected"
+            if all_wells else "No wells selected"
         )
         self.target_summary_status_label.setStyleSheet(
             theme.status_style("attention" if warning_count else "muted")
         )
-        self.target_summary_filter.setItemText(0, f"All positions ({len(all_summaries)})")
-        self.target_summary_filter.setItemText(1, f"Warnings ({warning_count})")
+        self.target_summary_filter.setItemText(0, f"All wells ({len(all_wells)})")
+        self.target_summary_filter.setItemText(1, f"Needs attention ({warning_count})")
         try:
             acceptable_count = (
                 self.project_controller
@@ -1306,10 +1311,10 @@ class ViewerWindow(QMainWindow):
             f"Confirm detected boundaries ({acceptable_count})"
         )
         self.accept_valid_auto_wells_button.setEnabled(acceptable_count > 0)
-        summaries = (
-            tuple(summary for summary in all_summaries if not summary.is_ready)
+        wells = (
+            tuple(well for well in all_wells if not well.is_ready)
             if self.target_summary_filter.currentData() == "warnings"
-            else all_summaries
+            else all_wells
         )
         project = self.project_controller.active_project
         image_sets = {item.id: item for item in project.image_sets} if project else {}
@@ -1318,68 +1323,58 @@ class ViewerWindow(QMainWindow):
         try:
             self.target_summary_table.setSortingEnabled(False)
             self.target_summary_table.clearContents()
-            self.target_summary_table.setRowCount(len(summaries))
-            for row, summary in enumerate(summaries):
-                image_set = image_sets[summary.image_set_id]
+            self.target_summary_table.setRowCount(len(wells))
+            for row, well in enumerate(wells):
+                image_set = image_sets[well.image_set_id]
                 plate_format = plate_format_by_id(
                     image_set.plate_format_id, image_set.plate_format_version
                 )
-                well = (
+                address = (
                     str(
                         plate_format.address_for(
-                            summary.image.well_number, summary.image.drop_number
+                            well.image.well_number, well.image.drop_number
                         )
                     )
                     if plate_format is not None
-                    else f"{summary.image.well_number}/d{summary.image.drop_number}"
+                    else f"{well.image.well_number}/d{well.image.drop_number}"
                 )
-                if summary.calibration is None:
-                    x_mm = y_mm = "—"
-                    calibration_status = "No well boundary"
+                if well.calibration is None:
+                    boundary = "None"
                 else:
-                    x_value, y_value = summary.calibration.pixel_to_mm(
-                        summary.target.x_px, summary.target.y_px
-                    )
-                    x_mm, y_mm = f"{x_value:.3f}", f"{y_value:.3f}"
                     method = (
                         "Manual"
-                        if summary.calibration.method
+                        if well.calibration.method
                         is CalibrationMethod.MANUAL_THREE_POINT
-                        else "Auto"
+                        else f"Auto {well.calibration.confidence:.0%}"
                     )
                     confirmation = (
-                        "Confirmed"
-                        if summary.calibration.confirmed
-                        else "Unconfirmed"
+                        "Confirmed" if well.calibration.confirmed else "Unconfirmed"
                     )
-                    calibration_status = (
-                        f"{method} {summary.calibration.confidence:.0%} · "
-                        f"{confirmation}"
-                    )
+                    boundary = f"{method} · {confirmation}"
                 issue_labels = {
-                    TargetValidationIssue.CALIBRATION_MISSING: "No well boundary",
-                    TargetValidationIssue.CALIBRATION_UNCONFIRMED: "Unconfirmed well boundary",
-                    TargetValidationIssue.OUTSIDE_WELL: "Outside well",
+                    TargetValidationIssue.CALIBRATION_MISSING: "No boundary",
+                    TargetValidationIssue.OUTSIDE_WELL:
+                        f"Outside well ({well.outside_count})",
+                    TargetValidationIssue.CALIBRATION_UNCONFIRMED: "Unconfirmed",
                 }
+                worst = well.worst_issue
                 validation_status = (
-                    f"{theme.SYMBOL_OK} Ready"
-                    if summary.is_ready
-                    else f"{theme.SYMBOL_ATTENTION} " + " · ".join(
-                        issue_labels[issue] for issue in summary.validation_issues
-                    )
+                    f"{theme.SYMBOL_OK} Ready" if worst is None
+                    else f"{theme.SYMBOL_ATTENTION} {issue_labels[worst]}"
                 )
                 values = (
-                    summary.image.plate_code,
-                    well,
-                    str(summary.target_number),
-                    x_mm,
-                    y_mm,
+                    well.image.plate_code,
+                    address,
+                    boundary,
+                    str(len(well.targets)),
+                    f"{well.outside_count} of {len(well.targets)}"
+                    if well.outside_count else "",
                     validation_status,
                 )
                 tooltip = (
-                    f"Well boundary: {calibration_status}\n"
-                    f"Pixel: ({summary.target.x_px:.1f}, {summary.target.y_px:.1f})\n"
-                    f"{summary.image.path.resolve()}"
+                    f"Well boundary: {boundary}\n"
+                    f"{counted(len(well.targets), 'soaking position')}\n"
+                    f"{well.image.path.resolve()}"
                 )
                 for column, value in enumerate(values):
                     item = QTableWidgetItem(value)
@@ -1388,14 +1383,17 @@ class ViewerWindow(QMainWindow):
                         item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                     if column == 5:
                         item.setForeground(
-                            QColor(theme.OK if summary.is_ready else theme.ATTENTION)
+                            QColor(theme.OK if well.is_ready else theme.ATTENTION)
                         )
                     if column == 0:
-                        item.setData(Qt.UserRole, summary.image_set_id)
-                        item.setData(Qt.UserRole + 1, summary.image.image_key)
-                        item.setData(Qt.UserRole + 2, summary.target.id)
+                        item.setData(Qt.UserRole, well.image_set_id)
+                        item.setData(Qt.UserRole + 1, well.image.image_key)
+                        item.setData(
+                            Qt.UserRole + 2,
+                            tuple(target.id for target in well.targets),
+                        )
                     self.target_summary_table.setItem(row, column, item)
-                if summary.target.id == current_target_id:
+                if (well.image_set_id, well.image.image_key) == current_well:
                     restored_row = row
             if restored_row is not None:
                 self.target_summary_table.setCurrentCell(restored_row, 0)
@@ -1406,7 +1404,7 @@ class ViewerWindow(QMainWindow):
     def _update_delete_selected_button(self) -> None:
         count = len(self.target_summary_table.selectionModel().selectedRows())
         self.remove_targets_button.setText(
-            f"Delete Selected ({count})" if count else "Delete Selected"
+            f"Delete well positions ({count})" if count else "Delete well positions"
         )
         self.remove_targets_button.setEnabled(count > 0)
 
@@ -1459,9 +1457,21 @@ class ViewerWindow(QMainWindow):
         if index.row() not in selected_rows:
             self.target_summary_table.selectRow(index.row())
         menu = QMenu(self.target_summary_table)
-        remove_action = menu.addAction("Delete selected positions")
+        # Reached on purpose: clicking a row goes to the well, and the
+        # boundary is only adjusted by somebody who came to adjust it.
+        adjust_action = menu.addAction("Adjust boundary…")
+        adjust_action.setEnabled(len(selected_rows or {index.row()}) == 1)
+        adjust_action.triggered.connect(
+            lambda: self._adjust_boundary_of_summary_row(index.row())
+        )
+        remove_action = menu.addAction("Delete well positions")
         remove_action.triggered.connect(self._remove_selected_targets)
         menu.exec_(self.target_summary_table.viewport().mapToGlobal(position))
+
+    def _adjust_boundary_of_summary_row(self, row: int) -> None:
+        """Go to that well, then open the boundary for it."""
+        self._target_summary_activated(row, 0)
+        self._open_calibration_inspector()
 
     def _remove_selected_targets(self) -> None:
         rows = sorted(
@@ -1471,11 +1481,15 @@ class ViewerWindow(QMainWindow):
         if not rows:
             return
         items = [self.target_summary_table.item(row, 0) for row in rows]
-        target_ids = tuple(item.data(Qt.UserRole + 2) for item in items if item)
+        # A row is a well, so deleting it deletes every position in that well.
+        target_ids = tuple(
+            target_id for item in items if item
+            for target_id in item.data(Qt.UserRole + 2)
+        )
         descriptions = [
-            f"{self.target_summary_table.item(row, 0).text()} "
-            f"{self.target_summary_table.item(row, 1).text()} "
-            f"target {self.target_summary_table.item(row, 2).text()}"
+            f"{counted(len(self.target_summary_table.item(row, 0).data(Qt.UserRole + 2)), 'position')}"
+            f" in {self.target_summary_table.item(row, 0).text()} "
+            f"{self.target_summary_table.item(row, 1).text()}"
             for row in rows[:5]
         ]
         detail = "\n".join(descriptions)
@@ -1484,8 +1498,9 @@ class ViewerWindow(QMainWindow):
         if (
             QMessageBox.question(
                 self,
-                "Remove targets",
-                f"Permanently remove {len(target_ids)} selected target(s)?\n\n{detail}",
+                "Remove well positions",
+                f"Permanently remove {counted(len(target_ids), 'soaking position')} "
+                f"from {counted(len(rows), 'well')}?\n\n{detail}",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
@@ -1509,13 +1524,34 @@ class ViewerWindow(QMainWindow):
             f"Removed {removed} target(s)", 3000
         )
 
+    def _first_outside_target(self, image_set_id: str, image_key: str) -> str | None:
+        """The position that sits outside its well, so the eye lands on it."""
+        try:
+            summaries = self.project_controller.project_target_summaries()
+        except IMAGE_SOURCE_ERRORS:
+            return None
+        return next(
+            (
+                summary.target.id for summary in summaries
+                if (summary.image_set_id, summary.image.image_key)
+                == (image_set_id, image_key)
+                and TargetValidationIssue.OUTSIDE_WELL in summary.validation_issues
+            ),
+            None,
+        )
+
     def _target_summary_activated(self, row: int, column: int) -> None:
         identity_item = self.target_summary_table.item(row, 0)
         if identity_item is None:
             return
         image_set_id = identity_item.data(Qt.UserRole)
         image_key = identity_item.data(Qt.UserRole + 1)
-        target_id = identity_item.data(Qt.UserRole + 2)
+        # Highlight the first position of the well, which is the first one
+        # outside it when any are.
+        target_ids = identity_item.data(Qt.UserRole + 2) or ()
+        target_id = self._first_outside_target(
+            image_set_id, image_key
+        ) or (target_ids[0] if target_ids else None)
         try:
             self.project_controller.activate_image_set(image_set_id)
             self._adopt_active_review()

@@ -7,6 +7,7 @@ from .project_controller import (
     ProjectController,
     ProjectReviewStatistics,
     ProjectTargetSummary,
+    ProjectWellSummary,
     TargetValidationIssue,
 )
 from .review_controller import ReviewController
@@ -17,6 +18,7 @@ __all__ = [
     "ProjectController",
     "ProjectReviewStatistics",
     "ProjectTargetSummary",
+    "ProjectWellSummary",
     "TargetValidationIssue",
     "ReviewController",
     "ReviewPersistenceError",

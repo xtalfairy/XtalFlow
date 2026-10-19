@@ -1706,9 +1706,12 @@ def test_target_summary_uses_hidden_right_dock_and_jumps_to_image(
     window._handle_image_click(600, 500, Qt.LeftButton)
     second_target_image_key = window.controller.current_image.image_key
     window._handle_image_click(610, 510, Qt.LeftButton)
+    # One row per well, however many positions it holds.
     assert window.target_summary_table.rowCount() == 2
     assert window.target_summary_table.item(0, 1).text() == "A01a"
-    assert window.target_summary_table.item(0, 3).text() != "—"
+    assert window.target_summary_table.item(0, 3).text() == "1"
+    assert window.target_summary_table.item(0, 4).text() == ""
+    assert "Unconfirmed" in window.target_summary_table.item(0, 2).text()
     window.experiments._review_target_warnings()
     assert window.target_summary_filter.currentData() == "warnings"
     assert window.target_summary_dock.isVisible()
@@ -1720,7 +1723,7 @@ def test_target_summary_uses_hidden_right_dock_and_jumps_to_image(
     window.target_summary_table.setCurrentCell(0, 0)
     assert window.controller.current_image.image_key == target_image_key
     assert window.target_summary_table.hasFocus()
-    assert "Unconfirmed well boundary" in window.target_summary_table.item(0, 5).text()
+    assert "Unconfirmed" in window.target_summary_table.item(0, 5).text()
     assert window.accept_calibration_button.isEnabled()
     window.accept_calibration_button.click()
     assert window.current_calibration.confirmed
@@ -1733,7 +1736,7 @@ def test_target_summary_uses_hidden_right_dock_and_jumps_to_image(
         window.target_summary_filter.findData("warnings")
     )
     assert window.target_summary_table.rowCount() == 1
-    assert "Unconfirmed well boundary" in window.target_summary_table.item(0, 5).text()
+    assert "Unconfirmed" in window.target_summary_table.item(0, 5).text()
     window.target_summary_filter.setCurrentIndex(
         window.target_summary_filter.findData("all")
     )
@@ -1927,16 +1930,21 @@ def test_live_selection_summary_highlights_counts_and_stays_in_image_review(
     app.processEvents()
 
     assert window.target_summary_dock.windowTitle() == "Selected wells"
-    assert window.target_summary_filter.itemText(0) == "All positions (2)"
-    assert window.target_summary_filter.itemText(1) == "Warnings (2)"
-    assert "2 need attention" in window.target_summary_status_label.text()
+    # Two positions in one well are one row, and the counts say both numbers.
+    assert window.target_summary_filter.itemText(0) == "All wells (1)"
+    assert window.target_summary_filter.itemText(1) == "Needs attention (1)"
+    assert "1 well · 2 positions" in window.target_summary_status_label.text()
+    assert "1 need attention" in window.target_summary_status_label.text()
+    assert window.target_summary_table.rowCount() == 1
+    assert window.target_summary_table.item(0, 3).text() == "2"
     assert not window.remove_targets_button.isEnabled()
 
-    window.target_summary_table.setCurrentCell(1, 0)
-    second_target = window.target_summary_table.item(1, 0).data(Qt.UserRole + 2)
-    assert window.image_canvas._highlighted_target_id == second_target
+    window.target_summary_table.setCurrentCell(0, 0)
+    positions = window.target_summary_table.item(0, 0).data(Qt.UserRole + 2)
+    assert len(positions) == 2
+    assert window.image_canvas._highlighted_target_id in positions
     window.target_summary_table.selectAll()
-    assert window.remove_targets_button.text() == "Delete Selected (2)"
+    assert window.remove_targets_button.text() == "Delete well positions (1)"
 
     window.experiments.go_to_step(WorkflowStep.REVIEW)
     app.processEvents()
@@ -3235,5 +3243,53 @@ def test_arriving_at_conditions_asks_about_a_volume_the_new_wells_broke(
 
     assert len(asked) == 1
     assert "cannot be split" in asked[0][1]
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_the_dock_lists_wells_and_deletes_all_of_a_wells_positions(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A well with three positions is one row, and deleting it takes all three."""
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+    )
+    window.load_plate("2070", SWISSCI_MRC_2_WELL)
+    window.show()
+    app.processEvents()
+    window.target_summary_button.click()
+    app.processEvents()
+    # Stay on the well while three positions are placed in it.
+    window.auto_advance_input.setValue(3)
+    for offset in range(3):
+        window._handle_image_click(600 + offset, 500 + offset, Qt.LeftButton)
+    window.show_next()
+    window._handle_image_click(600, 500, Qt.LeftButton)
+    window._refresh_target_summary()
+
+    table = window.target_summary_table
+    assert table.rowCount() == 2
+    assert [table.item(row, 3).text() for row in range(2)] == ["3", "1"]
+    assert "2 wells · 4 positions" in window.target_summary_status_label.text()
+    assert window.target_summary_filter.itemText(0) == "All wells (2)"
+
+    # Deleting a row takes every position in that well, and says so first.
+    asked = []
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        lambda *args, **kwargs: asked.append(args[2]) or QMessageBox.Yes,
+    )
+    table.selectRow(0)
+    window.remove_targets_button.click()
+
+    assert "3 soaking positions from 1 well" in asked[0]
+    assert "3 positions in 2070" in asked[0]
+    window._refresh_target_summary()
+    assert table.rowCount() == 1
+    assert table.item(0, 3).text() == "1"
     window.close()
     app.processEvents()

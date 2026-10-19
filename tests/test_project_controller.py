@@ -231,3 +231,58 @@ def test_image_filter_survives_image_set_and_workspace_switches(tmp_path: Path) 
     workspace.open_project(project.id)
     assert workspace.review_controller.image_filter is ImageFilter.UNREVIEWED
     store.close()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_wells_are_summarised_once_each_with_their_worst_problem(
+    tmp_path: Path,
+) -> None:
+    """The dock lists wells, not positions: three positions are one row."""
+    from xtalflow.application import TargetValidationIssue
+
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    workspace = ProjectController(RockMakerImageRepository(FIXTURE_ROOT), store.workspace)
+    workspace.create_project("Wells")
+    workspace.add_latest_image_set("1070", SWISSCI_MIDI_3_LENS)
+    review = workspace.review_controller
+
+    review.move_to(3)
+    for offset in range(3):
+        review.add_target(10 + offset, 10 + offset, 100, 100)
+    review.move_to(0)
+    review.add_target(20, 20, 100, 100)
+
+    wells = workspace.project_well_summaries()
+    targets = workspace.project_target_summaries()
+
+    assert len(targets) == 4
+    assert len(wells) == 2
+    assert [len(well.targets) for well in wells] == [3, 1]
+    for well in wells:
+        same = [
+            item for item in targets
+            if (item.image_set_id, item.image.image_key)
+            == (well.image_set_id, well.image.image_key)
+        ]
+        # A well's problems are its positions' problems, together.
+        assert set(well.issues) == {
+            issue for item in same for issue in item.validation_issues
+        }
+        assert well.outside_count == sum(
+            1 for item in same
+            if TargetValidationIssue.OUTSIDE_WELL in item.validation_issues
+        )
+        assert well.is_ready == (not well.issues)
+    # Wells come in the order their first position was placed, not well order.
+    assert [well.selected_at for well in wells] == sorted(
+        well.selected_at for well in wells
+    )
+    # The worst problem is the one to show.
+    missing = TargetValidationIssue.CALIBRATION_MISSING
+    assert all(
+        well.worst_issue is missing or well.worst_issue is None
+        or well.worst_issue in well.issues
+        for well in wells
+    )
+    store.close()

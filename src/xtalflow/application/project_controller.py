@@ -74,6 +74,46 @@ class ProjectTargetSummary:
         return not self.validation_issues
 
 
+@dataclass(frozen=True)
+class ProjectWellSummary:
+    """One selected well, with everything the dock says about it.
+
+    The dock used to list one row per soaking position, which showed a well
+    with three positions three times and made the list's length the number of
+    positions rather than of wells. Two of the three problems it reports -
+    a missing boundary and an unconfirmed one - belong to the well anyway;
+    only a position outside the well belongs to a position.
+    """
+
+    image_set_id: str
+    image: CrystalImage
+    targets: tuple[TargetPoint, ...]
+    calibration: ImageCalibration | None
+    outside_count: int
+    issues: tuple[TargetValidationIssue, ...]
+
+    @property
+    def is_ready(self) -> bool:
+        return not self.issues
+
+    @property
+    def selected_at(self):
+        """When the first position in this well was placed."""
+        return min(target.selected_at for target in self.targets)
+
+    @property
+    def worst_issue(self) -> "TargetValidationIssue | None":
+        """The one to show, worst first: no boundary, then outside, then unconfirmed."""
+        for issue in (
+            TargetValidationIssue.CALIBRATION_MISSING,
+            TargetValidationIssue.OUTSIDE_WELL,
+            TargetValidationIssue.CALIBRATION_UNCONFIRMED,
+        ):
+            if issue in self.issues:
+                return issue
+        return None
+
+
 class ImageRepositoryPort(Protocol):
     def load_plate(self, plate_code: str, profile: str = "profileID_1") -> PlateImages: ...
 
@@ -371,6 +411,32 @@ class ProjectController:
         return tuple(
             sorted(summaries, key=lambda summary: summary.target.selected_at)
         )
+
+    def project_well_summaries(self) -> tuple[ProjectWellSummary, ...]:
+        """Every selected well once, in the order its first position was placed."""
+        grouped: dict[tuple[str, str], list[ProjectTargetSummary]] = {}
+        for summary in self.project_target_summaries():
+            grouped.setdefault(
+                (summary.image_set_id, summary.image.image_key), []
+            ).append(summary)
+        wells = [
+            ProjectWellSummary(
+                summaries[0].image_set_id,
+                summaries[0].image,
+                tuple(item.target for item in summaries),
+                summaries[0].calibration,
+                sum(
+                    1 for item in summaries
+                    if TargetValidationIssue.OUTSIDE_WELL in item.validation_issues
+                ),
+                tuple(
+                    issue for issue in TargetValidationIssue
+                    if any(issue in item.validation_issues for item in summaries)
+                ),
+            )
+            for summaries in grouped.values()
+        ]
+        return tuple(sorted(wells, key=lambda well: well.selected_at))
 
     def selected_crystals_for_plan(self) -> tuple[SelectedCrystal, ...]:
         """Return calibrated target images in first-selection order."""

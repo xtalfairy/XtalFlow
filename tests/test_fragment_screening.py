@@ -187,3 +187,18 @@ def test_plan_can_reassign_fragments_in_plate_and_well_order() -> None:
         "CMP-2",
         "CMP-3",
     ]
+
+
+def test_the_nearest_volume_every_well_can_share() -> None:
+    """2.5 nL steps, and one volume that works for all the selected wells."""
+    from xtalflow.domain.fragment_screening import volume_that_splits
+
+    # Three positions: 25 nL does not divide, 22.5 does.
+    assert volume_that_splits(Decimal("25"), [3]) == (Decimal("22.5"), True)
+    # Wells with different position counts need their common multiple.
+    assert volume_that_splits(Decimal("25"), [2, 3]) == (Decimal("15.0"), True)
+    # A volume that already works is returned unchanged.
+    assert volume_that_splits(Decimal("30"), [3]) == (Decimal("30.0"), True)
+    # Below one step for each position there is nothing to round down to, so
+    # the smallest one above is offered instead, and said to be above.
+    assert volume_that_splits(Decimal("5"), [3]) == (Decimal("7.5"), False)

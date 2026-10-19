@@ -185,7 +185,7 @@ def test_conditions_explain_a_volume_that_cannot_be_split_equally() -> None:
 
     assert editor.current_plan is None
     assert editor.volume_error_label.text() == (
-        "Cannot be split equally in 1 well. Try 22.5 nL or 30.0 nL."
+        "Cannot be split equally in 1 well. Use 22.5 nL."
     )
     assert editor.assignment_table.item(0, 4).text() == (
         "△ 25.0 nL cannot be split equally into 3"
@@ -193,6 +193,30 @@ def test_conditions_explain_a_volume_that_cannot_be_split_equally() -> None:
     editor.volume_input.setValue(30)
     assert editor.current_plan is not None
     assert editor.volume_error_label.isHidden()
+
+    # Finishing the edit asks once, and never changes the value unasked.
+    asked = []
+    editor.volume_input.setValue(25)
+    editor._ask_to_use_volume = lambda suggestion, text: (
+        asked.append((suggestion, text)) or False
+    )
+    editor.check_volume_splits()
+
+    assert editor.volume_input.value() == 25
+    suggestion, text = asked[0]
+    assert str(suggestion) == "22.5"
+    assert "25 nL cannot be split into 2.5 nL steps for 1 well: A01a (3 positions)" in text
+    assert "22.5 nL divides evenly for every selected well" in text
+    assert "largest volume at or below" in text
+
+    # Saying yes is what applies it.
+    editor._ask_to_use_volume = lambda suggestion, text: True
+    editor.check_volume_splits()
+
+    assert editor.volume_input.value() == 22.5
+    assert editor.current_plan is not None
+    editor.volume_input.setValue(30)
+
     assert editor.assignment_table.item(0, 3).text() == "10.0 nL × 3"
     assert editor.table.item(0, 8).text() == "10.0 nL × 3"
     assert "30.0 nL per well" in editor.summary_label.text()
@@ -3148,5 +3172,28 @@ def test_the_count_that_moves_to_the_next_well_is_read_while_clicking() -> None:
     assert first_well in message and window.well_input.text() in message
     # The reading starts again on the new well.
     assert window.well_progress_label.text() == "This well · 0 of"
+    window.close()
+    app.processEvents()
+
+
+def test_a_blocked_button_says_why_it_cannot_be_pressed(tmp_path: Path) -> None:
+    """The reason is on the button, not only in the line above it."""
+    app = QApplication.instance() or QApplication([])
+    window, _store, editor = _fragment_plan_window(tmp_path, DEFAULT_SETTINGS)
+    page = window.experiment_page
+    window.experiments.go_to_step(WorkflowStep.CONDITIONS)
+
+    editor.volume_input.setValue(26)
+    window.experiments._refresh_experiment_status(editor)
+
+    assert not page.primary_button.isEnabled()
+    assert "2.5 nL" in page.primary_button.toolTip()
+    assert page.primary_button.toolTip() == page.footer_status_label.text()
+
+    editor.volume_input.setValue(25)
+    window.experiments._refresh_experiment_status(editor)
+
+    assert page.primary_button.isEnabled()
+    assert page.primary_button.toolTip() == ""
     window.close()
     app.processEvents()

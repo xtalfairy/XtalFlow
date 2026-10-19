@@ -176,4 +176,6 @@ class ExperimentPage(QWidget):
         self.footer_notes_label.setVisible(bool(notes))
         self.primary_button.setText(primary_text)
         self.primary_button.setEnabled(primary_enabled)
+        # A button that cannot be pressed says why, where the hand already is.
+        self.primary_button.setToolTip("" if primary_enabled else text)
         self.back_button.setEnabled(back_enabled)

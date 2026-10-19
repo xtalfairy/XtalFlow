@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import math
+from collections.abc import Iterable
+
 from dataclasses import dataclass
 from decimal import Decimal
 import re
@@ -166,6 +169,27 @@ def build_fragment_screen_plan(
         selection, library, tuple(assignments), volume_per_crystal_nl,
         assignment_order,
     )
+
+
+def volume_that_splits(
+    volume_nl: Decimal, position_counts: "Iterable[int]"
+) -> tuple[Decimal, bool]:
+    """The nearest volume every selected well can share equally.
+
+    Returns the largest volume at or below the one asked for, and True when it
+    is at or below it. When nothing at or below works - the volume is smaller
+    than one 2.5 nL step for each position - the smallest one above is
+    returned with False, because rounding down to nothing is not an answer.
+    """
+    step = 1
+    for count in position_counts:
+        if count:
+            step = step * count // math.gcd(step, count)
+    units = volume_nl / TRANSFER_INCREMENT_NL
+    lower = (units // step) * step
+    if lower > 0:
+        return TRANSFER_INCREMENT_NL * lower, True
+    return TRANSFER_INCREMENT_NL * step, False
 
 
 def unequal_split_message(

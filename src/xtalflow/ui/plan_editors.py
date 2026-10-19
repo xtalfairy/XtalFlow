@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QRadioButton,
     QTabWidget,
@@ -52,6 +53,7 @@ from xtalflow.domain.fragment_screening import (
     FragmentScreenPlan,
     SelectedCrystal,
     build_fragment_screen_plan,
+    volume_that_splits,
 )
 from xtalflow.domain.raw_crystal import build_raw_crystal_plan
 from xtalflow.domain.labwork import (
@@ -481,6 +483,9 @@ class FragmentScreeningEditor(PlanEditorBase):
 
         self.rows_input.textChanged.connect(self.refresh_plan)
         self.volume_input.valueChanged.connect(self.refresh_plan)
+        # Asked when the person has finished typing, not on every spin step.
+        self.volume_input.editingFinished.connect(self.check_volume_splits)
+        self._asking_about_volume = False
         self.order_input.currentIndexChanged.connect(self._order_changed)
         self.all_rows_radio.toggled.connect(self._row_mode_changed)
         self.apply_reassignment_button.clicked.connect(self._apply_reassignment)
@@ -813,28 +818,87 @@ class FragmentScreeningEditor(PlanEditorBase):
             ]
         return rows
 
+    def _wells_that_cannot_split(self, volume: Decimal) -> tuple:
+        """Selected wells whose positions cannot share the volume equally."""
+        if self.selection is None:
+            return ()
+        units = volume / TRANSFER_INCREMENT_NL
+        return tuple(
+            well for well in self.selection.wells
+            if not well.soaking_positions
+            or units % len(well.soaking_positions)
+        )
+
     def _short_volume_error(self, error: ValueError, volume: Decimal) -> ValueError:
-        """Name how many wells cannot share the volume and the nearest volumes that work.
+        """Name how many wells cannot share the volume, and the volume that can.
 
         The table marks each of those wells, so the field note stays one line.
         """
         if self.selection is None or "split equally" not in str(error):
             return error
-        counts = [len(well.soaking_positions) for well in self.selection.wells]
-        units = volume / TRANSFER_INCREMENT_NL
-        failing = sum(1 for count in counts if not count or units % count)
-        step = 1
-        for count in counts:
-            if count:
-                step = step * count // math.gcd(step, count)
-        lower = (units // step) * step
-        suggestions = [
-            f"{TRANSFER_INCREMENT_NL * value} nL" for value in (lower, lower + step) if value > 0
-        ]
-        return ValueError(
-            f"Cannot be split equally in {counted(failing, 'well')}. "
-            f"Try {' or '.join(suggestions)}."
+        failing = self._wells_that_cannot_split(volume)
+        suggestion, _below = volume_that_splits(
+            volume, (len(well.soaking_positions) for well in self.selection.wells)
         )
+        return ValueError(
+            f"Cannot be split equally in {counted(len(failing), 'well')}. "
+            f"Use {suggestion.normalize():f} nL."
+        )
+
+    def check_volume_splits(self) -> None:
+        """Say so, once, when the volume cannot be shared equally.
+
+        Raised when the volume has been typed rather than on every step of the
+        spin box, and never applied without the click: a volume changed behind
+        somebody's back is a different experiment from the one they asked for.
+        """
+        if self._asking_about_volume or self.selection is None:
+            return
+        volume = Decimal(str(self.volume_input.value()))
+        failing = self._wells_that_cannot_split(volume)
+        if not failing:
+            return
+        suggestion, below = volume_that_splits(
+            volume, (len(well.soaking_positions) for well in self.selection.wells)
+        )
+        named = ", ".join(
+            f"{well.well_address} ({counted(len(well.soaking_positions), 'position')})"
+            for well in failing[:4]
+        )
+        if len(failing) > 4:
+            named += f", and {len(failing) - 4} more"
+        reach = (
+            "That is the largest volume at or below the one you asked for."
+            if below else
+            f"Nothing at or below {volume.normalize():f} nL divides evenly, so this "
+            "is the smallest one above it."
+        )
+        self._asking_about_volume = True
+        try:
+            use_it = self._ask_to_use_volume(
+                suggestion,
+                f"{volume.normalize():f} nL cannot be split into "
+                f"{TRANSFER_INCREMENT_NL} nL steps for "
+                f"{counted(len(failing), 'well')}: {named}.\n\n"
+                f"{suggestion.normalize():f} nL divides evenly for every selected "
+                f"well. {reach}",
+            )
+        finally:
+            self._asking_about_volume = False
+        if use_it:
+            self.volume_input.setValue(float(suggestion))
+
+    def _ask_to_use_volume(self, suggestion: Decimal, text: str) -> bool:
+        question = QMessageBox(self)
+        question.setIcon(QMessageBox.Warning)
+        question.setWindowTitle("Volume cannot be split equally")
+        question.setText(text)
+        use_it = question.addButton(
+            f"Use {suggestion.normalize():f} nL", QMessageBox.AcceptRole
+        )
+        question.addButton("Keep editing", QMessageBox.RejectRole)
+        question.exec_()
+        return question.clickedButton() is use_it
 
     def _show_field_error(self, message: str) -> None:
         lowered = message.casefold()

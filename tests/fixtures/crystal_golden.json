@@ -1,0 +1,659 @@
+{
+ "source_checkpoint": "crystal3_best_ts.pt",
+ "source_sha256": "4c99f441417c9cef54e4dd67ca7511551d954e2873591c2fafaf5b1f0447bbdc",
+ "classes": [
+  "crystal",
+  "drop",
+  "empty"
+ ],
+ "predictions": [
+  {
+   "path": "100/plateID_1100/batchID_6048/wellNum_1/profileID_1/d1_r135495_ef.jpg",
+   "label": "drop",
+   "probabilities": [
+    0.021828,
+    0.966144,
+    0.012028
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6048/wellNum_20/profileID_1/d1_r135533_ef.jpg",
+   "label": "drop",
+   "probabilities": [
+    0.022704,
+    0.948989,
+    0.028307
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6048/wellNum_31/profileID_1/d1_r135555_ef.jpg",
+   "label": "drop",
+   "probabilities": [
+    0.043469,
+    0.935761,
+    0.02077
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6048/wellNum_42/profileID_1/d1_r135577_ef.jpg",
+   "label": "drop",
+   "probabilities": [
+    0.044151,
+    0.931504,
+    0.024345
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6048/wellNum_53/profileID_1/d1_r135599_ef.jpg",
+   "label": "drop",
+   "probabilities": [
+    0.022743,
+    0.956099,
+    0.021158
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6048/wellNum_64/profileID_1/d1_r135621_ef.jpg",
+   "label": "drop",
+   "probabilities": [
+    0.024502,
+    0.956749,
+    0.01875
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6048/wellNum_75/profileID_1/d1_r135643_ef.jpg",
+   "label": "drop",
+   "probabilities": [
+    0.038103,
+    0.936459,
+    0.025438
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6048/wellNum_86/profileID_1/d1_r135665_ef.jpg",
+   "label": "drop",
+   "probabilities": [
+    0.03749,
+    0.943918,
+    0.018592
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6052/wellNum_1/profileID_1/d1_r135495_ef.jpg",
+   "label": "drop",
+   "probabilities": [
+    0.005781,
+    0.97877,
+    0.015448
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6052/wellNum_20/profileID_1/d1_r135533_ef.jpg",
+   "label": "drop",
+   "probabilities": [
+    0.01821,
+    0.966947,
+    0.014844
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6052/wellNum_31/profileID_1/d1_r135555_ef.jpg",
+   "label": "drop",
+   "probabilities": [
+    0.027924,
+    0.957404,
+    0.014671
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6052/wellNum_42/profileID_1/d1_r135577_ef.jpg",
+   "label": "drop",
+   "probabilities": [
+    0.014826,
+    0.969901,
+    0.015273
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6052/wellNum_53/profileID_1/d1_r135599_ef.jpg",
+   "label": "drop",
+   "probabilities": [
+    0.013563,
+    0.972311,
+    0.014126
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6052/wellNum_64/profileID_1/d1_r135621_ef.jpg",
+   "label": "drop",
+   "probabilities": [
+    0.016067,
+    0.972022,
+    0.011911
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6052/wellNum_75/profileID_1/d1_r135643_ef.jpg",
+   "label": "drop",
+   "probabilities": [
+    0.037298,
+    0.947253,
+    0.015449
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6052/wellNum_86/profileID_1/d1_r135665_ef.jpg",
+   "label": "drop",
+   "probabilities": [
+    0.023892,
+    0.956419,
+    0.019689
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6073/wellNum_1/profileID_1/d1_r135495_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.980162,
+    0.01189,
+    0.007948
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6073/wellNum_20/profileID_1/d1_r135533_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.978912,
+    0.013106,
+    0.007982
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6073/wellNum_31/profileID_1/d1_r135555_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.976723,
+    0.013602,
+    0.009675
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6073/wellNum_42/profileID_1/d1_r135577_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.982112,
+    0.01072,
+    0.007168
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6073/wellNum_53/profileID_1/d1_r135599_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.977428,
+    0.014,
+    0.008571
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6073/wellNum_64/profileID_1/d1_r135621_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.986948,
+    0.008808,
+    0.004244
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6073/wellNum_75/profileID_1/d1_r135643_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.98194,
+    0.01146,
+    0.0066
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6073/wellNum_86/profileID_1/d1_r135665_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.972175,
+    0.016538,
+    0.011287
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6088/wellNum_1/profileID_1/d1_r135495_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.978307,
+    0.012941,
+    0.008753
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6088/wellNum_20/profileID_1/d1_r135533_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.980057,
+    0.013152,
+    0.006791
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6088/wellNum_31/profileID_1/d1_r135555_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.977395,
+    0.01306,
+    0.009545
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6088/wellNum_42/profileID_1/d1_r135577_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.984476,
+    0.009246,
+    0.006279
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6088/wellNum_53/profileID_1/d1_r135599_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.973032,
+    0.016284,
+    0.010684
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6088/wellNum_64/profileID_1/d1_r135621_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.986923,
+    0.008174,
+    0.004903
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6088/wellNum_75/profileID_1/d1_r135643_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.978832,
+    0.01297,
+    0.008198
+   ]
+  },
+  {
+   "path": "100/plateID_1100/batchID_6088/wellNum_86/profileID_1/d1_r135665_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.972149,
+    0.016338,
+    0.011513
+   ]
+  },
+  {
+   "path": "69/plateID_1069/batchID_5946/wellNum_1/profileID_1/d1_r129303_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.974307,
+    0.014316,
+    0.011376
+   ]
+  },
+  {
+   "path": "69/plateID_1069/batchID_5946/wellNum_17/profileID_1/d1_r129351_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.966534,
+    0.018798,
+    0.014668
+   ]
+  },
+  {
+   "path": "69/plateID_1069/batchID_5946/wellNum_24/profileID_1/d1_r129372_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.982448,
+    0.010834,
+    0.006718
+   ]
+  },
+  {
+   "path": "69/plateID_1069/batchID_5946/wellNum_31/profileID_1/d1_r129393_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.968905,
+    0.017734,
+    0.013361
+   ]
+  },
+  {
+   "path": "69/plateID_1069/batchID_5946/wellNum_39/profileID_1/d1_r129417_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.980426,
+    0.011152,
+    0.008422
+   ]
+  },
+  {
+   "path": "69/plateID_1069/batchID_5946/wellNum_46/profileID_1/d1_r129438_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.969902,
+    0.016626,
+    0.013472
+   ]
+  },
+  {
+   "path": "69/plateID_1069/batchID_5946/wellNum_53/profileID_1/d1_r129459_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.96986,
+    0.016195,
+    0.013945
+   ]
+  },
+  {
+   "path": "69/plateID_1069/batchID_5946/wellNum_60/profileID_1/d1_r129480_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.964002,
+    0.019581,
+    0.016417
+   ]
+  },
+  {
+   "path": "69/plateID_1069/batchID_5946/wellNum_68/profileID_1/d1_r129504_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.971578,
+    0.019637,
+    0.008785
+   ]
+  },
+  {
+   "path": "69/plateID_1069/batchID_5946/wellNum_75/profileID_1/d1_r129525_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.973132,
+    0.017641,
+    0.009226
+   ]
+  },
+  {
+   "path": "69/plateID_1069/batchID_5946/wellNum_82/profileID_1/d1_r129546_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.968422,
+    0.017824,
+    0.013754
+   ]
+  },
+  {
+   "path": "69/plateID_1069/batchID_5946/wellNum_9/profileID_1/d1_r129327_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.962445,
+    0.021407,
+    0.016148
+   ]
+  },
+  {
+   "path": "69/plateID_2069/batchID_14121/wellNum_1/profileID_1/d1_r304291_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.983658,
+    0.008632,
+    0.00771
+   ]
+  },
+  {
+   "path": "69/plateID_2069/batchID_14121/wellNum_20/profileID_1/d1_r304329_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.989992,
+    0.005275,
+    0.004733
+   ]
+  },
+  {
+   "path": "69/plateID_2069/batchID_14121/wellNum_31/profileID_1/d1_r304351_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.988104,
+    0.006621,
+    0.005275
+   ]
+  },
+  {
+   "path": "69/plateID_2069/batchID_14121/wellNum_42/profileID_1/d1_r304373_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.987736,
+    0.005766,
+    0.006498
+   ]
+  },
+  {
+   "path": "69/plateID_2069/batchID_14121/wellNum_53/profileID_1/d1_r304395_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.710463,
+    0.262032,
+    0.027505
+   ]
+  },
+  {
+   "path": "69/plateID_2069/batchID_14121/wellNum_64/profileID_1/d1_r304417_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.986352,
+    0.006121,
+    0.007527
+   ]
+  },
+  {
+   "path": "69/plateID_2069/batchID_14121/wellNum_75/profileID_1/d1_r304439_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.979372,
+    0.01098,
+    0.009649
+   ]
+  },
+  {
+   "path": "69/plateID_2069/batchID_14121/wellNum_86/profileID_1/d1_r304461_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.985584,
+    0.007478,
+    0.006937
+   ]
+  },
+  {
+   "path": "70/plateID1070/batchID_5947/wellNum_1/profileID_1/d1_r129591_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.98392,
+    0.008494,
+    0.007586
+   ]
+  },
+  {
+   "path": "70/plateID1070/batchID_5947/wellNum_17/profileID_1/d1_r129639_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.976517,
+    0.014576,
+    0.008907
+   ]
+  },
+  {
+   "path": "70/plateID1070/batchID_5947/wellNum_24/profileID_1/d1_r129660_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.975734,
+    0.013215,
+    0.011051
+   ]
+  },
+  {
+   "path": "70/plateID1070/batchID_5947/wellNum_31/profileID_1/d1_r129681_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.974104,
+    0.013935,
+    0.011961
+   ]
+  },
+  {
+   "path": "70/plateID1070/batchID_5947/wellNum_39/profileID_1/d1_r129705_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.967987,
+    0.019305,
+    0.012708
+   ]
+  },
+  {
+   "path": "70/plateID1070/batchID_5947/wellNum_46/profileID_1/d1_r129726_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.974782,
+    0.013095,
+    0.012124
+   ]
+  },
+  {
+   "path": "70/plateID1070/batchID_5947/wellNum_53/profileID_1/d1_r129747_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.980387,
+    0.009868,
+    0.009744
+   ]
+  },
+  {
+   "path": "70/plateID1070/batchID_5947/wellNum_60/profileID_1/d1_r129768_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.983058,
+    0.009395,
+    0.007547
+   ]
+  },
+  {
+   "path": "70/plateID1070/batchID_5947/wellNum_68/profileID_1/d1_r129792_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.972646,
+    0.014828,
+    0.012526
+   ]
+  },
+  {
+   "path": "70/plateID1070/batchID_5947/wellNum_75/profileID_1/d1_r129813_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.977325,
+    0.011209,
+    0.011465
+   ]
+  },
+  {
+   "path": "70/plateID1070/batchID_5947/wellNum_82/profileID_1/d1_r129834_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.967122,
+    0.018718,
+    0.01416
+   ]
+  },
+  {
+   "path": "70/plateID1070/batchID_5947/wellNum_9/profileID_1/d1_r129615_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.971167,
+    0.016782,
+    0.01205
+   ]
+  },
+  {
+   "path": "70/plateID_2070/batchID_14122/wellNum_1/profileID_1/d1_r304483_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.989128,
+    0.005489,
+    0.005383
+   ]
+  },
+  {
+   "path": "70/plateID_2070/batchID_14122/wellNum_20/profileID_1/d1_r304521_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.9082,
+    0.082898,
+    0.008903
+   ]
+  },
+  {
+   "path": "70/plateID_2070/batchID_14122/wellNum_31/profileID_1/d1_r304543_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.953039,
+    0.038174,
+    0.008787
+   ]
+  },
+  {
+   "path": "70/plateID_2070/batchID_14122/wellNum_42/profileID_1/d1_r304565_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.973095,
+    0.020019,
+    0.006886
+   ]
+  },
+  {
+   "path": "70/plateID_2070/batchID_14122/wellNum_53/profileID_1/d1_r304587_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.949223,
+    0.042463,
+    0.008314
+   ]
+  },
+  {
+   "path": "70/plateID_2070/batchID_14122/wellNum_64/profileID_1/d1_r304609_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.989767,
+    0.004399,
+    0.005834
+   ]
+  },
+  {
+   "path": "70/plateID_2070/batchID_14122/wellNum_75/profileID_1/d1_r304631_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.986722,
+    0.007382,
+    0.005896
+   ]
+  },
+  {
+   "path": "70/plateID_2070/batchID_14122/wellNum_86/profileID_1/d1_r304653_ef.jpg",
+   "label": "crystal",
+   "probabilities": [
+    0.974776,
+    0.016045,
+    0.009178
+   ]
+  }
+ ]
+}

@@ -51,3 +51,6 @@ htmlcov/
 # Local RMServer image fixtures (large, potentially sensitive)
 tests/fixtures/rmserver/
 tests/runtime/
+
+# Crystal classifier: a 16 MB weight copied in by hand, not a repo asset.
+models/

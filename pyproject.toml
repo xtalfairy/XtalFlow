@@ -9,7 +9,12 @@ description = "Crystal image review and experiment workflow"
 requires-python = ">=3.9,<3.13"
 dependencies = [
     "numpy==1.26.4",
+    "onnxruntime==1.31.0",
     "opencv-python-headless==4.10.0.84",
+    # Not interchangeable with cv2 here: the crystal model was trained on
+    # images resized by Pillow, which antialiases where cv2's bilinear does
+    # not, and the difference does not fail - it makes the model worse.
+    "pillow==12.3.0",
     "PyQt5==5.15.11",
     "cryptography==45.0.5",
     "msgpack==1.1.1",

@@ -63,6 +63,7 @@ from xtalflow.application import (
     TargetValidationIssue,
     WellCalibrationService,
 )
+from xtalflow import APP_TITLE
 from xtalflow.domain import (
     PLATE_FORMATS,
     CalibrationMethod,
@@ -175,7 +176,7 @@ class ViewerWindow(QMainWindow):
         # The other half of this window: the experiments and their steps.
         self.experiments = ExperimentCoordinator(self)
         self.setStyleSheet(theme.APPLICATION_STYLE_SHEET)
-        self.setWindowTitle("XtalFlow")
+        self.setWindowTitle(APP_TITLE)
         self.resize(1440, 900)
         self.setMinimumSize(1100, 700)
 
@@ -2276,7 +2277,7 @@ class ViewerWindow(QMainWindow):
 
         worker = threading.Thread(target=work, name="xtalflow-io", daemon=True)
         progress = QProgressDialog(message, None, 0, 0, self)
-        progress.setWindowTitle("XtalFlow")
+        progress.setWindowTitle(APP_TITLE)
         progress.setWindowModality(Qt.WindowModal)
         # QProgressDialog's own delayed show ignores later setMinimumDuration
         # calls, so reveal it explicitly only when the work is not instant.

@@ -3816,3 +3816,28 @@ def test_a_record_under_a_dropped_share_is_called_away_without_asking_the_share(
     assert not any(str(path).startswith(str(tmp_path / "echo650")) for path in asked)
     window.close()
     app.processEvents()
+
+
+def test_every_window_title_carries_the_version(tmp_path: Path) -> None:
+    """Several versions are installed side by side; a window must say which it is."""
+    import tomllib
+
+    from xtalflow import APP_TITLE, __version__
+
+    app = QApplication.instance() or QApplication([])
+    # The number people type is the installed folder's name, so the number in
+    # the code has to be the same one. It said 0.1.0 for three months.
+    packaged = tomllib.loads(
+        (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text()
+    )
+    assert packaged["project"]["version"] == __version__
+    assert APP_TITLE == f"XtalFlow {__version__}"
+
+    window = ViewerWindow(RockMakerImageRepository(FIXTURE_ROOT))
+    assert window.windowTitle() == APP_TITLE
+
+    # And it survives moving around: the title is rewritten on several screens.
+    window.experiments.show_home()
+    assert __version__ in window.windowTitle()
+    window.close()
+    app.processEvents()

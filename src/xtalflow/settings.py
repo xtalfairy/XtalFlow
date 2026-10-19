@@ -147,7 +147,10 @@ DEVELOPMENT_SETTINGS = ApplicationSettings(
     ),
     create_missing_instrument_roots=True,
     source_plate_record_directory=PROJECT_ROOT / "tests" / "runtime" / "source-plates",
-    crystal_model_path=PROJECT_ROOT / "models" / "crystal3.onnx",
+    # No model by default, even here: the weights are copied in by hand and
+    # are not in the repository, so a path would point at nothing on a fresh
+    # clone. Turn it on with --crystal-model models/crystal3.onnx.
+    crystal_model_path=None,
 )
 
 

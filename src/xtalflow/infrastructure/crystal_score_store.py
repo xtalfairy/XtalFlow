@@ -17,7 +17,8 @@ file.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,20 +38,36 @@ class SQLiteCrystalScoreStore:
         self.database_path = Path(database_path).expanduser()
         try:
             self.database_path.parent.mkdir(parents=True, exist_ok=True)
-            self._connection = sqlite3.connect(self.database_path)
-            self._migrate()
+            with self._open() as connection:
+                self._migrate(connection)
         except (OSError, sqlite3.Error) as error:
             raise CrystalScoreStoreUnavailable(
                 f"cannot open the crystal score file {self.database_path}: {error}"
             ) from error
 
-    def _migrate(self) -> None:
-        version = self._connection.execute("PRAGMA user_version").fetchone()[0]
+    @contextmanager
+    def _open(self):
+        """A connection for one call, because scoring runs off the window's thread.
+
+        SQLite refuses a connection used from a thread other than the one that
+        made it. Rather than passing that rule around - and then having to
+        think about the window reading while a worker writes - each call opens
+        its own. A plate is a dozen writes, so this costs nothing measurable.
+        """
+        connection = sqlite3.connect(self.database_path, timeout=5.0)
+        try:
+            yield connection
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _migrate(connection: sqlite3.Connection) -> None:
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
         if version >= SCHEMA_VERSION:
             return
-        self._connection.execute("BEGIN IMMEDIATE")
+        connection.execute("BEGIN IMMEDIATE")
         try:
-            self._connection.execute(
+            connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS image_score (
                     image_set_id TEXT NOT NULL,
@@ -64,11 +81,11 @@ class SQLiteCrystalScoreStore:
                 )
                 """
             )
-            self._connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         except sqlite3.Error:
-            self._connection.rollback()
+            connection.rollback()
             raise
-        self._connection.commit()
+        connection.commit()
 
     def scores_for(self, image_set_id: str, model_id: str) -> dict[str, CrystalScore]:
         """Every score of this image set that the model in use produced.
@@ -78,11 +95,12 @@ class SQLiteCrystalScoreStore:
         by neither.
         """
         try:
-            rows = self._connection.execute(
-                "SELECT image_key, classes, probabilities, model_id "
-                "FROM image_score WHERE image_set_id = ? AND model_id = ?",
-                (image_set_id, model_id),
-            ).fetchall()
+            with self._open() as connection:
+                rows = connection.execute(
+                    "SELECT image_key, classes, probabilities, model_id "
+                    "FROM image_score WHERE image_set_id = ? AND model_id = ?",
+                    (image_set_id, model_id),
+                ).fetchall()
         except sqlite3.Error as error:
             raise CrystalScoreStoreUnavailable(
                 f"cannot read crystal scores: {error}"
@@ -118,8 +136,8 @@ class SQLiteCrystalScoreStore:
         if not rows:
             return 0
         try:
-            with self._connection:
-                self._connection.executemany(
+            with self._open() as connection, connection:
+                connection.executemany(
                     "INSERT OR REPLACE INTO image_score "
                     "(image_set_id, image_key, model_id, classes, probabilities, "
                     "label, scored_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -134,8 +152,8 @@ class SQLiteCrystalScoreStore:
     def forget_other_models(self, image_set_id: str, model_id: str) -> int:
         """Drop scores from models no longer in use, once the new ones are in."""
         try:
-            with self._connection:
-                cursor = self._connection.execute(
+            with self._open() as connection, connection:
+                cursor = connection.execute(
                     "DELETE FROM image_score WHERE image_set_id = ? AND model_id != ?",
                     (image_set_id, model_id),
                 )
@@ -146,7 +164,7 @@ class SQLiteCrystalScoreStore:
         return cursor.rowcount
 
     def close(self) -> None:
-        self._connection.close()
+        """Nothing is held open, so there is nothing to close."""
 
 
 class MemoryCrystalScoreStore:

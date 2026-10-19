@@ -117,3 +117,33 @@ def test_the_score_file_sits_beside_the_review_database_and_not_inside_it(
     }
     connection.close()
     assert tables == {"image_score"}
+
+
+def test_the_store_can_be_used_from_a_worker_thread(tmp_path: Path) -> None:
+    """Scoring runs off the window's thread, and SQLite refuses a shared connection.
+
+    The window reads stored scores to show them at once while a worker writes
+    the rest, so both threads touch this at the same moment.
+    """
+    import threading
+
+    store = SQLiteCrystalScoreStore(tmp_path / "crystal_scores.sqlite3")
+    failures: list[Exception] = []
+
+    def work(start: int) -> None:
+        try:
+            for index in range(start, start + 20):
+                store.save("set-1", [_score(f"image-{index}", 0.5)])
+                store.scores_for("set-1", MODEL)
+        except Exception as error:  # noqa: BLE001 - the point is to see any
+            failures.append(error)
+
+    threads = [threading.Thread(target=work, args=(start,)) for start in (0, 100)]
+    for thread in threads:
+        thread.start()
+    work(200)
+    for thread in threads:
+        thread.join()
+
+    assert not failures, failures
+    assert len(store.scores_for("set-1", MODEL)) == 60

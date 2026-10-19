@@ -32,6 +32,7 @@ from PyQt5.QtWidgets import (
     QApplication,
     QComboBox,
     QCompleter,
+    QCheckBox,
     QDockWidget,
     QDialog,
     QHeaderView,
@@ -47,6 +48,7 @@ from PyQt5.QtWidgets import (
     QShortcut,
     QSpinBox,
     QStackedWidget,
+    QSizePolicy,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -99,6 +101,17 @@ from xtalflow.settings import (
     with_network_path_policy,
 )
 from xtalflow.text import counted
+from xtalflow.application.crystal_scoring import CrystalScoringService
+from xtalflow.domain.crystal_score import crystal_first_order
+from xtalflow.infrastructure.crystal_score_store import (
+    CrystalScoreStoreUnavailable,
+    SQLiteCrystalScoreStore,
+    crystal_score_database,
+)
+from xtalflow.infrastructure.crystal_scorer import (
+    CrystalModelUnavailable,
+    OnnxCrystalScorer,
+)
 from xtalflow.ui.plate_map import PlateMapPanel, plate_map_cells
 from xtalflow.ui.review_widgets import (
     ImageCanvas,
@@ -198,6 +211,13 @@ class ViewerWindow(QMainWindow):
         # What the crystal classifier said about the open image set, if there
         # is a model at all. Empty is the ordinary state at a site with none.
         self._crystal_scores: dict = {}
+        self._crystal_scoring = None
+        self._crystal_model_failed = False
+        self._crystal_scoring_busy = False
+        self._crystal_stop_scoring = False
+        self._crystal_scoring_timer: QTimer | None = None
+        self._crystal_scored_set: str | None = None
+        self._crystal_scoring_text = ""
         self._share_check_busy = False
         self._share_check_timer = QTimer(self)
         self._share_check_timer.setInterval(SHARE_CHECK_MILLISECONDS)
@@ -269,6 +289,14 @@ class ViewerWindow(QMainWindow):
         self.navigation_label.setObjectName("PrimaryHeading")
         self.position_label = QLabel()
         self.position_label.setObjectName("Muted")
+        self.crystal_first_input = QCheckBox("Crystal first")
+        self.crystal_first_input.setToolTip(
+            "Walk this plate by crystal score, highest first. Nothing is "
+            "hidden; every image is still reached."
+        )
+        self.crystal_first_input.setAccessibleName("Crystal first")
+        # No model configured means the whole feature is absent, not greyed out.
+        self.crystal_first_input.setVisible(self.settings.crystal_model_path is not None)
         self.image_filter_input = QComboBox()
         self.image_filter_input.addItem("All images", ImageFilter.ALL)
         self.image_filter_input.addItem("With targets", ImageFilter.WITH_TARGETS)
@@ -306,6 +334,10 @@ class ViewerWindow(QMainWindow):
         self.next_button.setAccessibleName("Next image")
         self.review_summary_label = QLabel()
         self.review_summary_label.setObjectName("Muted")
+        # The row is full. Status text gives way before a control does.
+        self.review_summary_label.setSizePolicy(
+            QSizePolicy.Ignored, self.review_summary_label.sizePolicy().verticalPolicy()
+        )
         self.examples_button = QToolButton()
         self.examples_button.setText("Examples")
         self.examples_button.setToolTip("Lab-approved examples of where to place positions")
@@ -335,6 +367,7 @@ class ViewerWindow(QMainWindow):
         navigation.addWidget(self.position_label)
         navigation.addWidget(self.review_summary_label)
         navigation.addStretch()
+        navigation.addWidget(self.crystal_first_input)
         navigation.addWidget(self.image_filter_input)
         well_label = QLabel("Well")
         well_label.setObjectName("Muted")
@@ -649,6 +682,7 @@ class ViewerWindow(QMainWindow):
             self._change_auto_confirm_confidence
         )
         self.image_filter_input.currentIndexChanged.connect(self._change_image_filter)
+        self.crystal_first_input.toggled.connect(self._crystal_first_toggled)
         self.well_input.returnPressed.connect(self._go_to_entered_well)
         self.well_input.editingFinished.connect(self._go_to_entered_well)
         focus_well = QShortcut(QKeySequence("Ctrl+L"), self)
@@ -1033,6 +1067,7 @@ class ViewerWindow(QMainWindow):
         """Take up the review the controller now holds, and redraw around it."""
         self._adopt_active_review()
         self._sync_project_widgets()
+        self._start_crystal_scoring_when_free()
 
     def _open_project_and_show(self, project_id: str) -> bool:
         """Open a workspace and show it; False when its images cannot be read."""
@@ -1047,6 +1082,11 @@ class ViewerWindow(QMainWindow):
 
     def _adopt_active_review(self) -> None:
         self.controller = self.project_controller.review_controller
+        # A different image set has different scores; stop any still running
+        # for the last one rather than letting it finish into this plate.
+        self._crystal_stop_scoring = True
+        self._crystal_scores = {}
+        self._crystal_scoring_text = ""
         if self.controller is None:
             self.calibration_service = None
             self.current_calibration = None
@@ -1903,6 +1943,153 @@ class ViewerWindow(QMainWindow):
             ).physical_diameter_mm
         self.calibration_inspector.show_calibration(calibration, lens_diameter)
 
+    def _crystal_first_toggled(self, checked: bool) -> None:
+        """Change where next and previous go. The view does not move."""
+        self._apply_crystal_order()
+        if checked and not self._crystal_scores:
+            self.status_message_label.show_message(
+                "Crystal first · from when scoring finishes", 4000
+            )
+
+    def _crystal_service(self):
+        """The scoring service, made once. None when this site has no model."""
+        if self.settings.crystal_model_path is None or self.review_store is None:
+            return None
+        if self._crystal_scoring is None and not self._crystal_model_failed:
+            try:
+                self._crystal_scoring = CrystalScoringService(
+                    OnnxCrystalScorer(self.settings.crystal_model_path),
+                    SQLiteCrystalScoreStore(
+                        crystal_score_database(
+                            self.review_store.database_path,
+                            self.settings.crystal_score_database_filename,
+                        )
+                    ),
+                )
+            except (CrystalModelUnavailable, CrystalScoreStoreUnavailable) as error:
+                # Said once, then the feature behaves as if it were off.
+                self._crystal_model_failed = True
+                self.status_message_label.show_message(
+                    f"Crystal model not loaded · {error}", 10000
+                )
+        return self._crystal_scoring
+
+    def _score_open_plate(self) -> None:
+        """Score the open image set on a worker thread, if it is not scored.
+
+        The user walks in well order meanwhile. Nothing here asks a question:
+        a share that drops part way through leaves images unscored, which
+        sends them to the front of the walk rather than stopping it.
+        """
+        if self.review_store is None:
+            return  # Nowhere of our own to keep the scores.
+        service = self._crystal_service()
+        if service is None or self.controller is None or self._crystal_scoring_busy:
+            return
+        image_set = self.project_controller.active_image_set
+        if image_set is None:
+            return
+        image_set_id = image_set.id
+        images = tuple(self.controller.plate.images)
+        found: dict = {}
+        progress: list = []
+
+        def work() -> None:
+            try:
+                found["scores"] = service.score_missing(
+                    image_set_id, images,
+                    progress=progress.append,
+                    should_stop=lambda: self._crystal_stop_scoring,
+                )
+            except Exception as error:  # a share that went away, a bad row
+                found["error"] = error
+
+        self._crystal_scoring_busy = True
+        self._crystal_stop_scoring = False
+        self._crystal_scored_set = image_set_id
+        worker = threading.Thread(target=work, name="xtalflow-crystal", daemon=True)
+        poll = QTimer(self)
+        poll.setInterval(200)
+        poll.timeout.connect(
+            lambda: self._crystal_progress(progress[-1] if progress else None)
+            if worker.is_alive()
+            else self._crystal_scored(poll, found, len(images))
+        )
+        self._crystal_scoring_timer = poll
+        worker.start()
+        poll.start()
+
+    def _crystal_progress(self, step) -> None:
+        if step is None:
+            return
+        self._crystal_scoring_text = f"scoring {step.done} of {step.total}"
+        self._update_review_summary()
+        if hasattr(self, "plate_map_panel"):
+            self.plate_map_panel.show_status(f"Scoring {step.done} of {step.total}…")
+
+    def _crystal_scored(self, poll: QTimer, found: dict, total: int) -> None:
+        poll.stop()
+        self._crystal_scoring_busy = False
+        self._crystal_scoring_text = ""
+        scores = found.get("scores")
+        if scores is None:
+            self._update_review_summary()
+            if hasattr(self, "plate_map_panel"):
+                self.plate_map_panel.show_status(
+                    f"Scoring stopped · {found.get('error', 'the images could not be read')}"
+                )
+            return
+        self._crystal_scores = scores
+        counted: dict[str, int] = {}
+        for score in scores.values():
+            counted[score.display_label] = counted.get(score.display_label, 0) + 1
+        summary = ", ".join(f"{count} {name}" for name, count in sorted(counted.items()))
+        unscored = total - len(scores)
+        if unscored:
+            summary += f", {unscored} not scored"
+        self.status_message_label.show_message(f"Scored {total} images · {summary}", 6000)
+        if hasattr(self, "plate_map_panel"):
+            self.plate_map_panel.show_status(summary)
+        self._apply_crystal_order()
+        self._update_review_summary()
+        self._refresh_plate_map()
+
+    def _start_crystal_scoring_when_free(self) -> None:
+        """Begin scoring once the last plate's worker has let go.
+
+        Asked again on a short timer rather than waited for: the window has to
+        stay answerable while a batch of sixteen finishes.
+        """
+        if self._crystal_scoring_busy:
+            QTimer.singleShot(250, self._start_crystal_scoring_when_free)
+            return
+        self._crystal_stop_scoring = False
+        service = self._crystal_service()
+        image_set = self.project_controller.active_image_set
+        if service is not None and image_set is not None:
+            image_set_id = image_set.id
+            # Anything already scored shows at once; only the rest is work.
+            try:
+                self._crystal_scores = service.stored(image_set_id)
+            except CrystalScoreStoreUnavailable:
+                self._crystal_scores = {}
+            self._apply_crystal_order()
+        self._score_open_plate()
+
+    def _apply_crystal_order(self) -> None:
+        """Put the walk in the order the checkbox asks for, without moving."""
+        if self.controller is None:
+            return
+        if self.crystal_first_input.isChecked() and self._crystal_scores:
+            keys = [image.image_key for image in self.controller.plate.images]
+            self.controller.set_walk_order(
+                crystal_first_order(keys, self._crystal_scores)
+            )
+        else:
+            self.controller.set_walk_order(None)
+        self._update_review_summary()
+        self._refresh_plate_map()
+
     def _share_pressed(self, key: str) -> None:
         """Say what the last reading found, then look again."""
         detail = self.workspace_sidebar.share_state_detail(key)
@@ -2220,10 +2407,13 @@ class ViewerWindow(QMainWindow):
             filtered = len(self.controller.filtered_indices)
             total = len(self.controller.plate.images)
             matches = "" if filtered == total else f" · {filtered} images match filter"
+            scoring = f" · {self._crystal_scoring_text}" if self._crystal_scoring_text else ""
             others = self.experiments._other_experiments_using_current_image()
             used = f" · △ also used in {', '.join(others)}" if others else ""
             self.well_progress_label.setText(f"This well · {positions} of")
-            self.review_summary_label.setText(f"{review_state}{matches}{used}".lstrip(" ·"))
+            self.review_summary_label.setText(
+                f"{review_state}{matches}{scoring}{used}".lstrip(" ·")
+            )
             self.review_summary_label.setStyleSheet(
                 theme.status_style("attention") if others else ""
             )
@@ -2265,6 +2455,12 @@ class ViewerWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
         self._share_check_timer.stop()
+        # Scoring a plate is thirty seconds of worker thread; it has to be
+        # told, or it goes on reading images for a window that is gone. The
+        # poll keeps running on purpose: it is what notices the worker let go
+        # and keeps the part of the plate that was scored. The timer is this
+        # window's child, so it dies with it either way.
+        self._crystal_stop_scoring = True
         for editor in tuple(self.experiments._editors.values()):
             self.experiments._leave_experiment(editor)
         while self.controller is not None:

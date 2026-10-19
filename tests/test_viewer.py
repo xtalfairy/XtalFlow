@@ -1,6 +1,7 @@
 import os
 import socket
 import sqlite3
+import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -3911,3 +3912,100 @@ def test_the_plate_map_opens_and_a_cell_moves_the_review_to_that_drop(
     assert window.controller.current_image.drop_number == 2
     window.close()
     app.processEvents()
+
+
+def test_a_plate_is_scored_in_the_background_and_crystal_first_reorders_the_walk(
+    tmp_path: Path,
+) -> None:
+    """End to end with the real model: open a plate, score it, walk by rank."""
+    from xtalflow.ui.load_plates_dialog import PlateSource
+
+    model = Path(__file__).resolve().parent.parent / "models" / "crystal3.onnx"
+    if not model.is_file():
+        pytest.skip("no models/crystal3.onnx; make it with codex/export_crystal_onnx.py")
+
+    app = QApplication.instance() or QApplication([])
+    settings = replace(DEFAULT_SETTINGS, crystal_model_path=model)
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT), store, settings=settings
+    )
+    window.show()
+    app.processEvents()
+    window.load_plates(SWISSCI_MIDI_3_LENS, (
+        (PlateSource("2070", 14122, "profileID_1"),
+         RockMakerImageRepository(FIXTURE_ROOT).load_plate("2070")),
+    ))
+
+    # 192 images at about a tenth of a second each; wait, pumping the loop.
+    deadline = time.monotonic() + 120
+    while window._crystal_scoring_busy and time.monotonic() < deadline:
+        app.processEvents()
+        QTest.qWait(100)
+    assert not window._crystal_scoring_busy, "scoring did not finish"
+    assert len(window._crystal_scores) == len(window.controller.plate.images)
+
+    # Well order until asked; the view never moves when the order changes.
+    assert window.controller.walk_order == tuple(range(len(window.controller.plate.images)))
+    here = window.controller.image_index
+    window.crystal_first_input.setChecked(True)
+    app.processEvents()
+    assert window.controller.image_index == here
+
+    order = window.controller.walk_order
+    assert sorted(order) == list(range(len(order))), "nothing may be hidden"
+    probabilities = [
+        window._crystal_scores[window.controller.plate.images[index].image_key]
+        .crystal_probability
+        for index in order
+    ]
+    assert probabilities == sorted(probabilities, reverse=True)
+
+    # And the walk really follows it: next goes to the second-ranked image.
+    window.controller.move_to(order[0])
+    assert window.controller.move_next()
+    assert window.controller.image_index == order[1]
+
+    # Opening the same plate again is immediate: the scores are on disk.
+    scored_again = window._crystal_service().stored(
+        window.project_controller.active_image_set.id
+    )
+    assert len(scored_again) == len(window._crystal_scores)
+    window.close()
+    app.processEvents()
+
+
+def test_closing_the_window_stops_a_plate_that_is_still_being_scored(
+    tmp_path: Path,
+) -> None:
+    """Thirty seconds of worker thread must not outlive the window it was for."""
+    from xtalflow.ui.load_plates_dialog import PlateSource
+
+    model = Path(__file__).resolve().parent.parent / "models" / "crystal3.onnx"
+    if not model.is_file():
+        pytest.skip("no models/crystal3.onnx; make it with codex/export_crystal_onnx.py")
+
+    app = QApplication.instance() or QApplication([])
+    settings = replace(DEFAULT_SETTINGS, crystal_model_path=model)
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT), store, settings=settings
+    )
+    window.show()
+    app.processEvents()
+    window.load_plates(SWISSCI_MIDI_3_LENS, (
+        (PlateSource("2070", 14122, "profileID_1"),
+         RockMakerImageRepository(FIXTURE_ROOT).load_plate("2070")),
+    ))
+    assert window._crystal_scoring_busy, "scoring should have started"
+
+    window.close()
+    app.processEvents()
+
+    assert window._crystal_stop_scoring
+    # It gives up between batches, so a part-scored plate is what is kept.
+    deadline = time.monotonic() + 30
+    while window._crystal_scoring_busy and time.monotonic() < deadline:
+        app.processEvents()
+        QTest.qWait(50)
+    assert not window._crystal_scoring_busy, "scoring went on after the window closed"

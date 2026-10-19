@@ -264,3 +264,78 @@ class PlateMapPanel(QWidget):
     def show_status(self, text: str) -> None:
         self.status_label.setText(text)
         self.status_label.setVisible(bool(text))
+
+
+def plate_map_cells(controller, scores, ranks) -> tuple[WellCell, ...]:
+    """One cell per well of the open image set, from what is known right now.
+
+    ``scores`` is keyed by image key, ``ranks`` gives each image's place in the
+    crystal-first order counting from one. A well shows its best drop: the one
+    the model liked most, or its first if none of them is scored yet.
+
+    No Qt here, so the arithmetic that decides what a glance says can be
+    tested without a screen.
+    """
+    plate_format = controller_plate_format(controller)
+    by_well: dict[int, list[int]] = {}
+    for index, image in enumerate(controller.plate.images):
+        by_well.setdefault(image.well_number, []).append(index)
+
+    cells = []
+    for well_number, indices in sorted(by_well.items()):
+        images = [controller.plate.images[index] for index in indices]
+        best_position = max(
+            range(len(images)),
+            key=lambda position: (
+                scores[images[position].image_key].crystal_probability
+                if images[position].image_key in scores else -1.0
+            ),
+        )
+        best = images[best_position]
+        score = scores.get(best.image_key)
+        positions = sum(controller.session.target_count_for(image) for image in images)
+        lines = []
+        for image in images:
+            suffix = _drop_suffix(plate_format, image)
+            parts = [scores[image.image_key].display_label] if image.image_key in scores else ["not scored"]
+            count = controller.session.target_count_for(image)
+            if count:
+                parts.append(f"{count} position{'' if count == 1 else 's'}")
+            elif controller.session.is_reviewed(image):
+                parts.append("reviewed")
+            lines.append(f"{suffix}  {' · '.join(parts)}")
+        cells.append(
+            WellCell(
+                well_number=well_number,
+                address=_well_address(plate_format, best),
+                label=score.display_label if score is not None else "",
+                rank=ranks.get(best.image_key),
+                positions=positions,
+                reviewed=all(controller.session.is_reviewed(image) for image in images),
+                detail="\n".join(lines),
+                image_index=indices[best_position],
+            )
+        )
+    return tuple(cells)
+
+
+def controller_plate_format(controller):
+    return getattr(controller, "plate_format", None)
+
+
+def _drop_suffix(plate_format, image) -> str:
+    if plate_format is None:
+        return f"d{image.drop_number}"
+    try:
+        return plate_format.address_for(image.well_number, image.drop_number).lens
+    except ValueError:
+        return f"d{image.drop_number}"
+
+
+def _well_address(plate_format, image) -> str:
+    if plate_format is None:
+        return f"Well {image.well_number}"
+    try:
+        return str(plate_format.address_for(image.well_number, image.drop_number))[:3]
+    except ValueError:
+        return f"Well {image.well_number}"

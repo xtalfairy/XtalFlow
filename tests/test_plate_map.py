@@ -109,3 +109,108 @@ def test_a_cell_can_be_read_without_colour(app) -> None:
     for word in ("crystal", "clear", "empty", "not scored", "reviewed"):
         assert word in LEGEND
     assert set(GLYPHS) == {"crystal", "clear", "empty"}
+
+
+def _controller_with(wells: int = 3, drops: int = 3):
+    from pathlib import Path
+
+    from xtalflow.application import ReviewController
+    from xtalflow.domain import (
+        CrystalImage,
+        PlateImages,
+        ReviewPreferences,
+        ReviewProgress,
+        ReviewSession,
+    )
+
+    images = tuple(
+        CrystalImage("2070", 14122, well, drop, "profileID_1", Path(f"{well}-{drop}.jpg"))
+        for well in range(1, wells + 1)
+        for drop in range(1, drops + 1)
+    )
+    plate = PlateImages("2070", 14122, "profileID_1", images)
+    progress = ReviewProgress.create(
+        plate.plate_code, plate.batch_id, plate.profile, images[0].image_key
+    )
+    controller = ReviewController(
+        plate, progress, ReviewPreferences(1), ReviewSession()
+    )
+    controller.plate_format = SWISSCI_MIDI_3_LENS
+    return controller
+
+
+def _scored(image_key: str, crystal: float):
+    from xtalflow.domain.crystal_score import CrystalScore
+
+    rest = (1.0 - crystal) / 2
+    return CrystalScore(image_key, ("crystal", "drop", "empty"), (crystal, rest, rest), "m")
+
+
+def test_a_well_shows_its_best_drop_and_the_click_goes_to_that_drop(app) -> None:
+    """A cell that showed the best drop but jumped to drop a would be a lie."""
+    from xtalflow.ui.plate_map import plate_map_cells
+
+    controller = _controller_with(wells=2)
+    images = controller.plate.images
+    scores = {
+        images[0].image_key: _scored(images[0].image_key, 0.1),
+        images[1].image_key: _scored(images[1].image_key, 0.9),  # well 1, drop 2
+        images[2].image_key: _scored(images[2].image_key, 0.4),
+    }
+    ranks = {images[1].image_key: 1, images[2].image_key: 2, images[0].image_key: 3}
+
+    cells = {cell.well_number: cell for cell in plate_map_cells(controller, scores, ranks)}
+
+    assert cells[1].label == "crystal"
+    assert cells[1].rank == 1
+    assert cells[1].image_index == 1, "the click must land on the drop the cell shows"
+    assert cells[1].address == "A01"
+    # Every drop is itemised, by the lens letter the rest of the app uses -
+    # which for a MIDI 3-lens plate is a, c, d, not a, b, c.
+    assert [line[0] for line in cells[1].detail.splitlines()] == ["a", "c", "d"]
+    assert cells[1].detail.splitlines()[1] == "c  crystal"
+
+
+def test_a_well_nobody_has_scored_yet_still_has_a_cell_to_click(app) -> None:
+    from xtalflow.ui.plate_map import plate_map_cells
+
+    controller = _controller_with(wells=2)
+
+    cells = {cell.well_number: cell for cell in plate_map_cells(controller, {}, {})}
+
+    assert len(cells) == 2
+    assert cells[2].label == ""
+    assert cells[2].rank is None
+    assert cells[2].image_index is not None
+    assert "not scored" in cells[2].detail
+
+
+def test_positions_are_counted_across_the_well_s_drops(app) -> None:
+    from xtalflow.ui.plate_map import plate_map_cells
+
+    controller = _controller_with(wells=2)
+    images = controller.plate.images
+    controller.session.add_target(images[0], 10, 10, 100, 100)
+    controller.session.add_target(images[0], 20, 20, 100, 100)
+    controller.session.add_target(images[2], 30, 30, 100, 100)
+
+    cells = {cell.well_number: cell for cell in plate_map_cells(controller, {}, {})}
+
+    assert cells[1].positions == 3, "a well's count is all of its drops"
+    assert cells[2].positions == 0
+
+
+def test_a_well_counts_as_reviewed_only_when_every_drop_is(app) -> None:
+    from xtalflow.ui.plate_map import plate_map_cells
+
+    controller = _controller_with(wells=1)
+    images = controller.plate.images
+    controller.session.mark_reviewed(images[0])
+    controller.session.mark_reviewed(images[1])
+
+    (cell,) = plate_map_cells(controller, {}, {})
+    assert not cell.reviewed
+
+    controller.session.mark_reviewed(images[2])
+    (cell,) = plate_map_cells(controller, {}, {})
+    assert cell.reviewed

@@ -99,6 +99,7 @@ from xtalflow.settings import (
     with_network_path_policy,
 )
 from xtalflow.text import counted
+from xtalflow.ui.plate_map import PlateMapPanel, plate_map_cells
 from xtalflow.ui.review_widgets import (
     ImageCanvas,
     ImagePathStatusLabel,
@@ -194,6 +195,9 @@ class ViewerWindow(QMainWindow):
         # A share can go away between one save and the next, so the panel asks
         # again on its own rather than only when something has already failed.
         self._share_states: tuple[ShareState, ...] = ()
+        # What the crystal classifier said about the open image set, if there
+        # is a model at all. Empty is the ordinary state at a site with none.
+        self._crystal_scores: dict = {}
         self._share_check_busy = False
         self._share_check_timer = QTimer(self)
         self._share_check_timer.setInterval(SHARE_CHECK_MILLISECONDS)
@@ -348,6 +352,15 @@ class ViewerWindow(QMainWindow):
             "Show or hide this experiment's selected wells and their warnings (Ctrl+Shift+T)"
         )
         navigation.addWidget(self.target_summary_button)
+        self.plate_map_button = QPushButton("Plate map")
+        self.plate_map_button.setCheckable(True)
+        self.plate_map_button.setToolTip(
+            "Show or hide the plate at a glance (Ctrl+Shift+M)"
+        )
+        # Without a crystal model there is nothing for it to show, so it is
+        # not there at all rather than present and empty.
+        self.plate_map_button.setVisible(self.settings.crystal_model_path is not None)
+        navigation.addWidget(self.plate_map_button)
 
         self.image_canvas = ImageCanvas()
         self.image_canvas.setAccessibleName("Crystal image")
@@ -501,11 +514,24 @@ class ViewerWindow(QMainWindow):
         self.target_summary_dock.setWidget(target_summary_panel)
         self.addDockWidget(Qt.RightDockWidgetArea, self.target_summary_dock)
         self.target_summary_dock.hide()
+        self._build_plate_map_dock()
         self.view_menu = self.menuBar().addMenu("View")
         self.target_summary_action = self.target_summary_dock.toggleViewAction()
         self.target_summary_action.setText("Selected Wells")
         self.target_summary_action.setShortcut(QKeySequence("Ctrl+Shift+T"))
         self.view_menu.addAction(self.target_summary_action)
+        if self.settings.crystal_model_path is not None:
+            self.plate_map_action = self.plate_map_dock.toggleViewAction()
+            self.plate_map_action.setText("Plate Map")
+            self.plate_map_action.setShortcut(QKeySequence("Ctrl+Shift+M"))
+            self.view_menu.addAction(self.plate_map_action)
+            self.plate_map_button.toggled.connect(self.plate_map_dock.setVisible)
+            self.plate_map_dock.visibilityChanged.connect(
+                self.plate_map_button.setChecked
+            )
+            self.plate_map_dock.visibilityChanged.connect(
+                lambda visible: self._refresh_plate_map() if visible else None
+            )
         # Small screens can give the plate list's width to the image.
         self.plates_panel_action = self.view_menu.addAction("Plate List")
         self.plates_panel_action.setCheckable(True)
@@ -1218,6 +1244,51 @@ class ViewerWindow(QMainWindow):
             image_set.plate_format_id, image_set.plate_format_version
         )
 
+    def _build_plate_map_dock(self) -> None:
+        """The plate at a glance, beside the selected wells.
+
+        A dock rather than a popup: a Qt.Popup closes on the first click
+        outside it, and this is read, looked away from, and read again.
+        """
+        self.plate_map_panel = PlateMapPanel()
+        self.plate_map_panel.well_clicked.connect(self._go_to_image_index)
+        self.plate_map_dock = QDockWidget("Plate map", self)
+        self.plate_map_dock.setObjectName("plate_map_dock")
+        self.plate_map_dock.setAllowedAreas(
+            Qt.RightDockWidgetArea | Qt.LeftDockWidgetArea
+        )
+        self.plate_map_dock.setWidget(self.plate_map_panel)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.plate_map_dock)
+        self.plate_map_dock.hide()
+
+    def _go_to_image_index(self, image_index: int) -> None:
+        """Go to the drop the map cell showed, not to the well's first drop."""
+        if self.controller is None:
+            return
+        if self.controller.move_to(image_index):
+            self._show_current_image()
+        self._refresh_plate_map()
+
+    def _refresh_plate_map(self) -> None:
+        """Redraw the map from what is known now; cheap enough to do on a move."""
+        if not hasattr(self, "plate_map_panel"):
+            return
+        if self.controller is None or not self.plate_map_dock.isVisible():
+            return
+        plate = self.controller.plate
+        self.controller.plate_format = self._active_plate_format()
+        ranks = {
+            self.controller.plate.images[index].image_key: place + 1
+            for place, index in enumerate(self.controller.walk_order)
+        } if self._crystal_scores else {}
+        cells = plate_map_cells(self.controller, self._crystal_scores, ranks)
+        self.plate_map_panel.show_plate(
+            f"Plate {plate.plate_code} · {len(cells)} wells · {len(plate.images)} images",
+            self._active_plate_format(),
+            cells,
+            self.controller.current_image.well_number,
+        )
+
     def _show_image_set_context_menu(self, position) -> None:
         index = self.image_set_list.indexAt(position)
         if not index.isValid():
@@ -1639,6 +1710,7 @@ class ViewerWindow(QMainWindow):
     def _show_current_image(self) -> None:
         if self.controller is None:
             return
+        self._refresh_plate_map()
         image = self.controller.current_image
         self.image_path_status.set_image_path(image.path)
         pixmap = QPixmap(str(image.path))

@@ -3841,3 +3841,73 @@ def test_every_window_title_carries_the_version(tmp_path: Path) -> None:
     assert __version__ in window.windowTitle()
     window.close()
     app.processEvents()
+
+
+def test_the_plate_map_is_absent_entirely_without_a_crystal_model(tmp_path: Path) -> None:
+    """A site with no model must see today's window, not a dead control."""
+    app = QApplication.instance() or QApplication([])
+    settings = replace(DEFAULT_SETTINGS, crystal_model_path=None)
+    window = ViewerWindow(RockMakerImageRepository(FIXTURE_ROOT), settings=settings)
+
+    assert not window.plate_map_button.isVisible()
+    assert not hasattr(window, "plate_map_action")
+    assert not window.plate_map_dock.isVisible()
+    # And nothing in the View menu offers it.
+    assert "Plate Map" not in {
+        action.text() for action in window.view_menu.actions()
+    }
+    window.close()
+    app.processEvents()
+
+
+def test_the_plate_map_opens_and_a_cell_moves_the_review_to_that_drop(
+    tmp_path: Path,
+) -> None:
+    """The cell shows a well's best drop, so the click has to land on it."""
+    from xtalflow.domain.crystal_score import CrystalScore
+    from xtalflow.ui.load_plates_dialog import PlateSource
+
+    app = QApplication.instance() or QApplication([])
+    settings = replace(DEFAULT_SETTINGS, crystal_model_path=tmp_path / "crystal3.onnx")
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT), store, settings=settings
+    )
+    window.show()
+    app.processEvents()
+    window.load_plates(SWISSCI_MIDI_3_LENS, (
+        (PlateSource("2070", 14122, "profileID_1"),
+         RockMakerImageRepository(FIXTURE_ROOT).load_plate("2070")),
+    ))
+    app.processEvents()
+    assert window.controller is not None
+
+    # Say the second drop of some well is the one the model liked.
+    images = window.controller.plate.images
+    target = next(
+        index for index, image in enumerate(images)
+        if image.drop_number == 2 and image.well_number != images[0].well_number
+    )
+    window._crystal_scores = {
+        images[target].image_key: CrystalScore(
+            images[target].image_key, ("crystal", "drop", "empty"), (0.95, 0.03, 0.02), "m"
+        )
+    }
+
+    window.plate_map_button.setChecked(True)
+    app.processEvents()
+    assert window.plate_map_dock.isVisible()
+    assert window.plate_map_panel.map.rows == 8
+
+    cell = next(
+        item for item in window.plate_map_panel.map._cells.values()
+        if item.image_index == target
+    )
+    assert cell.label == "crystal"
+    window.plate_map_panel.map.well_clicked.emit(cell.image_index)
+    app.processEvents()
+
+    assert window.controller.image_index == target
+    assert window.controller.current_image.drop_number == 2
+    window.close()
+    app.processEvents()

@@ -100,18 +100,22 @@ class RockMakerImageRepository:
 
     @staticmethod
     def shard_for(plate_code: str | int) -> str:
+        """The folder RockMaker files a plate under: the code's last three digits.
+
+        Read off the share itself, against all 1705 plate folders at BL-5C on
+        2026-10-19: every one of them sits under ``str(code % 1000)``, written
+        without leading zeros. So 2164 and 1164 share "164", 2002 and 1002
+        share "2", 2000 is in "0", and a code below 1000 is its own folder.
+
+        The rule here used to be copied from XtalViewer 2.0's utils/func.py,
+        which sent 2100 and up to a folder named after the whole code, and
+        1002 and 2002 to "02". Ninety-three of the plates on the share could
+        not be found that way, plate 2164 among them.
+        """
         code = str(plate_code).strip()
         if not code.isdigit():
             raise InvalidPlateCodeError(f"invalid plate code: {plate_code!r}")
-
-        plate_number = int(code)
-        if 999 < plate_number < 1100:
-            return code[2:]
-        if 1100 <= plate_number < 2000:
-            return code[1:]
-        if 2000 <= plate_number < 2100:
-            return code[2:]
-        return code
+        return str(int(code) % 1000)
 
     def plate_directory(self, plate_code: str | int) -> Path:
         code = str(plate_code).strip()

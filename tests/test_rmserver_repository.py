@@ -19,9 +19,19 @@ requires_real_fixture = pytest.mark.skipif(
 
 @pytest.mark.parametrize(
     ("plate_code", "shard"),
-    [("1069", "69"), ("1070", "70"), ("1100", "100"), ("2001", "01"), ("2100", "2100")],
+    [
+        # Taken from the folders on the BL-5C share, not from the old rule:
+        # every plate is filed under its code's last three digits, written
+        # without leading zeros.
+        ("1069", "69"), ("1070", "70"), ("1100", "100"),
+        ("2164", "164"), ("1164", "164"),
+        ("2001", "1"), ("1002", "2"), ("2002", "2"), ("2000", "0"),
+        ("2099", "99"), ("999", "999"), ("2181", "181"),
+    ],
 )
-def test_legacy_shard_rules(plate_code: str, shard: str) -> None:
+def test_plates_are_filed_under_the_last_three_digits(
+    plate_code: str, shard: str
+) -> None:
     assert RockMakerImageRepository.shard_for(plate_code) == shard
 
 

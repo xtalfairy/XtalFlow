@@ -279,11 +279,9 @@ class WorkspaceSidebar(QWidget):
             lit, colour = SHARE_LAMPS[state.state]
             button.setIcon(QIcon(icons.lamp_pixmap(lit, LAMP_SIZE, colour)))
             button.setText(state.label)
-            # Only the share that is down is spelled out; the rest read as a
-            # row of identical lamps, which is the point of a row of lamps.
-            button.setStyleSheet(
-                "" if lit else f"color: {theme.ERROR}; font-weight: 600;"
-            )
+            # The colour stays in the lamp.  The one that is down gets weight
+            # instead, so the row still reads as lamps with a name beside them.
+            button.setStyleSheet("" if lit else "font-weight: 600;")
             button.setToolTip(
                 f"{state.label} · {state.detail}\n{state.path}\n\n"
                 "Click to look again"

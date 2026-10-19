@@ -3430,11 +3430,13 @@ def test_the_panel_lights_a_lamp_for_each_share(
     buttons = window.workspace_sidebar.share_buttons
 
     assert set(buttons) == {"rmserver", "echo650", "shifter1", "shifter2"}
-    # The name stays plain; the lamp carries the state. A folder that is there
-    # but is not a share is marked like one that is missing: neither can be
-    # saved to, and only the reason differs.
+    # The name stays plain and uncoloured; the lamp carries the state, and a
+    # share that is down gets weight on top of it. A folder that is there but
+    # is not a share is marked like one that is missing: neither can be saved
+    # to, and only the reason differs.
     assert buttons["echo650"].text() == "ECHO 650"
-    assert theme.ERROR in buttons["echo650"].styleSheet()
+    assert "font-weight" in buttons["echo650"].styleSheet()
+    assert theme.ERROR not in buttons["echo650"].styleSheet()
     assert "not a mounted share" in buttons["echo650"].toolTip()
     assert "the folder is not there" in buttons["shifter2"].toolTip()
     assert str(tmp_path / "shifter2") in buttons["shifter2"].toolTip()

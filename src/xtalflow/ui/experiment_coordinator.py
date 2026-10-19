@@ -989,6 +989,10 @@ class ExperimentCoordinator:
         if step is WorkflowStep.SELECT_WELLS:
             if editor.wells_needing_attention:
                 return f"Check {counted(editor.wells_needing_attention, 'well')}", True
+            if editor.wells_unusable:
+                # There is nothing in the dock to check, so do not offer to
+                # go there: the footer carries the reason instead.
+                return f"Use {counted(editor.selected_well_count, 'well')}", False
             if editor.selected_well_count:
                 return f"Use {counted(editor.selected_well_count, 'well')}", True
             return "Use wells", False
@@ -1164,16 +1168,23 @@ class ExperimentCoordinator:
             editor.selected_position_count = len(summaries)
             editor.wells_needing_attention = len(attention)
             crystals = ()
+            editor.wells_unusable = None
             if summaries and not attention:
                 try:
                     crystals = self.window.project_controller.selected_crystals_for_plan()
                 except IMAGE_SOURCE_ERRORS as error:
-                    editor.wells_needing_attention = editor.selected_well_count
+                    # Every well is confirmed and in bounds; something else
+                    # stops a plan being made. Counting them all as needing
+                    # attention sent the user to a dock with nothing in it,
+                    # and no amount of confirming moved a number that was
+                    # never about confirming.
+                    editor.wells_unusable = str(error)
                     self.window.status_message_label.show_message(str(error))
         else:
             editor.selected_well_count = len(crystals)
             editor.selected_position_count = sum(len(item.targets) for item in crystals)
             editor.wells_needing_attention = 0
+            editor.wells_unusable = None
         signature = tuple(
             (
                 crystal.image_key,

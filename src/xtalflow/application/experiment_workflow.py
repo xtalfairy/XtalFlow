@@ -270,6 +270,9 @@ class ExperimentFacts:
     unused_well_count: int = 0
     # Why the selected wells could not be counted: the image share was unreachable.
     images_unavailable: str | None = None
+    # Why confirmed wells still cannot be made into a plan - an unsupported
+    # plate format, say. Not the wells' fault, and not fixed by checking them.
+    wells_unusable: str | None = None
 
 
 @dataclass(frozen=True)
@@ -335,6 +338,12 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
             WorkflowStep.SELECT_WELLS, StepState.ATTENTION,
             f"{counted(facts.wells_needing_attention, 'well')} "
             f"{'needs' if facts.wells_needing_attention == 1 else 'need'} attention · {selection}",
+        )
+    elif facts.wells_unusable:
+        # The wells are confirmed and in bounds; something else about them
+        # stops a plan being made, so say that rather than blame the wells.
+        statuses[WorkflowStep.SELECT_WELLS] = StepStatus(
+            WorkflowStep.SELECT_WELLS, StepState.ATTENTION, facts.wells_unusable
         )
     else:
         statuses[WorkflowStep.SELECT_WELLS] = StepStatus(

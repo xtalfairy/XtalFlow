@@ -3300,6 +3300,50 @@ def test_the_view_does_not_leave_a_well_whose_boundary_is_unconfirmed(
     app.processEvents()
 
 
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_wells_that_cannot_be_planned_are_not_counted_as_wells_to_check(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Blaming the wells sent the user to an empty dock with a number that never moved."""
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        auto_advance_target_count=10,
+    )
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    page = window.experiment_page
+    window.workspace_sidebar.start_buttons[PlanType.RAW_CRYSTAL.value].click()
+    editor = window.experiments.current_editor
+    editor.protein_input.setText("BRD4")
+    page.primary_button.click()
+    window.load_plate("2070", SWISSCI_MRC_2_WELL)
+    window.auto_confirm_plate_checkbox.setChecked(False)
+    window._auto_detect_calibration()
+    window._accept_current_calibration()
+    window._handle_image_click(600, 500, Qt.LeftButton)
+    window.experiments._sync_current_selection()
+    assert page.primary_button.text() == "Use 1 well"
+    assert page.primary_button.isEnabled()
+
+    def refuse() -> None:
+        raise ValueError("all target image sets need a supported plate format")
+
+    monkeypatch.setattr(
+        window.project_controller, "selected_crystals_for_plan", refuse
+    )
+    window.experiments._sync_current_selection()
+
+    # The well is confirmed and in bounds, so there is nothing to check.
+    assert editor.wells_needing_attention == 0
+    assert "supported plate format" in page.footer_status_label.text()
+    assert not page.primary_button.isEnabled()
+    assert page.primary_button.toolTip() == page.footer_status_label.text()
+    window.close()
+    app.processEvents()
+
+
 def test_a_blocked_button_says_why_it_cannot_be_pressed(tmp_path: Path) -> None:
     """The reason is on the button, not only in the line above it."""
     app = QApplication.instance() or QApplication([])

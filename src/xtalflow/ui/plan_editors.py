@@ -140,6 +140,8 @@ class PlanEditorBase(QWidget):
         self.experiment_status = None
         # Set while the image share cannot be read, so the steps can say why.
         self.images_unavailable: str | None = None
+        # Set when confirmed wells still cannot be made into a plan.
+        self.wells_unusable: str | None = None
         # What the editor held when opened, to tell an edit from a look.
         self.initial_details: str | None = None
         self.autosave_timer: QTimer | None = None
@@ -359,6 +361,7 @@ class PlanEditorBase(QWidget):
             local_save_failed=self.save_failed,
             worksheets_saved_elsewhere=worksheets_saved_elsewhere,
             images_unavailable=self.images_unavailable,
+            wells_unusable=self.wells_unusable,
         )
 
     def has_plan_specific_content(self) -> bool:

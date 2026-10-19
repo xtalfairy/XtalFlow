@@ -96,6 +96,7 @@ RECHECK_NOTE = "Wells are checked again when worksheets are saved."
 # Said in place of RECHECK_NOTE when the record itself is gone: there will be
 # no second check, so the only safe plate is one nobody has drawn from yet.
 AWAY_NOTE = "Use a fresh source plate: its wells are taken as free."
+UNCHECKED_NOTE = "It cannot be checked against the shared record from here."
 # A record someone else is writing is not an absent one: it is there, so the
 # answer is to ask again, not to give up on it. Nothing reads the record under
 # its lock today, so this is a guard against the day something does.
@@ -298,6 +299,12 @@ class ConditionTestEditor(PlanEditorBase):
         # The shared source plates' records (see infrastructure.source_plate_record).
         self._source_record = None
         self._username = ""
+        # The shared plate names from the last reading that worked. While the
+        # record cannot be read this is the only way to tell a name that
+        # belongs to somebody else's plate from a name that belongs to nobody.
+        self._known_plate_names: set[str] = set()
+        self._taking_fresh_plate = False
+        self._needs_fresh_plate = False
         # None for a plate whose record could not be read; it is read again when asked afresh.
         self._plate_records: dict[str, tuple[PlateRecordEntry, ...] | None] = {}
         # Additives whose wells were filled in by the rule rather than typed.
@@ -955,6 +962,7 @@ class ConditionTestEditor(PlanEditorBase):
                 _show_message(self.record_note_label, f"{_sentence(error)} {BUSY_NOTE}")
             except SourcePlateRecordUnavailable as error:
                 self._plate_records[plate] = None
+                self._needs_fresh_plate = True
                 _show_message(self.record_note_label, f"{_sentence(error)} {AWAY_NOTE}")
         return self._plate_records[plate]
 
@@ -982,6 +990,7 @@ class ConditionTestEditor(PlanEditorBase):
             _show_message(self.record_note_label, f"{_sentence(error)} {BUSY_NOTE}")
             return None
         except SourcePlateRecordUnavailable as error:
+            self._needs_fresh_plate = True
             _show_message(self.record_note_label, f"{_sentence(error)} {AWAY_NOTE}")
             return None
 
@@ -1002,6 +1011,49 @@ class ConditionTestEditor(PlanEditorBase):
         if fresh or not self._plate_list_read:
             self._plate_list = self._shared_plates()
             self._plate_list_read = True
+            if self._plate_list is not None:
+                self._known_plate_names = {
+                    summary.name.casefold() for summary in self._plate_list
+                }
+
+    def _fresh_plate_name(self, additive) -> str:
+        """A name no shared plate and no other person's day can already hold.
+
+        It travels inside the ECHO worksheet and onto the instrument's screen,
+        which is where somebody at the bench can still act on it; a note on a
+        step they looked at yesterday is not.
+        """
+        base = re.sub(r"[^A-Za-z0-9]+", "", additive.name).upper() or "PLATE"
+        who = re.sub(r"[^A-Za-z0-9]+", "", self._username).lower()
+        return f"{base}-{datetime.now():%Y%m%d}" + (f"-{who}" if who else "")
+
+    def _take_a_fresh_plate(self) -> None:
+        """Move off a shared plate that can no longer be checked.
+
+        The plan was composed while the record was readable, so the wells are
+        the next free ones on somebody's shared plate. With the record gone
+        they cannot be held, and the worksheet would still name that plate:
+        the document carried to the ECHO would contradict the instruction on
+        the screen, and the merge afterwards would book those wells on a plate
+        the liquid never came from.
+        """
+        if self._taking_fresh_plate:
+            return
+        additive = self.design.additive(self._series.additive_id)
+        plate = additive.source_plate.strip()
+        if not plate or plate.casefold() not in self._known_plate_names:
+            return
+        fresh = self._fresh_plate_name(additive)
+        self._taking_fresh_plate = True
+        try:
+            self._well_offsets.pop(additive.id, None)
+            self._source_plate_edited(source_plate=fresh)
+        finally:
+            self._taking_fresh_plate = False
+        self._fresh_plate_message = (
+            f"{plate} cannot be checked while the record is away, so this moved "
+            f"to a fresh plate: label one {fresh}. Its wells start at A1."
+        )
 
     def _fill_plate_choices(self, fresh: bool = False) -> None:
         """Plate list: shared plates with how far they are used, this plate, New plate…."""
@@ -1119,7 +1171,11 @@ class ConditionTestEditor(PlanEditorBase):
             return
         self._source_plate_edited(source_plate=name)
         if self._source_record is not None:
-            _show_message(self.record_note_label, f"New plate {name}: its wells start at A1.")
+            unchecked = f" {UNCHECKED_NOTE}" if self._plate_list is None else ""
+            _show_message(
+                self.record_note_label,
+                f"New plate {name}: its wells start at A1.{unchecked}",
+            )
 
     def _source_plate_edited(self, **changes) -> None:
         """A new plate or plate type: its wells are that plate's next free ones.
@@ -2070,6 +2126,21 @@ class ConditionTestEditor(PlanEditorBase):
         return True
 
     def refresh_plan(self) -> None:
+        self._fresh_plate_message = ""
+        try:
+            self._refresh_plan()
+        finally:
+            # Afterwards, because the refresh is where the failed reading that
+            # raises the flag happens, and because it writes to the same line.
+            # Of everything that line can say, this is the one thing somebody
+            # has to do with their hands.
+            if self._needs_fresh_plate and not self._taking_fresh_plate:
+                self._needs_fresh_plate = False
+                self._take_a_fresh_plate()
+            if self._fresh_plate_message:
+                _show_message(self.record_note_label, self._fresh_plate_message)
+
+    def _refresh_plan(self) -> None:
         self._sync_auto_wells()
         self._update_fit_button()
         self._render_source()

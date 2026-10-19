@@ -823,3 +823,54 @@ def test_a_record_someone_else_is_writing_is_told_apart_from_one_that_is_away(tm
     note = editor.record_note_label.text()
     assert note.endswith(BUSY_NOTE)
     assert AWAY_NOTE not in note
+
+
+def test_a_shared_plate_that_can_no_longer_be_checked_is_swapped_for_a_fresh_one(
+    tmp_path, monkeypatch
+) -> None:
+    """The worksheet must not name a plate the instruction on screen contradicts.
+
+    The common offline path: the plan is composed while the record is
+    readable, so the wells are the next free ones on somebody's shared plate.
+    Then the share drops. Naming that plate on the worksheet carried to the
+    ECHO would contradict "use a fresh plate", and merging it afterwards
+    would book wells on a plate the liquid never came from.
+    """
+    from xtalflow.infrastructure.source_plate_record import SourcePlateRecordUnavailable
+
+    record = _shared_plate(tmp_path, [_plate_entry(["A1", "B1"])])
+    editor = _editor(percents=("0", "10"), times=(0,), replicates=2)
+    editor.update_additive(source_plate="", source_well="")
+    editor.set_source_record(record, "lee")
+    _choose_plate(editor, "SOLVENT-01")
+    assert editor.design.additives[0].source_plate == "SOLVENT-01"
+    assert editor.design.additives[0].source_wells == ("C1",)
+
+    # The share goes away under it.
+    def gone(*args, **kwargs):
+        raise SourcePlateRecordUnavailable("the shared source plate record cannot be reached")
+
+    monkeypatch.setattr(record, "entries", gone)
+    monkeypatch.setattr(record, "plates", gone)
+    editor.refresh_plate_records()
+
+    additive = editor.design.additives[0]
+    assert additive.source_plate != "SOLVENT-01"
+    assert additive.source_plate.startswith("DMSO-")
+    assert additive.source_plate.endswith("-lee")
+    # A fresh plate starts where a fresh plate starts.
+    assert additive.source_wells == ("A1",)
+    note = editor.record_note_label.text()
+    assert "SOLVENT-01 cannot be checked" in note
+    assert f"label one {additive.source_plate}" in note
+
+    # Asked again, it stays put: the new name is nobody's shared plate.
+    editor.refresh_plate_records()
+    assert editor.design.additives[0].source_plate == additive.source_plate
+
+    # A name typed by hand while the record is away is taken, but not vouched for.
+    from xtalflow.ui.condition_test_editor import UNCHECKED_NOTE
+
+    editor.enter_new_plate("SOLVENT-77")
+    assert editor.design.additives[0].source_plate == "SOLVENT-77"
+    assert editor.record_note_label.text().endswith(UNCHECKED_NOTE)

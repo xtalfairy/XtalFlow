@@ -3637,8 +3637,10 @@ def test_a_solvent_test_says_to_take_a_fresh_plate_while_the_echo_is_away(
     window.experiments.go_to_step(WorkflowStep.WORKSHEETS)
 
     preparation = editor.worksheets_step.schedule_label.text().split("\n\n")[0].splitlines()
-    assert preparation[1].startswith(f"{theme.SYMBOL_ATTENTION} Use a fresh source plate")
+    assert preparation[1].startswith(f"{theme.SYMBOL_ATTENTION} Label a fresh source plate")
     assert "taken as free" in preparation[1]
+    # The names are right below, and they travel inside the ECHO worksheet.
+    assert preparation[3].startswith("DMSO · ")
     assert str(tmp_path / "pending" / "source-plates") in preparation[1]
     # Said above the wells it doubts, not instead of them.
     assert preparation[2] == f"Crystal drops · {required}, one per well"

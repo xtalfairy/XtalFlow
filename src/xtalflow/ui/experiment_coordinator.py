@@ -1420,9 +1420,9 @@ class ExperimentCoordinator:
                 # nobody can say which wells are free, so start from a plate
                 # where every well is.
                 preparation = (
-                    f"{theme.SYMBOL_ATTENTION} Use a fresh source plate · the shared "
-                    "record cannot be reached, so the wells below are taken as "
-                    "free; what this takes waits in "
+                    f"{theme.SYMBOL_ATTENTION} Label a fresh source plate for each "
+                    "source below · the shared record cannot be reached, so their "
+                    "wells are taken as free; what this takes waits in "
                     f"{record_directory(pending_root(self.window.settings))}",
                     *preparation,
                 )

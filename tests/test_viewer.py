@@ -3197,3 +3197,43 @@ def test_a_blocked_button_says_why_it_cannot_be_pressed(tmp_path: Path) -> None:
     assert page.primary_button.toolTip() == ""
     window.close()
     app.processEvents()
+
+
+def test_arriving_at_conditions_asks_about_a_volume_the_new_wells_broke(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Choosing a 3-position well after setting 25 nL is the same mistake."""
+    app = QApplication.instance() or QApplication([])
+    window, _store, editor = _fragment_plan_window(tmp_path, DEFAULT_SETTINGS)
+    asked = []
+    monkeypatch.setattr(
+        type(editor), "_ask_to_use_volume",
+        lambda self, suggestion, text: asked.append((suggestion, text)) or False,
+    )
+
+    # The volume fits what is selected, so nothing is asked on the way in.
+    window.experiments.go_to_step(WorkflowStep.CONDITIONS)
+    assert asked == []
+
+    # A well with three positions is chosen, which 25 nL cannot share. The
+    # question comes when the step is reached again, not while clicking.
+    editor.volume_input.setValue(25)
+    now = datetime.now(timezone.utc)
+    editor.set_crystals((
+        SelectedCrystal(
+            "image", "2070", "A01a",
+            tuple(
+                CrystalTarget(f"t{index}", Decimal(0), Decimal(0), now)
+                for index in range(3)
+            ),
+            SWISSCI_MIDI_3_LENS.id,
+        ),
+    ))
+    assert asked == []
+
+    window.experiments.go_to_step(WorkflowStep.CONDITIONS)
+
+    assert len(asked) == 1
+    assert "cannot be split" in asked[0][1]
+    window.close()
+    app.processEvents()

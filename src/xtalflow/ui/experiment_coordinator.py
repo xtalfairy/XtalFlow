@@ -929,6 +929,13 @@ class ExperimentCoordinator:
             editor.workflow_step = step.value
             self._persist_draft(editor)
         self._refresh_experiment_status(editor)
+        if step is WorkflowStep.CONDITIONS:
+            # Arriving here with wells chosen is the moment a volume that no
+            # longer divides can be acted on, and the first one that is not
+            # in the middle of clicking crystals.
+            check = getattr(editor, "check_volume_splits", None)
+            if check is not None:
+                check()
 
     def _go_back(self) -> None:
         editor = self.current_editor

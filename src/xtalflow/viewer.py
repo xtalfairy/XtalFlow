@@ -2377,6 +2377,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Local worksheet staging directory",
     )
     parser.add_argument(
+        "--crystal-model",
+        type=Path,
+        default=DEFAULT_SETTINGS.crystal_model_path,
+        help="Crystal classifier (.onnx) used to order the review by crystal "
+             "score; without one the feature is absent",
+    )
+    parser.add_argument(
         "--source-plate-dir",
         type=Path,
         default=DEFAULT_SETTINGS.source_plate_record_directory,
@@ -2445,6 +2452,7 @@ def settings_from_arguments(args: argparse.Namespace) -> ApplicationSettings:
         fragment_library_directory=args.library_dir,
         worksheet_staging_directory=args.worksheet_dir,
         source_plate_record_directory=args.source_plate_dir,
+        crystal_model_path=args.crystal_model,
         mxlive_base_url=args.mxlive_url,
         mxlive_key_path=args.mxlive_key,
         mxlive_ca_bundle=args.mxlive_ca,

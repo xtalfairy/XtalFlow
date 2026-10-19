@@ -92,6 +92,14 @@ class ApplicationSettings:
     require_network_instrument_mounts: bool = False
     require_network_image_root: bool = False
     review_database_filename: str = "reviews.sqlite3"
+    # The crystal classifier, exported by codex/export_crystal_onnx.py. None
+    # leaves the whole feature absent: no ordering, no plate map, no scoring.
+    # The weights are copied in by hand, so a site without them is ordinary.
+    crystal_model_path: Path | None = None
+    # Beside the review database, never inside it: scores are derived data,
+    # and a schema change there would stop an older XtalFlow opening plates
+    # this one has opened.
+    crystal_score_database_filename: str = "crystal_scores.sqlite3"
     mxlive_base_url: str | None = None
     mxlive_beamline: str = "BL-5C"
     mxlive_key_path: Path | None = None
@@ -139,6 +147,7 @@ DEVELOPMENT_SETTINGS = ApplicationSettings(
     ),
     create_missing_instrument_roots=True,
     source_plate_record_directory=PROJECT_ROOT / "tests" / "runtime" / "source-plates",
+    crystal_model_path=PROJECT_ROOT / "models" / "crystal3.onnx",
 )
 
 
@@ -153,6 +162,9 @@ OPERATING_SERVER_SETTINGS = ApplicationSettings(
         Path("/smbmount/shifter2"),
     ),
     create_missing_instrument_roots=False,
+    # Installed beside the versions, like the config file, so a new version
+    # folder does not mean copying 16 MB of weights again.
+    crystal_model_path=PROJECT_ROOT.parent / "models" / "crystal3.onnx",
     # Kept under the ECHO folder, and None is what asks for that. A folder on
     # this machine would survive the share dropping, but every researcher has
     # an account of their own and a group of their own, so one of them would

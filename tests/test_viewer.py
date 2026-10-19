@@ -3431,9 +3431,12 @@ def test_the_panel_marks_each_share_with_a_symbol_and_a_colour(
 
     assert set(buttons) == {"rmserver", "echo650", "shifter1", "shifter2"}
     # The symbol travels with the name: the meaning never rests on the colour.
-    assert buttons["echo650"].text().startswith(theme.SYMBOL_ATTENTION)
+    # A folder that is there but is not a share gets the same mark as one that
+    # is missing, because neither can be saved to.
+    assert buttons["echo650"].text().startswith(theme.SYMBOL_ERROR)
     assert "ECHO 650" in buttons["echo650"].text()
-    assert theme.ATTENTION in buttons["echo650"].styleSheet()
+    assert theme.ERROR in buttons["echo650"].styleSheet()
+    assert "not a mounted share" in buttons["echo650"].toolTip()
     assert buttons["shifter2"].text().startswith(theme.SYMBOL_ERROR)
     assert theme.ERROR in buttons["shifter2"].styleSheet()
     assert "the folder is not there" in buttons["shifter2"].toolTip()

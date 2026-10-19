@@ -91,41 +91,35 @@ IMAGE_SHARE_LABEL = "RMServer"
 class ShareState:
     """One share as it looks from this machine, right now.
 
-    ``mounted`` is the only state worth a green mark.  A folder that is there
-    but is not a mounted share is the quiet failure this module exists for: a
-    worksheet written into it is saved locally and the instrument never sees
-    it.  A missing folder at least says so the moment anyone looks.
+    Mounted or not: there is nothing in between to act on.  A folder that is
+    there but is not a mounted share is no more usable than a folder that is
+    missing - worse, in fact, because writing into it succeeds locally while
+    the instrument never sees the file.  Why it is not mounted belongs in the
+    detail, where someone fixing it will look, not in the mark.
     """
 
     key: str
     label: str
     path: Path
     mounted: bool
-    exists: bool
     detail: str
 
     @property
     def state(self) -> str:
-        """"ok", "attention" or "error", as the theme names its three marks."""
-        if self.mounted:
-            return "ok"
-        return "attention" if self.exists else "error"
+        """"ok" or "error", as the theme names its marks."""
+        return "ok" if self.mounted else "error"
 
 
 def share_state(key: str, label: str, path: Path) -> ShareState:
     """Look at one share. Slow enough on a dropped mount to belong off the GUI thread."""
     try:
-        exists = path.is_dir()
-    except OSError as error:
-        return ShareState(key, label, path, False, False, str(error))
-    if not exists:
-        return ShareState(key, label, path, False, False, "the folder is not there")
-    try:
+        if not path.is_dir():
+            return ShareState(key, label, path, False, "the folder is not there")
         mounted = is_network_mount(path)
     except OSError as error:
-        return ShareState(key, label, path, False, True, str(error))
+        return ShareState(key, label, path, False, str(error))
     return ShareState(
-        key, label, path, mounted, True,
+        key, label, path, mounted,
         "mounted" if mounted else "a local folder, not a mounted share",
     )
 

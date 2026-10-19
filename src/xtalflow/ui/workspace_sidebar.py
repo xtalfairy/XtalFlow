@@ -57,10 +57,9 @@ QLabel#SharesStatus {{ color: {theme.TEXT_MUTED}; font-size: 11px; }}
 """
 
 # Shown with the share's name, never on its own: the mark says which state it
-# is without anyone having to tell the three colours apart.
+# is without anyone having to tell the colours apart.
 SHARE_MARKS = {
     "ok": (theme.SYMBOL_OK, theme.OK),
-    "attention": (theme.SYMBOL_ATTENTION, theme.ATTENTION),
     "error": (theme.SYMBOL_ERROR, theme.ERROR),
 }
 

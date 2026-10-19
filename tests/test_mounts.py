@@ -32,8 +32,8 @@ def test_bsd_mount_output_is_understood() -> None:
     assert not is_network_mount(Path("/Users/fbdd/echo650"), table)
 
 
-def test_each_share_is_read_as_mounted_local_or_missing(tmp_path, monkeypatch) -> None:
-    """Three states, because a folder that is there is not the same as a share."""
+def test_a_share_is_mounted_or_it_is_not(tmp_path, monkeypatch) -> None:
+    """Two states: a folder that is there but is not a share is no more usable."""
     from dataclasses import replace
 
     from xtalflow.infrastructure import mounts
@@ -59,8 +59,9 @@ def test_each_share_is_read_as_mounted_local_or_missing(tmp_path, monkeypatch) -
     ]
     assert states["echo650"].state == "ok"
     assert states["echo650"].detail == "mounted"
-    # There, writable, and the instrument would never see the file.
-    assert states["shifter1"].state == "attention"
+    # There, writable, and the instrument would never see the file: not usable,
+    # so not a different state from missing. Only the reason differs.
+    assert states["shifter1"].state == "error"
     assert "not a mounted share" in states["shifter1"].detail
     assert states["shifter2"].state == "error"
     assert states["shifter2"].detail == "the folder is not there"
@@ -82,5 +83,5 @@ def test_a_share_that_cannot_be_asked_is_not_called_mounted(tmp_path, monkeypatc
     state = mounts.share_state("echo650", "ECHO 650", share)
 
     assert not state.mounted
-    assert state.state == "attention"
+    assert state.state == "error"
     assert "Host is down" in state.detail

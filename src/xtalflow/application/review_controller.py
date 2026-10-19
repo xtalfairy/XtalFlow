@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from xtalflow.domain import (
     CrystalImage,
     ImageFilter,
@@ -30,6 +32,9 @@ class ReviewController:
         self.store = store
         self.has_unsaved_changes = False
         self.image_filter = ImageFilter.ALL
+        # None is the plate's own order. Anything else is a permutation of it;
+        # see set_walk_order for why it may never be anything less.
+        self._walk_order: tuple[int, ...] | None = None
         self._index_by_key = {
             image.image_key: index for index, image in enumerate(plate.images)
         }
@@ -68,8 +73,36 @@ class ReviewController:
         candidates = self.filtered_indices
         if not candidates:
             return False
-        next_index = next((index for index in candidates if index > self.image_index), None)
-        return self.move_to(next_index if next_index is not None else candidates[0])
+        destination = self._destination(1)
+        return self.move_to(destination if destination is not None else candidates[0])
+
+    @property
+    def walk_order(self) -> tuple[int, ...]:
+        """The order images are walked in; the plate's own unless one is set."""
+        if self._walk_order is None:
+            return tuple(range(len(self.plate.images)))
+        return self._walk_order
+
+    def set_walk_order(self, order: Sequence[int] | None) -> None:
+        """Walk in this order, or in the plate's own when given None.
+
+        It has to be a permutation of every image. An order that left one out
+        would hide it, and the whole point of ordering rather than filtering
+        is that nothing is ever hidden: a drop passed over because a model was
+        wrong can cost the only crystal on the plate.
+        """
+        if order is None:
+            self._walk_order = None
+            return
+        order = tuple(order)
+        if sorted(order) != list(range(len(self.plate.images))):
+            raise ValueError("a walk order must hold every image exactly once")
+        self._walk_order = order
+
+    @property
+    def walk_position(self) -> int:
+        """Where the current image sits in the walk, counting from zero."""
+        return self.walk_order.index(self.image_index)
 
     def move_to_well(self, well_number: int) -> bool:
         destination = next(
@@ -88,11 +121,8 @@ class ReviewController:
 
     @property
     def filtered_indices(self) -> tuple[int, ...]:
-        return tuple(
-            index
-            for index in range(len(self.plate.images))
-            if self._matches_filter(index)
-        )
+        """The images the filter admits, in the order they are walked."""
+        return tuple(index for index in self.walk_order if self._matches_filter(index))
 
     @property
     def current_matches_filter(self) -> bool:
@@ -110,13 +140,23 @@ class ReviewController:
         return True
 
     def _destination(self, direction: int) -> int | None:
+        """The next or previous image along the walk, not along the plate.
+
+        These used to compare plate indices, which is the same thing only
+        while the walk is the plate's own order. Under any other order the
+        comparison quietly walks the plate instead, and the order has no
+        visible effect at all.
+        """
         candidates = self.filtered_indices
+        if not candidates:
+            return None
+        place = {index: position for position, index in enumerate(self.walk_order)}
+        here = place[self.image_index]
         if direction < 0:
             return next(
-                (index for index in reversed(candidates) if index < self.image_index),
-                None,
+                (index for index in reversed(candidates) if place[index] < here), None
             )
-        return next((index for index in candidates if index > self.image_index), None)
+        return next((index for index in candidates if place[index] > here), None)
 
     def move_to(self, image_index: int) -> bool:
         if not (0 <= image_index < len(self.plate.images)):

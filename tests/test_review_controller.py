@@ -110,3 +110,75 @@ def test_controller_rolls_back_navigation_when_checkpoint_fails() -> None:
 
     assert review.image_index == 0
     assert review.progress.current_image_key == original_key
+
+
+def _plate_of(count: int) -> ReviewController:
+    images = tuple(
+        CrystalImage("1070", 5947, well, 1, "profileID_1", Path(f"{well}.jpg"))
+        for well in range(1, count + 1)
+    )
+    plate = PlateImages("1070", 5947, "profileID_1", images)
+    progress = ReviewProgress.create(
+        plate.plate_code, plate.batch_id, plate.profile, images[0].image_key
+    )
+    return ReviewController(plate, progress, ReviewPreferences(1), ReviewSession())
+
+
+def test_the_walk_follows_the_order_it_was_given_not_the_plate() -> None:
+    """From place k, moving on lands on place k+1 of the order.
+
+    Comparing plate indices gives the same answer while the order is the
+    plate's own, and silently walks the plate under any other order - so an
+    ordering would have no visible effect whatsoever.
+    """
+    review = _plate_of(5)
+    review.set_walk_order((3, 0, 4, 1, 2))
+
+    assert review.image_index == 0
+    assert review.walk_position == 1
+    assert review.move_next() and review.image_index == 4
+    assert review.move_next() and review.image_index == 1
+    assert review.move_next() and review.image_index == 2
+    assert not review.move_next(), "the last place in the order is the end"
+
+    assert review.move_previous() and review.image_index == 1
+    assert review.move_previous() and review.image_index == 4
+    assert review.move_previous() and review.image_index == 0
+    assert review.move_previous() and review.image_index == 3
+    assert not review.move_previous()
+
+
+def test_going_back_to_the_plate_s_own_order_keeps_the_image() -> None:
+    review = _plate_of(5)
+    review.set_walk_order((3, 0, 4, 1, 2))
+    review.move_next()
+    here = review.image_index
+
+    review.set_walk_order(None)
+
+    assert review.image_index == here
+    assert review.walk_order == (0, 1, 2, 3, 4)
+    assert review.walk_position == here
+
+
+def test_an_order_that_could_hide_an_image_is_refused() -> None:
+    """Ordering rather than filtering is the whole safeguard; enforce it here."""
+    review = _plate_of(5)
+
+    for bad in ((0, 1, 2, 3), (0, 1, 2, 3, 3), (0, 1, 2, 3, 9), (0, 1, 2, 3, 4, 4)):
+        with pytest.raises(ValueError, match="every image exactly once"):
+            review.set_walk_order(bad)
+    assert review.walk_order == (0, 1, 2, 3, 4)
+
+
+def test_the_filter_keeps_the_order_and_still_reaches_every_image() -> None:
+    review = _plate_of(6)
+    review.set_walk_order((5, 4, 3, 2, 1, 0))
+    # Reviewed-ness is what the Unreviewed filter reads.
+    for index in (1, 3, 5):
+        review.session.mark_reviewed(review.plate.images[index])
+
+    review.image_filter = ImageFilter.UNREVIEWED
+
+    assert review.filtered_indices == (4, 2, 0)
+    assert sorted(review.walk_order) == list(range(6))

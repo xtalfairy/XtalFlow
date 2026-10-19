@@ -3632,3 +3632,41 @@ def test_a_solvent_test_says_to_take_a_fresh_plate_while_the_echo_is_away(
     assert preparation[2] == f"Crystal drops · {required}, one per well"
     window.close()
     app.processEvents()
+
+
+def test_opening_a_solvent_test_puts_held_source_wells_back_on_the_record(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """What was taken while the ECHO was away joins the record the moment it is back."""
+    from xtalflow.domain.echo_source import PlateRecordEntry
+    from xtalflow.infrastructure.source_plate_record import SourcePlateRecord, record_directory
+
+    app = QApplication.instance() or QApplication([])
+    (tmp_path / "echo650").mkdir()
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        pending_worksheet_directory=tmp_path / "pending",
+        instruments=standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
+        ),
+        create_missing_instrument_roots=True,
+    )
+    held = SourcePlateRecord(record_directory(tmp_path / "pending"), create_root=True)
+    held.append("SOLVENT-09", [PlateRecordEntry(
+        "used", ("A1",), "lee", datetime.now(timezone.utc), "SolventTest-07", "DMSO",
+    )])
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store, settings=settings)
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+
+    window.workspace_sidebar.start_buttons["solvent_test"].click()
+
+    shared = SourcePlateRecord(record_directory(tmp_path / "echo650"))
+    (recorded,) = shared.entries("SOLVENT-09")
+    assert (recorded.wells, recorded.experiment_id) == (("A1",), "SolventTest-07")
+    assert "SOLVENT-09" in window.status_message_label.toolTip()
+    # Held no longer: the shared record is the only copy now.
+    assert held.entries("SOLVENT-09") == ()
+    window.close()
+    app.processEvents()

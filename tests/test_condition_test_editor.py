@@ -802,3 +802,24 @@ def test_a_record_that_is_away_asks_for_a_fresh_plate_rather_than_a_second_check
     editor.enter_new_plate("SOLVENT-09")
     additive = editor.design.additives[0]
     assert (additive.source_plate, additive.source_wells) == ("SOLVENT-09", ("A1",))
+
+
+def test_a_record_someone_else_is_writing_is_told_apart_from_one_that_is_away(tmp_path) -> None:
+    """Contention says to ask again; absence says to take a fresh plate."""
+    from xtalflow.infrastructure.source_plate_record import SourceRecordBusy
+    from xtalflow.ui.condition_test_editor import AWAY_NOTE, BUSY_NOTE
+
+    class BusyRecord:
+        def entries(self, plate):
+            raise SourceRecordBusy(f"the record of {plate} is in use by someone else")
+
+        def plates(self):
+            raise SourceRecordBusy("the record is in use by someone else")
+
+    editor = _editor(percents=("0", "10"), times=(0,), replicates=2)
+    editor.set_source_record(BusyRecord(), "lee")
+
+    editor.source_plate_input.opening.emit()
+    note = editor.record_note_label.text()
+    assert note.endswith(BUSY_NOTE)
+    assert AWAY_NOTE not in note

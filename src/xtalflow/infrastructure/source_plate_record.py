@@ -221,6 +221,41 @@ class SourcePlateRecord:
         return result
 
 
+def merge_held(held: SourcePlateRecord, shared: SourcePlateRecord) -> tuple[str, ...]:
+    """Put entries written while the shared record was away onto it, and say which plates.
+
+    Entries already there are skipped, so this can be run again after being
+    interrupted: a held file is only removed once its entries are on the
+    shared record, and a removal that fails costs a repeat, not a duplicate.
+
+    Raises SourcePlateRecordUnavailable if the shared record is still away,
+    which is the ordinary case and why this is asked again and again.
+    """
+    try:
+        paths = sorted(held.directory.glob("*.log"))
+    except OSError:
+        return ()
+    if not paths:
+        return ()
+    shared._require_root()
+    merged = []
+    for path in paths:
+        plate, entries = held._read(path, path.stem)
+        if not entries:
+            path.unlink(missing_ok=True)
+            continue
+        with shared._locked(plate):
+            already = {_entry_to_line(plate, entry) for entry in shared.entries(plate)}
+            shared._append(
+                plate,
+                [entry for entry in entries if _entry_to_line(plate, entry) not in already],
+            )
+        # Only now: until the lines are there, the held file is the only copy.
+        path.unlink(missing_ok=True)
+        merged.append(plate)
+    return tuple(merged)
+
+
 def record_directory(root: Path) -> Path:
     """The record's folder under a root: the ECHO folder, or the folder we hold in."""
     return root / RECORD_DIRECTORY

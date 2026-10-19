@@ -68,7 +68,10 @@ from xtalflow.domain.echo_source import (
 )
 from xtalflow.application.experiment_workflow import ExperimentFacts
 from xtalflow.application.planning_service import condition_test_plan_snapshot
-from xtalflow.infrastructure.source_plate_record import SourcePlateRecordUnavailable
+from xtalflow.infrastructure.source_plate_record import (
+    SourcePlateRecordUnavailable,
+    SourceRecordBusy,
+)
 from xtalflow.domain.labwork import build_condition_test_labworks
 from xtalflow.domain.plan_lifecycle import PlanningDraft
 from xtalflow.domain.worksheets import ECHO_HEADER, build_condition_echo_rounds, build_shifter_worksheet
@@ -93,6 +96,10 @@ RECHECK_NOTE = "Wells are checked again when worksheets are saved."
 # Said in place of RECHECK_NOTE when the record itself is gone: there will be
 # no second check, so the only safe plate is one nobody has drawn from yet.
 AWAY_NOTE = "Use a fresh source plate: its wells are taken as free."
+# A record someone else is writing is not an absent one: it is there, so the
+# answer is to ask again, not to give up on it. Nothing reads the record under
+# its lock today, so this is a guard against the day something does.
+BUSY_NOTE = "Someone else is writing it; open the plate list again in a moment."
 NEW_PLATE = "\u0000new plate"
 NAMING_NOTE = "Type the new plate's name, then press Enter; its wells start at A1."
 
@@ -941,8 +948,11 @@ class ConditionTestEditor(PlanEditorBase):
         if fresh or plate not in self._plate_records:
             try:
                 self._plate_records[plate] = self._source_record.entries(plate)
-                if self.record_note_label.text().endswith((RECHECK_NOTE, AWAY_NOTE)):
+                if self.record_note_label.text().endswith((RECHECK_NOTE, AWAY_NOTE, BUSY_NOTE)):
                     _show_message(self.record_note_label, "")
+            except SourceRecordBusy as error:
+                self._plate_records[plate] = None
+                _show_message(self.record_note_label, f"{_sentence(error)} {BUSY_NOTE}")
             except SourcePlateRecordUnavailable as error:
                 self._plate_records[plate] = None
                 _show_message(self.record_note_label, f"{_sentence(error)} {AWAY_NOTE}")
@@ -968,6 +978,9 @@ class ConditionTestEditor(PlanEditorBase):
             return None
         try:
             return self._source_record.plates()
+        except SourceRecordBusy as error:
+            _show_message(self.record_note_label, f"{_sentence(error)} {BUSY_NOTE}")
+            return None
         except SourcePlateRecordUnavailable as error:
             _show_message(self.record_note_label, f"{_sentence(error)} {AWAY_NOTE}")
             return None

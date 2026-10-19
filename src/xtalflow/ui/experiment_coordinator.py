@@ -96,7 +96,11 @@ from xtalflow.infrastructure.worksheet_exporter import (
     pending_root,
     worksheets_for,
 )
-from xtalflow.infrastructure.source_plate_record import SourcePlateRecord, record_directory
+from xtalflow.infrastructure.source_plate_record import (
+    SourcePlateRecord,
+    merge_held,
+    record_directory,
+)
 from xtalflow.infrastructure.workspace_store import WORKSPACE_REVIEW
 from xtalflow.infrastructure.mxlive_config import (
     MxLiveConfigurationError,
@@ -853,6 +857,7 @@ class ExperimentCoordinator:
             editor = ConditionTestEditor(
                 CONDITION_TEMPLATES[template or "solvent"](), self.editor_holder
             )
+            self._merge_held_source_entries()
             editor.set_source_record(self._source_plate_record(), getpass.getuser())
             editor.conditions_requested.connect(
                 lambda: self.go_to_step(WorkflowStep.CONDITIONS)
@@ -2132,7 +2137,9 @@ class ExperimentCoordinator:
                 f"Experiment ID: {result.experiment_id} · Saved as {result.file_stem}"
             )
             if isinstance(editor, ConditionTestEditor) and alternate_root is None:
-                # Its wells are on the shared record now.
+                # Its wells are on the shared record now - and if the record
+                # was reachable this time, so is anything held from before.
+                self._merge_held_source_entries()
                 editor.refresh_plate_records()
             self.window.status_message_label.show_message(
                 f"Worksheets for {result.experiment_id} saved to the folder you chose"
@@ -2191,6 +2198,32 @@ class ExperimentCoordinator:
                 record_directory(pending_root(self.window.settings)), create_root=True
             ),
         )
+
+    def _merge_held_source_entries(self) -> None:
+        """Put wells taken while the record was away onto it, once it is back.
+
+        Asked whenever a condition test is opened and after every save that
+        reached the record: those are the moments it is known to be there.
+        Costs one look at a local folder when nothing is held, which is the
+        ordinary case.
+        """
+        shared = self._source_plate_record()
+        if shared is None:
+            return
+        held = SourcePlateRecord(
+            record_directory(pending_root(self.window.settings)), create_root=True
+        )
+        try:
+            merged = merge_held(held, shared)
+        except WorksheetDestinationUnavailable:
+            return  # Still away. The entries keep waiting; nothing is lost.
+        if merged:
+            plates = ", ".join(sorted(set(merged)))
+            self.window.status_message_label.show_message(
+                f"Source wells taken while the ECHO was away are on the shared "
+                f"record now · {plates}",
+                6000,
+            )
 
     def _source_plate_record(self) -> SourcePlateRecord | None:
         """Shared source plates' well records, kept with the ECHO worksheets everyone saves."""

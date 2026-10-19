@@ -113,3 +113,65 @@ def test_shared_plates_are_listed_with_their_type_and_next_well(tmp_path: Path) 
         "glycerol plate · 384PP · 1 well used, next B1",
         "SOLVENT-01 · 1536LDV · 3 wells used, next E1",
     ]
+
+
+def test_wells_taken_while_the_record_was_away_go_onto_it_when_it_is_back(tmp_path) -> None:
+    """The held file is the only copy until the lines are on the shared record."""
+    from xtalflow.infrastructure.source_plate_record import (
+        SourcePlateRecord,
+        merge_held,
+        record_directory,
+    )
+
+    (tmp_path / "echo650").mkdir()
+    shared = SourcePlateRecord(record_directory(tmp_path / "echo650"))
+    held = SourcePlateRecord(record_directory(tmp_path / "pending"), create_root=True)
+    shared.append("SOLVENT-01", [_used(["A1"], experiment="Earlier-01")])
+    held.append("SOLVENT-01", [_used(["B1"], experiment="Offline-01")])
+    held.append("SOLVENT-02", [_used(["A1"], experiment="Offline-01")])
+
+    assert sorted(merge_held(held, shared)) == ["SOLVENT-01", "SOLVENT-02"]
+
+    assert [entry.wells for entry in shared.entries("SOLVENT-01")] == [("A1",), ("B1",)]
+    assert [entry.wells for entry in shared.entries("SOLVENT-02")] == [("A1",)]
+    # Nothing is held any more, and asking again is a no-op.
+    assert merge_held(held, shared) == ()
+
+
+def test_a_merge_run_twice_does_not_record_the_same_wells_twice(tmp_path) -> None:
+    """A removal that failed must cost a repeat, not a duplicate."""
+    from xtalflow.infrastructure.source_plate_record import (
+        SourcePlateRecord,
+        merge_held,
+        record_directory,
+    )
+
+    (tmp_path / "echo650").mkdir()
+    shared = SourcePlateRecord(record_directory(tmp_path / "echo650"))
+    held = SourcePlateRecord(record_directory(tmp_path / "pending"), create_root=True)
+    entry = _used(["B1"], experiment="Offline-01")
+    held.append("SOLVENT-01", [entry])
+
+    merge_held(held, shared)
+    held.append("SOLVENT-01", [entry])  # as if the held file had survived
+    merge_held(held, shared)
+
+    assert [item.wells for item in shared.entries("SOLVENT-01")] == [("B1",)]
+
+
+def test_a_merge_leaves_the_entries_held_while_the_record_is_still_away(tmp_path) -> None:
+    from xtalflow.infrastructure.source_plate_record import (
+        SourcePlateRecord,
+        SourcePlateRecordUnavailable,
+        merge_held,
+        record_directory,
+    )
+
+    shared = SourcePlateRecord(record_directory(tmp_path / "missing-echo"))
+    held = SourcePlateRecord(record_directory(tmp_path / "pending"), create_root=True)
+    held.append("SOLVENT-01", [_used(["B1"], experiment="Offline-01")])
+
+    with pytest.raises(SourcePlateRecordUnavailable):
+        merge_held(held, shared)
+
+    assert [entry.wells for entry in held.entries("SOLVENT-01")] == [("B1",)]

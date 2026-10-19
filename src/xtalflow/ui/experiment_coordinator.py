@@ -16,7 +16,6 @@ import threading
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
-from math import sqrt
 from pathlib import Path
 from uuid import uuid4
 
@@ -200,7 +199,12 @@ def _outside_warning(summaries, image_sets) -> str:
         wells.append(_well_address(summary, image_sets))
         calibration = summary.calibration
         if calibration is not None:
-            beyond_mm = max(beyond_mm, _distance_beyond_mm(summary, calibration))
+            beyond_mm = max(
+                beyond_mm,
+                calibration.distance_beyond_mm(
+                    summary.target.x_px, summary.target.y_px
+                ),
+            )
     named = ", ".join(dict.fromkeys(wells))
     return (
         f"{counted(len(outside), 'position')} outside the boundary "
@@ -223,19 +227,6 @@ def _well_address(summary, image_sets) -> str:
         )
     )
 
-
-def _distance_beyond_mm(summary, calibration) -> float:
-    """How far past the boundary the position sits, in millimetres.
-
-    In millimetres the boundary is a circle of half the lens diameter, because
-    each axis is scaled by its own radius, so the normalised distance is the
-    millimetre distance over that half-diameter.
-    """
-    normalized = sqrt(
-        ((summary.target.x_px - calibration.center_x_px) / calibration.radius_x_px) ** 2
-        + ((summary.target.y_px - calibration.center_y_px) / calibration.radius_y_px) ** 2
-    )
-    return max(0.0, (normalized - 1) * calibration.physical_diameter_mm / 2)
 
 
 class ExperimentCoordinator:

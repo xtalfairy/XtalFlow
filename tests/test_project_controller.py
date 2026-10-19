@@ -27,14 +27,17 @@ FIXTURE_ROOT = DEFAULT_SETTINGS.rmserver_root
 def test_target_validation_reports_calibration_and_boundary_problems() -> None:
     image = CrystalImage("1070", 1, 1, 1, "profileID_1", Path("image.jpg"))
     inside = TargetPoint("inside", image.image_key, 100, 100)
-    outside = TargetPoint("outside", image.image_key, 151, 100)
+    # Just past the fitted outline: inside the well as closely as the outline
+    # is known, so not a warning. 1.02 of the radius is the tolerance itself.
+    at_the_edge = TargetPoint("edge", image.image_key, 151, 100)
+    outside = TargetPoint("outside", image.image_key, 156, 100)
     automatic = ImageCalibration.automatic("image", 100, 100, 50, 0.9, 2.77)
+    confirmed = replace(automatic, confirmed=True)
 
     missing = ProjectTargetSummary("set", image, 1, inside, None)
     unconfirmed = ProjectTargetSummary("set", image, 1, inside, automatic)
-    outside_well = ProjectTargetSummary(
-        "set", image, 1, outside, replace(automatic, confirmed=True)
-    )
+    edge_well = ProjectTargetSummary("set", image, 1, at_the_edge, confirmed)
+    outside_well = ProjectTargetSummary("set", image, 1, outside, confirmed)
 
     assert missing.validation_issues == (
         TargetValidationIssue.CALIBRATION_MISSING,
@@ -42,7 +45,14 @@ def test_target_validation_reports_calibration_and_boundary_problems() -> None:
     assert unconfirmed.validation_issues == (
         TargetValidationIssue.CALIBRATION_UNCONFIRMED,
     )
+    assert edge_well.validation_issues == ()
     assert outside_well.validation_issues == (TargetValidationIssue.OUTSIDE_WELL,)
+    # Reported against the outline itself, not against the tolerance.
+    assert confirmed.distance_beyond_mm(156, 100) == pytest.approx(0.166, abs=0.001)
+    # A missing or unconfirmed boundary blocks; being outside only warns.
+    assert missing.blocks_planning
+    assert unconfirmed.blocks_planning
+    assert not outside_well.blocks_planning
 
 
 @pytest.mark.requires_rmserver_fixture

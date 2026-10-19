@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from math import isfinite
+from math import isfinite, sqrt
 
 
 class CalibrationMethod(str, Enum):
@@ -32,6 +32,15 @@ class WellBoundary:
             raise ValueError("well boundary radii must be positive")
         if not 0 <= self.confidence <= 1:
             raise ValueError("confidence must be between zero and one")
+
+
+# How far beyond the fitted outline a position still counts as inside the
+# well, as a fraction of the radius. The outline is fitted to an image, and
+# that fit is not accurate to a fraction of a percent; crystals are also
+# picked at the very edge of the drop as a matter of course. Without this the
+# warning would fire on ordinary work - a tenth the width of the drop an ECHO
+# dispenses - and a warning that fires on ordinary work stops being read.
+OUTLINE_TOLERANCE = 0.02
 
 
 @dataclass(frozen=True)
@@ -65,12 +74,31 @@ class ImageCalibration:
         if not 0 <= self.confidence <= 1:
             raise ValueError("confidence must be between zero and one")
 
-    def contains(self, x_px: float, y_px: float) -> bool:
-        """Whether a point falls within the well outline, boundary included."""
-        return (
+    def normalized_distance(self, x_px: float, y_px: float) -> float:
+        """How far a point lies from the centre, as a multiple of the radius."""
+        return sqrt(
             ((x_px - self.center_x_px) / self.radius_x_px) ** 2
             + ((y_px - self.center_y_px) / self.radius_y_px) ** 2
-        ) <= 1
+        )
+
+    def contains(
+        self, x_px: float, y_px: float, tolerance: float = OUTLINE_TOLERANCE
+    ) -> bool:
+        """Whether a point is inside the well, as closely as the outline is known.
+
+        Pass ``tolerance=0`` for the fitted outline exactly.
+        """
+        return self.normalized_distance(x_px, y_px) <= 1 + tolerance
+
+    def distance_beyond_mm(self, x_px: float, y_px: float) -> float:
+        """How far past the outline a point sits, in millimetres.
+
+        In millimetres the outline is a circle of half the lens diameter,
+        because each axis is scaled by its own radius, so the normalised
+        distance is the millimetre distance over that half-diameter.
+        """
+        beyond = self.normalized_distance(x_px, y_px) - 1
+        return max(0.0, beyond * self.physical_diameter_mm / 2)
 
     @classmethod
     def automatic(

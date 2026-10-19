@@ -37,7 +37,7 @@ from xtalflow.infrastructure import (
 )
 from xtalflow.application.experiment_workflow import StepState, WorkflowStep
 from xtalflow.domain.mxlive import MxLiveLabwork, MxLiveReadError
-from xtalflow.ui import theme
+from xtalflow.ui import icons, theme
 from xtalflow.ui.plan_editors import FragmentScreeningEditor
 from xtalflow.ui.load_plates_dialog import LoadPlatesDialog
 from xtalflow.viewer import ViewerWindow
@@ -3406,7 +3406,7 @@ def test_a_confirmed_boundary_with_a_position_outside_it_says_so(
     app.processEvents()
 
 
-def test_the_panel_marks_each_share_with_a_symbol_and_a_colour(
+def test_the_panel_lights_a_lamp_for_each_share(
     tmp_path: Path, monkeypatch
 ) -> None:
     """Which shares are up decides what can be done, so the panel says it first."""
@@ -3430,17 +3430,16 @@ def test_the_panel_marks_each_share_with_a_symbol_and_a_colour(
     buttons = window.workspace_sidebar.share_buttons
 
     assert set(buttons) == {"rmserver", "echo650", "shifter1", "shifter2"}
-    # The symbol travels with the name: the meaning never rests on the colour.
-    # A folder that is there but is not a share gets the same mark as one that
-    # is missing, because neither can be saved to.
-    assert buttons["echo650"].text().startswith(theme.SYMBOL_ERROR)
-    assert "ECHO 650" in buttons["echo650"].text()
+    # The name stays plain; the lamp carries the state. A folder that is there
+    # but is not a share is marked like one that is missing: neither can be
+    # saved to, and only the reason differs.
+    assert buttons["echo650"].text() == "ECHO 650"
     assert theme.ERROR in buttons["echo650"].styleSheet()
     assert "not a mounted share" in buttons["echo650"].toolTip()
-    assert buttons["shifter2"].text().startswith(theme.SYMBOL_ERROR)
-    assert theme.ERROR in buttons["shifter2"].styleSheet()
     assert "the folder is not there" in buttons["shifter2"].toolTip()
     assert str(tmp_path / "shifter2") in buttons["shifter2"].toolTip()
+    assert "ECHO 650" in buttons["echo650"].accessibleName()
+    assert not buttons["echo650"].icon().isNull()
     assert not window._share_check_busy
 
     # Pressing one says what the reading found, in words, in the status bar.
@@ -3452,6 +3451,18 @@ def test_the_panel_marks_each_share_with_a_symbol_and_a_colour(
     window.close()
     app.processEvents()
     assert not window._share_check_timer.isActive()
+
+
+def test_a_lamp_says_which_state_it_is_in_without_its_colour() -> None:
+    """Hold the colour still: a lit lamp and an unlit one must still differ."""
+    QApplication.instance() or QApplication([])
+
+    lit = icons.lamp_pixmap(True, 14, theme.OK)
+    unlit = icons.lamp_pixmap(False, 14, theme.OK)
+
+    assert lit.toImage() != unlit.toImage()
+    # And the same shape in either colour, so the shape is the thing that says it.
+    assert icons.lamp_pixmap(False, 14, theme.ERROR).size() == unlit.size()
 
 
 def test_a_blocked_button_says_why_it_cannot_be_pressed(tmp_path: Path) -> None:

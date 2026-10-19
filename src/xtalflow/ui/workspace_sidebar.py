@@ -50,18 +50,22 @@ QListWidget#WorkspaceList::item:selected, QListWidget#HiddenWorkspaceList::item:
 QPushButton#HiddenToggle {{ border: none; background: transparent; color: {theme.TEXT_MUTED};
     text-align: left; padding: 4px 10px; }}
 QPushButton#HiddenToggle:hover {{ color: {theme.TEXT}; }}
-QPushButton#ShareButton {{ background: transparent; border: 1px solid {theme.BORDER};
-    border-radius: 6px; padding: 3px 6px; text-align: left; font-size: 11px; }}
+QPushButton#ShareButton {{ background: transparent; border: none; border-radius: 6px;
+    padding: 3px 6px; text-align: left; font-size: 12px; min-height: 24px;
+    color: {theme.TEXT}; }}
 QPushButton#ShareButton:hover {{ background: {theme.SUBTLE}; }}
+QPushButton#ShareButton:pressed {{ background: {theme.SELECTED}; }}
+QPushButton#ShareButton:focus {{ background: {theme.SUBTLE}; }}
 QLabel#SharesStatus {{ color: {theme.TEXT_MUTED}; font-size: 11px; }}
+QLabel#SharesLooking {{ color: {theme.TEXT_TERTIARY}; font-size: 11px; }}
 """
 
-# Shown with the share's name, never on its own: the mark says which state it
-# is without anyone having to tell the colours apart.
-SHARE_MARKS = {
-    "ok": (theme.SYMBOL_OK, theme.OK),
-    "error": (theme.SYMBOL_ERROR, theme.ERROR),
-}
+# The name stays plain and only the lamp is coloured, the way a panel is
+# engraved and only its lights are lit. Lit is a filled disc with a tick in
+# it, unlit an open ring with a mark: the difference is how much ink is on
+# the screen, so it survives being unable to tell the two colours apart.
+SHARE_LAMPS = {"ok": (True, theme.OK), "error": (False, theme.ERROR)}
+LAMP_SIZE = 14
 
 
 class _CountDelegate(QStyledItemDelegate):
@@ -119,14 +123,24 @@ class WorkspaceSidebar(QWidget):
         self._share_states: dict[str, object] = {}
         shares_title = QLabel("Shares")
         shares_title.setObjectName("SidebarTitle")
-        shares_title.setContentsMargins(10, 0, 0, theme.SPACING_S)
+        # Beside the title, not under the lamps: a line that comes and goes
+        # under them would shove the whole panel down on every reading.
+        self.shares_looking = QLabel()
+        self.shares_looking.setObjectName("SharesLooking")
+        shares_header = QHBoxLayout()
+        shares_header.setContentsMargins(10, 0, 0, theme.SPACING_S)
+        shares_header.addWidget(shares_title)
+        shares_header.addStretch()
+        shares_header.addWidget(self.shares_looking)
         self.shares_grid = QGridLayout()
-        self.shares_grid.setContentsMargins(8, 0, 0, 0)
+        self.shares_grid.setContentsMargins(4, 0, 0, 0)
         self.shares_grid.setHorizontalSpacing(theme.SPACING_S)
-        self.shares_grid.setVerticalSpacing(theme.SPACING_S)
+        self.shares_grid.setVerticalSpacing(0)
+        self.shares_grid.setColumnStretch(0, 1)
+        self.shares_grid.setColumnStretch(1, 1)
         shares = QVBoxLayout()
         shares.setSpacing(2)
-        shares.addWidget(shares_title)
+        shares.addLayout(shares_header)
         shares.addLayout(self.shares_grid)
         self.shares_status = QLabel()
         self.shares_status.setObjectName("SharesStatus")
@@ -254,15 +268,22 @@ class WorkspaceSidebar(QWidget):
                 button = QPushButton()
                 button.setObjectName("ShareButton")
                 button.setCursor(Qt.PointingHandCursor)
+                button.setIconSize(QSize(LAMP_SIZE, LAMP_SIZE))
+                button.setAccessibleDescription("Click to look again")
                 button.clicked.connect(
                     lambda _checked=False, key=state.key: self.share_check_requested.emit(key)
                 )
                 self.share_buttons[state.key] = button
                 self.shares_grid.addWidget(button, index // 2, index % 2)
             self._share_states[state.key] = state
-            symbol, colour = SHARE_MARKS[state.state]
-            button.setText(f"{symbol} {state.label}")
-            button.setStyleSheet(f"color: {colour}; border-color: {colour};")
+            lit, colour = SHARE_LAMPS[state.state]
+            button.setIcon(QIcon(icons.lamp_pixmap(lit, LAMP_SIZE, colour)))
+            button.setText(state.label)
+            # Only the share that is down is spelled out; the rest read as a
+            # row of identical lamps, which is the point of a row of lamps.
+            button.setStyleSheet(
+                "" if lit else f"color: {theme.ERROR}; font-weight: 600;"
+            )
             button.setToolTip(
                 f"{state.label} · {state.detail}\n{state.path}\n\n"
                 "Click to look again"
@@ -272,8 +293,9 @@ class WorkspaceSidebar(QWidget):
         # it is there to be caught by the eye, not read twice.
         away = sum(1 for state in states if state.state != "ok")
         summary = f"{away} share{'' if away == 1 else 's'} not mounted" if away else ""
-        self.shares_status.setText("Looking…" if checking else summary)
-        self.shares_status.setVisible(bool(checking or summary))
+        self.shares_looking.setText("Looking…" if checking else "")
+        self.shares_status.setText(summary)
+        self.shares_status.setVisible(bool(summary))
 
     def share_state_detail(self, key: str) -> str:
         """What the last reading said about one share, for the status bar."""

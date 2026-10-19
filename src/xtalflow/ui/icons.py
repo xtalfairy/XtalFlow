@@ -64,6 +64,28 @@ STAGE_DRAFT = '<circle cx="12" cy="12" r="7"/>'
 
 STAGE_MARKS = {"ok": STAGE_OK, "attention": STAGE_ATTENTION, "muted": STAGE_DRAFT}
 
+# Lamps, for a row of them that is read at a glance. Filled against open is a
+# difference in how much ink is on the screen, so the odd one out is found
+# without telling the colours apart; the glyph inside says which it is at
+# reading distance.
+LAMP_LIT = (
+    '<circle cx="12" cy="12" r="9" fill="{color}" stroke="none"/>'
+    '<path d="M16.8 9.2 10.8 15.2 7.6 12" stroke="#FFFFFF" stroke-width="2.4"/>'
+)
+LAMP_OPEN = (
+    '<circle cx="12" cy="12" r="8.5" stroke-width="2.2"/>'
+    '<path d="M12 7.3v5.6M12 16.4h.01" stroke-width="2.6"/>'
+)
+
+
+def lamp_pixmap(lit: bool, size: int, color: str) -> QPixmap:
+    """A lamp: filled with a tick when lit, an open ring with a mark when not.
+
+    The lit body carries its own fill, because the shared template only colours
+    strokes.
+    """
+    return svg_pixmap(LAMP_LIT.format(color=color) if lit else LAMP_OPEN, size, color)
+
 
 def svg_pixmap(body: str, size: int, color: str, device_pixel_ratio: float = 2.0) -> QPixmap:
     renderer = QSvgRenderer(QByteArray(_SVG.format(color=color, body=body).encode()))

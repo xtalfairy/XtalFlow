@@ -192,3 +192,27 @@ def test_the_suite_refuses_to_run_against_the_operating_folders(monkeypatch) -> 
 
     assert "/smbmount/shifter1" in str(error.value)
     assert "/smbmount/rmserver/RockMakerStorage/WellImages" in str(error.value)
+
+
+def test_the_requirements_file_holds_every_runtime_dependency() -> None:
+    """Installing by the README must not miss one.
+
+    The README installs requirements.txt and then the package with
+    --no-deps, so anything in pyproject but not here is simply absent at
+    run time - which is how pillow reached the beamline missing.
+    """
+    import re
+
+    root = Path(__file__).resolve().parent.parent
+    pinned = re.findall(
+        r'^\s*"([A-Za-z0-9_.\-]+)[=<>;]',
+        (root / "pyproject.toml").read_text().split("dependencies = [")[1].split("]")[0],
+        re.MULTILINE,
+    )
+    listed = {
+        re.split(r"[=<>;]", line, 1)[0].strip().casefold()
+        for line in (root / "requirements.txt").read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    missing = [name for name in pinned if name.casefold() not in listed]
+    assert not missing, f"in pyproject but not requirements.txt: {missing}"

@@ -33,8 +33,11 @@ if [ ! -d "$HERE" ]; then
 fi
 
 # A window needs somewhere to open. Said plainly, because the alternative is
-# a Qt backtrace about xcb that tells a researcher nothing.
-if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+# a Qt backtrace about xcb that tells a researcher nothing. QT_QPA_PLATFORM
+# set means somebody has already chosen a backend - offscreen for a smoke
+# test, say - and knows better than this check.
+if [ -z "${QT_QPA_PLATFORM:-}" ] &&
+   [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
     echo "No display: open XtalFlow from the console session, not over plain ssh." >&2
     echo "ssh -X also works if X forwarding is allowed." >&2
     exit 1
@@ -46,7 +49,9 @@ export LD_LIBRARY_PATH="/usr/local/openssl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PA
 # Instrument folders, the image share and MxLive come from the operating
 # profile rather than from flags, so that no launcher carries a path of its
 # own to go stale.
-export XTALFLOW_SETTINGS=operating
+# Overridable, so a researcher can point one run at development settings
+# without a launcher of their own.
+export XTALFLOW_SETTINGS="${XTALFLOW_SETTINGS:-operating}"
 
 # Each researcher runs as themselves: the review database, the MxLive
 # credentials and the crystal scores are all per user and must not be shared.

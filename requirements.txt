@@ -2,6 +2,9 @@
 setuptools==75.8.2
 numpy==1.26.4
 opencv-python-headless==4.10.0.84
+# The crystal model is trained on images Pillow resized, and cv2's resize is
+# not interchangeable with it: see infrastructure/crystal_scorer.py.
+pillow==12.3.0
 PyQt5==5.15.11
 cryptography==45.0.5
 msgpack==1.1.1

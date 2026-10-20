@@ -3863,6 +3863,8 @@ def test_the_plate_map_is_absent_entirely_without_a_crystal_model(tmp_path: Path
     app.processEvents()
 
 
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
 def test_the_plate_map_opens_and_a_cell_moves_the_review_to_that_drop(
     tmp_path: Path,
 ) -> None:
@@ -3916,6 +3918,8 @@ def test_the_plate_map_opens_and_a_cell_moves_the_review_to_that_drop(
     app.processEvents()
 
 
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
 def test_a_plate_is_scored_in_the_background_and_crystal_first_reorders_the_walk(
     tmp_path: Path,
 ) -> None:
@@ -3977,6 +3981,8 @@ def test_a_plate_is_scored_in_the_background_and_crystal_first_reorders_the_walk
     app.processEvents()
 
 
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
 def test_closing_the_window_stops_a_plate_that_is_still_being_scored(
     tmp_path: Path,
 ) -> None:
@@ -4020,6 +4026,8 @@ def _scored_window(tmp_path: Path):
     model = Path(__file__).resolve().parent.parent / "models" / "crystal3.onnx"
     if not model.is_file():
         pytest.skip("no models/crystal3.onnx; make it with codex/export_crystal_onnx.py")
+    if not FIXTURE_ROOT.is_dir():
+        pytest.skip("local RMServer fixture is not available")
     app = QApplication.instance() or QApplication([])
     settings = replace(DEFAULT_SETTINGS, crystal_model_path=model)
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")

@@ -28,6 +28,9 @@ FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "rmserver"
 GOLDEN_PATH = Path(__file__).resolve().parent / "fixtures" / "crystal_golden.json"
 MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "crystal3.onnx"
 
+requires_fixture = pytest.mark.skipif(
+    not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available"
+)
 requires_model = pytest.mark.skipif(
     not MODEL_PATH.is_file(),
     reason=(
@@ -64,6 +67,7 @@ def test_a_missing_model_says_so_rather_than_failing_later(tmp_path: Path) -> No
 
 
 @requires_model
+@requires_fixture
 def test_the_onnx_port_says_what_the_original_model_said() -> None:
     golden = json.loads(GOLDEN_PATH.read_text())
     scorer = OnnxCrystalScorer(MODEL_PATH)
@@ -96,6 +100,7 @@ def test_the_onnx_port_says_what_the_original_model_said() -> None:
 
 
 @requires_model
+@requires_fixture
 def test_an_image_that_cannot_be_read_is_left_unscored_not_guessed_at(
     tmp_path: Path,
 ) -> None:
@@ -120,6 +125,7 @@ def test_an_image_that_cannot_be_read_is_left_unscored_not_guessed_at(
 
 
 @requires_model
+@requires_fixture
 def test_every_score_names_the_model_that_made_it() -> None:
     """A model retrained later answers differently; the rows must say which."""
     repository = RockMakerImageRepository(FIXTURE_ROOT)

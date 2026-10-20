@@ -1,0 +1,18 @@
+{
+  "model_id": "crystal3-4c99f441417c",
+  "classes": [
+    "crystal",
+    "drop",
+    "empty"
+  ],
+  "input_size": 224,
+  "resize_short_side": 256,
+  "normalize_mean": 0.5,
+  "normalize_std": 0.5,
+  "output": "logits",
+  "source_checkpoint": "crystal3_best_ts.pt",
+  "source_sha256": "4c99f441417c9cef54e4dd67ca7511551d954e2873591c2fafaf5b1f0447bbdc",
+  "exported_at": "2026-10-19T12:00:59+00:00",
+  "exported_by": "codex/export_crystal_onnx.py",
+  "note": "EfficientNet-B0 fine-tuned in-house on hand-labelled SWISS-CI plates. No held-out accuracy was recorded for this checkpoint."
+}

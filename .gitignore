@@ -52,5 +52,11 @@ htmlcov/
 tests/fixtures/rmserver/
 tests/runtime/
 
-# Crystal classifier: a 16 MB weight copied in by hand, not a repo asset.
-models/
+# The crystal classifier's TorchScript source stays out; the ONNX the program
+# actually loads is committed, because the beamline cannot build it. Its glibc
+# is 2.17, and neither onnxruntime nor the onnx package has a wheel that old,
+# so exporting there would mean a C++ toolchain and protobuf for one 16 MB
+# file. Git is the hand-copy we already have, and the checksum in
+# models/crystal3.json ties it back to the checkpoint it came from.
+models/*.pt
+models/*.pth

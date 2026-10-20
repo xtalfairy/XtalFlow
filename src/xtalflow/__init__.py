@@ -1,6 +1,6 @@
 """XtalFlow's new implementation."""
 
-__version__ = "0.9.0"
+__version__ = "1.0.0"
 
 # The version belongs in the title bar. Several versions are installed beside
 # one another under /usr/local/fbdd_apps/XtalFlow/, sharing one config file,

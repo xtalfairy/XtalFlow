@@ -105,6 +105,27 @@ xtalflow-viewer
 ```
 
 `/etc/profile.d/xtalflow.sh`에 그 한 줄을 두면 모든 연구자에게 적용됩니다.
+
+### 버전마다 실행 명령 하나
+
+버전은 나란히 설치되고 설정 파일을 함께 씁니다. 실행 명령도 버전마다 하나씩
+두면, 어느 것을 띄울지 사용자가 고를 수 있습니다.
+[`xtalflow-launcher.example.sh`](./xtalflow-launcher.example.sh)를 복사해
+`VERSION`만 바꾸면 됩니다.
+
+```
+/usr/local/bin/xtalflow      VERSION=0.9   사람들이 치는 것
+/usr/local/bin/xtalflow09    VERSION=0.9   같은 것을 명시적으로
+/usr/local/bin/xtalflow10    VERSION=1.0   새 버전
+```
+
+이름은 **용도가 아니라 버전**으로 붙입니다. `xtalflow-test`는 그 버전이
+기본이 되는 순간 거짓말이 되지만, 번호는 계속 맞습니다. 새 버전을 기본으로
+올릴 때는 `/usr/local/bin/xtalflow`의 `VERSION` 한 줄만 고치면 됩니다.
+
+버전끼리는 **같은 리뷰 데이터베이스를 공유합니다.** 그래서 어느 버전도 그
+스키마를 바꾸지 않습니다 — 0.9에서 찍은 position을 1.0이 읽고, 그 반대도
+됩니다.
 운영 설정은 이미지 공유, 장비 폴더 세 곳, worksheet 임시 폴더, MxLive 주소,
 그리고 설치 폴더 옆의 `xtalflow.toml`을 가리킵니다.
 

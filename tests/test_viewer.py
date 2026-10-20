@@ -4115,3 +4115,55 @@ def test_a_plate_the_order_gets_wrong_says_so_and_unticks_itself(
     )
     window.close()
     app.processEvents()
+
+
+def test_the_rank_says_why_this_image_is_in_front_of_you(tmp_path: Path) -> None:
+    """Crystal first jumps across the plate; "47 / 288" alone explains nothing."""
+    app, window = _scored_window(tmp_path)
+    total = len(window.controller.plate.images)
+
+    # Well order: unchanged, and the model stays silent.
+    assert window.position_label.text().startswith("1 / ")
+    assert "crystal" not in window.position_label.text()
+
+    window.crystal_first_input.setChecked(True)
+    app.processEvents()
+    window.controller.move_to(window.controller.walk_order[2])
+    window._show_current_image()
+
+    assert window.position_label.text().startswith(f"crystal rank 3 of {total}")
+    # Still no percentage anywhere: this model's accuracy has never been
+    # measured, so a figure would be a claim nobody can back.
+    assert "%" not in window.position_label.text()
+
+    # An image the model could not read says so, and says it comes first.
+    window._crystal_scores.pop(window.controller.current_image.image_key)
+    window.controller.set_walk_order(None)
+    window._apply_crystal_order()
+    here = window.controller.walk_order[0]
+    window.controller.move_to(here)
+    window._show_current_image()
+    if window.controller.current_image.image_key not in window._crystal_scores:
+        assert "not scored · shown first" in window.position_label.text()
+    window.close()
+    app.processEvents()
+
+
+def test_a_position_shows_on_the_plate_map_without_moving_first(
+    tmp_path: Path,
+) -> None:
+    """The count replaces the glyph, so it has to appear when the mark does."""
+    app, window = _scored_window(tmp_path)
+    window.plate_map_button.setChecked(True)
+    app.processEvents()
+    well = window.controller.current_image.well_number
+    assert window.plate_map_panel.map._cells[well].positions == 0
+
+    window.controller.session.add_target(
+        window.controller.current_image, 10, 10, 100, 100
+    )
+    window._refresh_plate_map()
+
+    assert window.plate_map_panel.map._cells[well].positions == 1
+    window.close()
+    app.processEvents()

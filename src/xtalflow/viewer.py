@@ -1795,10 +1795,7 @@ class ViewerWindow(QMainWindow):
         self.navigation_label.setToolTip(
             f"RockMaker well {image.well_number}, drop {image.drop_number}"
         )
-        self.position_label.setText(
-            f"{self.controller.image_index + 1} / {len(self.controller.plate.images)} · "
-            f"Batch {image.batch_id}"
-        )
+        self.position_label.setText(f"{self._position_text(image)} · Batch {image.batch_id}")
         self._update_review_summary()
         self._update_navigation()
 
@@ -1833,6 +1830,7 @@ class ViewerWindow(QMainWindow):
         else:
             return
         self.image_canvas.set_targets(self.controller.current_targets)
+        self._refresh_plate_map()
         self._update_review_summary()
         if self.controller.has_unsaved_changes:
             self._set_save_status("unsaved")
@@ -1950,6 +1948,23 @@ class ViewerWindow(QMainWindow):
                 self.controller.current_image.drop_number
             ).physical_diameter_mm
         self.calibration_inspector.show_calibration(calibration, lens_diameter)
+
+    def _position_text(self, image) -> str:
+        """Where this image sits, in the words of the walk it is being made in.
+
+        Under crystal first the walk jumps across the plate, so "47 / 288"
+        alone would leave somebody with no idea why they are looking at this
+        one. The rank answers it in the slot they already read, without
+        putting the model's opinion over the image itself.
+        """
+        total = len(self.controller.plate.images)
+        if not self.crystal_first_input.isChecked() or not self._crystal_scores:
+            return f"{self.controller.image_index + 1} / {total}"
+        if image.image_key not in self._crystal_scores:
+            # Unscored sorts to the front, and saying so is the whole point:
+            # the model could not look, so a person has to.
+            return f"not scored · shown first of {total}"
+        return f"crystal rank {self.controller.walk_position + 1} of {total}"
 
     def _remember_mark_ordering(self, image_key: str) -> None:
         """Note which walk led here, so the self-check is not circular."""

@@ -75,7 +75,7 @@ def test_a_tooltip_says_the_class_and_the_rank_and_never_a_percentage(app) -> No
 
 def test_a_well_with_positions_shows_the_count_in_place_of_the_glyph(app) -> None:
     """Once somebody has marked a well, what a model guessed about it is history."""
-    from xtalflow.ui.plate_map import CLEAR_GLYPH, CRYSTAL_GLYPH
+    from xtalflow.ui.plate_map import NO_CRYSTAL_GLYPH, CRYSTAL_GLYPH
 
     plate_map = PlateMap()
     cells = (
@@ -86,7 +86,7 @@ def test_a_well_with_positions_shows_the_count_in_place_of_the_glyph(app) -> Non
 
     # Rendered off-screen; what matters is that the two differ and the second
     # carries the count. Painting is checked by rendering in the viewer test.
-    assert CRYSTAL_GLYPH != CLEAR_GLYPH
+    assert CRYSTAL_GLYPH != NO_CRYSTAL_GLYPH
     assert plate_map._cells[2].positions == 2
     assert plate_map._cells[1].positions == 0
 
@@ -94,21 +94,21 @@ def test_a_well_with_positions_shows_the_count_in_place_of_the_glyph(app) -> Non
 def test_a_cell_can_be_read_without_colour(app) -> None:
     """Filled diamond, open ring and dot differ in ink, not only in hue."""
     from xtalflow.ui.plate_map import (
-        CLEAR_GLYPH,
+        NO_CRYSTAL_GLYPH,
         CRYSTAL_GLYPH,
         EMPTY_GLYPH,
         GLYPHS,
         UNSCORED_GLYPH,
     )
 
-    glyphs = {CRYSTAL_GLYPH, CLEAR_GLYPH, EMPTY_GLYPH, UNSCORED_GLYPH}
+    glyphs = {CRYSTAL_GLYPH, NO_CRYSTAL_GLYPH, EMPTY_GLYPH, UNSCORED_GLYPH}
     assert len(glyphs) == 4, "every state needs a shape of its own"
     # And each one is named in the legend, so the shape is never alone either.
     from xtalflow.ui.plate_map import LEGEND
 
-    for word in ("crystal", "clear", "empty", "not scored", "reviewed"):
+    for word in ("crystal", "no crystal", "empty", "not scored", "reviewed"):
         assert word in LEGEND
-    assert set(GLYPHS) == {"crystal", "clear", "empty"}
+    assert set(GLYPHS) == {"crystal", "no crystal", "empty"}
 
 
 def _controller_with(wells: int = 3, drops: int = 3):

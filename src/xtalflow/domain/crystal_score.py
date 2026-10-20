@@ -13,8 +13,11 @@ from dataclasses import dataclass
 
 CRYSTAL = "crystal"
 # The model's second class is called "drop", which in this program already
-# means one of the three sub-drops of a well. On screen it is "clear".
-DISPLAY_NAMES = {"crystal": "crystal", "drop": "clear", "empty": "empty"}
+# means one of the three sub-drops of a well. The training set shows what it
+# actually covers - drop_normal, drop_precipitated and drop_clear - so it is
+# every drop without a crystal in it, and "clear" would have been a narrower
+# claim than the model makes.
+DISPLAY_NAMES = {"crystal": "crystal", "drop": "no crystal", "empty": "empty"}
 
 
 @dataclass(frozen=True)

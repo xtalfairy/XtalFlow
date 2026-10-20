@@ -16,9 +16,12 @@ def test_a_score_names_the_class_it_chose_and_the_word_shown_for_it() -> None:
     assert _score("a", 0.9, 0.05, 0.05).label == "crystal"
     assert _score("a", 0.9, 0.05, 0.05).display_label == "crystal"
     # "drop" already means one of a well's three sub-drops in this program,
-    # and the navigation says so on screen: Well 12 · Drop 2.
+    # and the navigation says so on screen: Well 12 · Drop 2. The training set
+    # shows the class covers drop_normal, drop_precipitated and drop_clear, so
+    # it is every drop without a crystal - "clear" would have been narrower
+    # than the model is claiming.
     assert _score("a", 0.1, 0.8, 0.1).label == "drop"
-    assert _score("a", 0.1, 0.8, 0.1).display_label == "clear"
+    assert _score("a", 0.1, 0.8, 0.1).display_label == "no crystal"
     assert _score("a", 0.0, 0.1, 0.9).display_label == "empty"
 
 

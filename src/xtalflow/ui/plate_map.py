@@ -36,18 +36,18 @@ MARGIN_LEFT = 24
 MARGIN_TOP = 18
 
 CRYSTAL_GLYPH = "◆"
-CLEAR_GLYPH = "○"
+NO_CRYSTAL_GLYPH = "○"
 EMPTY_GLYPH = "·"
 UNSCORED_GLYPH = theme.SYMBOL_ERROR
 UNREACHED_GLYPH = ""
 
 GLYPHS = {
     "crystal": (CRYSTAL_GLYPH, theme.TEXT),
-    "clear": (CLEAR_GLYPH, theme.TEXT_MUTED),
+    "no crystal": (NO_CRYSTAL_GLYPH, theme.TEXT_MUTED),
     "empty": (EMPTY_GLYPH, theme.TEXT_TERTIARY),
 }
 LEGEND = (
-    f"{CRYSTAL_GLYPH} crystal   {CLEAR_GLYPH} clear   {EMPTY_GLYPH} empty   "
+    f"{CRYSTAL_GLYPH} crystal   {NO_CRYSTAL_GLYPH} no crystal   {EMPTY_GLYPH} empty   "
     f"{UNSCORED_GLYPH} not scored   2 positions placed   shaded = reviewed"
 )
 

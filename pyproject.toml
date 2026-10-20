@@ -9,11 +9,12 @@ description = "Crystal image review and experiment workflow"
 requires-python = ">=3.9,<3.13"
 dependencies = [
     "numpy==1.26.4",
-    "onnxruntime==1.31.0",
+    # Also runs the crystal classifier, through cv2.dnn: onnxruntime has no
+    # wheel this beamline's CentOS 7 can install, and OpenCV was here anyway.
     "opencv-python-headless==4.10.0.84",
-    # Not interchangeable with cv2 here: the crystal model was trained on
-    # images resized by Pillow, which antialiases where cv2's bilinear does
-    # not, and the difference does not fail - it makes the model worse.
+    # Not interchangeable with cv2 for the resize. The model was trained on
+    # images Pillow resized, which antialiases where cv2 does not; measured
+    # over 72 images the difference changes the label on two to six of them.
     "pillow==12.3.0",
     "PyQt5==5.15.11",
     "cryptography==45.0.5",

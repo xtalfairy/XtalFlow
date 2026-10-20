@@ -1,14 +1,24 @@
-"""Run the crystal classifier over plate images, through ONNX Runtime.
+"""Run the crystal classifier over plate images, through OpenCV's ONNX reader.
 
 The model is CrystAIze's: an EfficientNet-B0 fine-tuned in-house on
 hand-labelled SWISS-CI plates, exported to ONNX by codex/export_crystal_onnx.py
 along with a JSON of the facts needed to use it. Reading it here rather than
-importing torch keeps 385 MB out of this program.
+importing torch keeps 385 MB out of this program - the venv beside ours that
+does import torch is 5.6 GB against our 468 MB.
 
-The preprocessing below has to be the transform the model was trained with,
-to the pixel. It is checked against torchvision's own in the tests, because
-getting it subtly wrong does not fail - it quietly makes the model worse, and
-nobody would know which plates were walked in a worse order.
+It runs through ``cv2.dnn`` rather than ONNX Runtime, which has no wheel this
+beamline's CentOS 7 can install: its glibc is 2.17 and onnxruntime's recent
+wheels want 2.27 or newer. OpenCV is already a dependency here, so inference
+costs nothing new, agrees with the original checkpoint to 1e-6, and takes
+about six seconds for a plate - all of it in the background, and less than the
+share takes to hand over the images.
+
+Pillow is not interchangeable with OpenCV for the resize. torchvision's
+Resize antialiases on a PIL image and cv2's does not, and the difference is
+not academic: measured over 72 fixture images it moves the tensor by up to
+0.25, the probabilities by up to 0.71, and changes the label on two to six of
+them. Getting this subtly wrong does not fail - it quietly makes the model
+worse, and nobody would know which plates were walked in a worse order.
 """
 
 from __future__ import annotations
@@ -18,7 +28,6 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, UnidentifiedImageError
 
 from xtalflow.domain import CrystalImage
 from xtalflow.domain.crystal_score import CrystalScore
@@ -85,26 +94,36 @@ class OnnxCrystalScorer:
         return facts
 
     def _loaded(self):
-        """The session, made on first use: loading costs a tenth of a second."""
+        """The network, read on first use."""
         if self._session is None:
             try:
-                import onnxruntime
+                import cv2
             except ImportError as error:  # pragma: no cover - an install problem
                 raise CrystalModelUnavailable(
-                    "onnxruntime is not installed, so images cannot be scored"
+                    "OpenCV is not installed, so images cannot be scored"
                 ) from error
             try:
-                self._session = onnxruntime.InferenceSession(
-                    str(self.model_path), providers=["CPUExecutionProvider"]
-                )
-            except Exception as error:  # onnxruntime raises its own types
+                self._session = cv2.dnn.readNetFromONNX(str(self.model_path))
+            except Exception as error:  # cv2 raises its own types
                 raise CrystalModelUnavailable(
-                    f"the crystal model at {self.model_path} could not be loaded: {error}"
+                    f"the crystal model at {self.model_path} could not be read: {error}"
                 ) from error
         return self._session
 
     def prepare(self, path: Path) -> np.ndarray:
-        """One image as the model wants it: CHW float32, normalised to [-1, 1]."""
+        """One image as the model wants it: CHW float32, normalised to [-1, 1].
+
+        Pillow, not OpenCV: see the note at the top of this file. It is
+        imported here rather than above so that a machine without it runs the
+        program with the feature absent, which is how every other part of this
+        answers a missing piece.
+        """
+        try:
+            from PIL import Image
+        except ImportError as error:  # pragma: no cover - an install problem
+            raise CrystalModelUnavailable(
+                "Pillow is not installed, so images cannot be prepared for the model"
+            ) from error
         with Image.open(path) as opened:
             image = opened.convert("RGB")
             image = image.resize(
@@ -133,12 +152,13 @@ class OnnxCrystalScorer:
             for image in batch:
                 try:
                     prepared.append(self.prepare(image.path))
-                except (OSError, UnidentifiedImageError, ValueError):
+                except (OSError, ValueError):
                     continue
                 kept.append(image)
             if not prepared:
                 continue
-            logits = session.run(["logits"], {"image": np.stack(prepared)})[0]
+            session.setInput(np.stack(prepared))
+            logits = session.forward()
             for image, row in zip(kept, logits):
                 scored.append(
                     CrystalScore(

@@ -132,3 +132,39 @@ def test_every_score_names_the_model_that_made_it() -> None:
     assert all(
         abs(sum(score.probabilities) - 1.0) < 1e-5 for score in scores
     ), "probabilities must be a distribution, not logits"
+
+
+def test_a_missing_pillow_turns_the_feature_off_rather_than_the_program(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The beamline could not install onnxruntime at all; assume the same of any of these.
+
+    This module has to import without Pillow, so a machine lacking it runs
+    XtalFlow with the crystal feature absent - which is what every other
+    missing piece does here - rather than failing to start. A module-level
+    `from PIL import ...` would take the whole program down with it, and the
+    import that matters is in the one function that needs it.
+    """
+    import builtins
+
+    source = Path(OnnxCrystalScorer.__module__.replace(".", "/") + ".py")
+    text = (Path(__file__).resolve().parent.parent / "src" / source).read_text()
+    imports = [
+        line for line in text.splitlines()
+        if line.startswith(("import ", "from ")) and "PIL" in line
+    ]
+    assert not imports, f"Pillow must not be imported at module level: {imports}"
+
+    real_import = builtins.__import__
+
+    def without_pillow(name, *args, **kwargs):
+        if name.startswith("PIL"):
+            raise ImportError("no module named PIL")
+        return real_import(name, *args, **kwargs)
+
+    scorer = OnnxCrystalScorer.__new__(OnnxCrystalScorer)
+    scorer.resize_short_side, scorer.input_size = 256, 224
+    scorer.mean = scorer.std = 0.5
+    monkeypatch.setattr(builtins, "__import__", without_pillow)
+    with pytest.raises(CrystalModelUnavailable, match="Pillow is not installed"):
+        scorer.prepare(tmp_path / "anything.jpg")

@@ -64,6 +64,40 @@ def predict(model, paths, prepare, device) -> list[tuple[int, np.ndarray]]:
     return out
 
 
+def show_ranking(truth: list[int], probabilities: list[np.ndarray]) -> None:
+    """How well P(crystal) orders the plate, which is what the feature uses.
+
+    Accuracy at the argmax is the wrong question here. A crystal the model
+    calls a drop at P(crystal) 0.45 still sorts above a drop at 0.05, and the
+    review walks the order rather than the labels. What matters is how much of
+    the plate somebody has to look at before they have seen the crystals.
+    """
+    scores = np.array([row[0] for row in probabilities])
+    actual = np.array([1 if value == 0 else 0 for value in truth])
+    crystals = int(actual.sum())
+    if not crystals or crystals == len(actual):
+        print("\n    ranking: every image is the same class here")
+        return
+
+    # Mann-Whitney: the chance a crystal outranks a non-crystal. 50% is a coin.
+    order = np.argsort(scores)
+    ranks = np.empty(len(scores), dtype=float)
+    ranks[order] = np.arange(1, len(scores) + 1)
+    positive = ranks[actual == 1].sum()
+    negatives = len(actual) - crystals
+    auc = (positive - crystals * (crystals + 1) / 2) / (crystals * negatives)
+    print(f"\n    ranking by P(crystal): AUC {auc:.3f}  "
+          f"(0.5 is a coin, 1.0 is perfect)")
+
+    print(f"    {'look at the top':>18} {'images':>7} {'crystals found':>16}")
+    by_score = np.argsort(-scores)
+    for fraction in (0.1, 0.2, 0.3, 0.5):
+        take = max(1, int(len(scores) * fraction))
+        found = int(actual[by_score[:take]].sum())
+        print(f"    {fraction:>17.0%} {take:>7} {found:>9} / {crystals}"
+              f" = {found / crystals:>4.0%}")
+
+
 def show_matrix(truth: list[int], guess: list[int]) -> None:
     counts = defaultdict(int)
     for actual, predicted in zip(truth, guess):
@@ -118,6 +152,7 @@ def main(argv: list[str]) -> int:
         results = predict(model, paths, prepare, device)
         guess = [label for label, _ in results]
         show_matrix(truth, guess)
+        show_ranking(truth, [row for _, row in results])
 
         # Per plate, because a plate that is almost all one class can be
         # recognised by its look rather than by what is in its drops.

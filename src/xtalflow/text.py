@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 VOWELS = "aeiou"
 
 
@@ -19,3 +21,15 @@ def counted(value: int, noun: str) -> str:
     if noun.endswith(("s", "x", "z", "ch", "sh")):
         return f"{value} {noun}es"
     return f"{value} {noun}s"
+
+
+def percent(value: float) -> str:
+    """A fraction as a percentage, rounded down.
+
+    Rounding to nearest showed "90%" for 0.895 beside a rule that wanted
+    0.90, so a boundary that read as good enough was turned down as not: 38
+    of the fixture's images sit in that gap. Rounding down can understate a
+    score by a point; claiming one it does not have cannot be explained to
+    the person reading it.
+    """
+    return f"{math.floor(value * 100)}%"

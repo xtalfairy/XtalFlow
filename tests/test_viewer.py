@@ -4240,3 +4240,105 @@ def test_a_spare_well_without_a_boundary_does_not_empty_a_condition_test(
     assert "1 well left out" in footer, footer
     window.close()
     app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_a_position_outside_its_well_does_not_keep_it_out_of_bulk_confirming(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The button said "Confirm detected boundaries (0)" beside a list of wells.
+
+    A position outside the outline is a warning everywhere else in the
+    program, because the detected outline is often smaller than the well.
+    Treating it as a disqualification here left the one button that confirms
+    a plateful of wells refusing to confirm any of them, with no reason
+    anybody could see.
+    """
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        auto_advance_target_count=10,
+    )
+    window.load_plate("2070", SWISSCI_MRC_2_WELL)
+    window.auto_confirm_plate_checkbox.setChecked(False)
+    window._auto_detect_calibration()
+    calibration = window.current_calibration
+    window._handle_image_click(
+        calibration.center_x_px, calibration.center_y_px, Qt.LeftButton
+    )
+    # A corner of the picture: inside the image, outside the well.
+    assert not calibration.contains(5, 5)
+    window._handle_image_click(5, 5, Qt.LeftButton)
+
+    assert window.project_controller.valid_unconfirmed_automatic_calibration_count() == 1
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    window._accept_valid_auto_wells()
+
+    assert window.current_calibration.confirmed
+    summaries = window.project_controller.project_target_summaries()
+    assert not any(summary.blocks_planning for summary in summaries)
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_check_wells_walks_past_a_well_that_only_carries_a_warning(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Reported from BL-5C: "I accepted them all and it will not go on."
+
+    The button goes to the first row of a list that also holds wells which
+    are only warned about. Once the top row was a well that had been
+    accepted, the button selected the row that was already selected and
+    nothing happened at all, however many times it was pressed.
+    """
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        auto_advance_target_count=10,
+    )
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    page = window.experiment_page
+    # Shown: the dock refreshes nothing while it is not on screen, and this
+    # whole flow is about what the dock is showing.
+    window.show()
+    app.processEvents()
+    window.workspace_sidebar.start_buttons[PlanType.RAW_CRYSTAL.value].click()
+    editor = window.experiments.current_editor
+    editor.protein_input.setText("BRD4")
+    page.primary_button.click()
+    window.load_plate("2070", SWISSCI_MRC_2_WELL)
+    window.auto_confirm_plate_checkbox.setChecked(False)
+    # First well: one position inside, one outside, boundary left unconfirmed.
+    window._auto_detect_calibration()
+    first = window.current_calibration
+    window._handle_image_click(first.center_x_px, first.center_y_px, Qt.LeftButton)
+    window._handle_image_click(5, 5, Qt.LeftButton)
+    first_address = window._current_well_address
+    assert window.show_next()
+    # A second well, also waiting to be confirmed.
+    window._auto_detect_calibration()
+    second = window.current_calibration
+    window._handle_image_click(second.center_x_px, second.center_y_px, Qt.LeftButton)
+    second_address = window._current_well_address
+    window.experiments._sync_current_selection()
+    assert editor.wells_needing_attention == 2
+
+    window.experiments._review_target_warnings()
+    assert window._current_well_address == first_address
+    window._accept_current_calibration()
+    window.experiments._sync_current_selection()
+    assert editor.wells_needing_attention == 1
+
+    # The accepted well stays in the list, warned about; the button must
+    # walk past it to the one still in the way.
+    window.experiments._review_target_warnings()
+
+    assert window._current_well_address == second_address
+    assert window.accept_calibration_button.isEnabled()
+    window.close()
+    app.processEvents()

@@ -2361,6 +2361,16 @@ class ExperimentCoordinator:
         except ReviewPersistenceError as persistence_error:
             self.window._show_persistence_error(persistence_error)
 
+    def _wells_needing_attention(self):
+        """The wells the dock is showing, in its order; empty if unreadable."""
+        try:
+            return tuple(
+                well for well in self.window.project_controller.project_target_summaries()
+                if not well.is_ready
+            )
+        except IMAGE_SOURCE_ERRORS:
+            return ()
+
     def _review_target_warnings(self) -> None:
         if (
             self.current_editor is not None
@@ -2372,6 +2382,19 @@ class ExperimentCoordinator:
         self.window.target_summary_dock.show()
         self.window.target_summary_dock.raise_()
         self.window._refresh_target_summary()
+        # To the first well that is actually in the way, not to the first row.
+        # The list also holds wells that are only warned about - a position
+        # outside its boundary does not stop a plan - and one of those sitting
+        # at the top left this button with nowhere to go: it selected a row
+        # that was already selected, and the button that said "Check 2 wells"
+        # did nothing, however many times it was pressed.
+        blocking = next(
+            (well for well in self._wells_needing_attention() if well.blocks_planning),
+            None,
+        )
+        if blocking is not None:
+            if self.window.show_summary_row_for(blocking.image.image_key):
+                return
         if self.window.target_summary_table.rowCount():
             self.window.target_summary_table.setCurrentCell(0, 0)
             self.window.target_summary_table.setFocus(Qt.OtherFocusReason)

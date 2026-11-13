@@ -100,7 +100,7 @@ from xtalflow.settings import (
     SITE_CONFIG_PATH,
     with_network_path_policy,
 )
-from xtalflow.text import counted
+from xtalflow.text import counted, percent
 from xtalflow.application.crystal_scoring import CrystalScoringService
 from xtalflow.domain.crystal_score import (
     CRYSTAL_FIRST,
@@ -1483,7 +1483,7 @@ class ViewerWindow(QMainWindow):
                         "Manual"
                         if well.calibration.method
                         is CalibrationMethod.MANUAL_THREE_POINT
-                        else f"Auto {well.calibration.confidence:.0%}"
+                        else f"Auto {percent(well.calibration.confidence)}"
                     )
                     confirmation = (
                         "Confirmed" if well.calibration.confirmed else "Unconfirmed"
@@ -1707,6 +1707,23 @@ class ViewerWindow(QMainWindow):
             self.target_summary_table.setFocus(Qt.OtherFocusReason)
         except (StopIteration, *IMAGE_SOURCE_ERRORS) as error:
             QMessageBox.warning(self, "Cannot open target", str(error))
+
+    def show_summary_row_for(self, image_key: str) -> bool:
+        """Open the well with this key in the dock, wherever its row is.
+
+        By row rather than by selection, and without caring whether the row
+        is already the current one: a well that is already selected emits no
+        change, which is how pressing "Check 2 wells" came to do nothing at
+        all once the first row was a well that did not need checking.
+        """
+        table = self.target_summary_table
+        for row in range(table.rowCount()):
+            item = table.item(row, 0)
+            if item is not None and item.data(Qt.UserRole + 1) == image_key:
+                table.setCurrentCell(row, 0)
+                self._target_summary_activated(row, 0)
+                return True
+        return False
 
     def show_previous(self) -> bool:
         if self.controller is None:

@@ -216,3 +216,18 @@ def test_the_requirements_file_holds_every_runtime_dependency() -> None:
     }
     missing = [name for name in pinned if name.casefold() not in listed]
     assert not missing, f"in pyproject but not requirements.txt: {missing}"
+
+
+def test_a_score_is_never_rounded_up_past_the_rule_it_is_judged_by() -> None:
+    """89.5% showed as "90%" beside a rule that wanted 90: 38 fixture images sit there."""
+    from xtalflow.text import counted, percent
+
+    assert percent(0.895) == "89%"
+    assert percent(0.8999) == "89%"
+    assert percent(0.9) == "90%"
+    assert percent(1.0) == "100%"
+    # English plurals, because the steps said "2 boundarys to confirm".
+    assert counted(1, "boundary") == "1 boundary"
+    assert counted(2, "boundary") == "2 boundaries"
+    assert counted(2, "well") == "2 wells"
+    assert counted(2, "box") == "2 boxes"

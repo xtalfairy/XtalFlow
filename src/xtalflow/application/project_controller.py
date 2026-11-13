@@ -541,7 +541,14 @@ class ProjectController:
     def confirm_valid_automatic_calibrations(
         self, min_confidence: float = 0, image_set_id: str | None = None
     ) -> int:
-        """Confirm only automatic wells whose selected targets are all in bounds."""
+        """Confirm automatic wells that are waiting on nothing but confirmation.
+
+        A position outside its boundary does not keep a well out of this: the
+        detected outline is often smaller than the well, the issue is a
+        warning everywhere else, and leaving those wells out made the button
+        say "Confirm detected boundaries (0)" while the list beside it showed
+        wells waiting to be confirmed.
+        """
         candidates = self._valid_unconfirmed_automatic_calibrations(
             min_confidence, image_set_id
         )
@@ -582,8 +589,10 @@ class ProjectController:
                 and not calibration.confirmed
                 and calibration.confidence >= min_confidence
                 and all(
-                    summary.validation_issues
-                    == (TargetValidationIssue.CALIBRATION_UNCONFIRMED,)
+                    tuple(
+                        issue for issue in summary.validation_issues
+                        if issue in BLOCKING_ISSUES
+                    ) == (TargetValidationIssue.CALIBRATION_UNCONFIRMED,)
                     for summary in summaries
                 )
             ):

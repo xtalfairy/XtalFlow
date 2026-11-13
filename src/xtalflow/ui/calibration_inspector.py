@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
 )
 
 from xtalflow.domain import CalibrationMethod, ImageCalibration
+from xtalflow.text import percent
 from xtalflow.ui import theme
 from xtalflow.ui.forms import form_layout
 
@@ -33,7 +34,7 @@ def calibration_status(
     if calibration.method is CalibrationMethod.MANUAL_THREE_POINT:
         method = "manual"
     else:
-        method = f"auto, outline fit {calibration.confidence:.0%}"
+        method = f"auto, outline fit {percent(calibration.confidence)}"
     if not calibration.confirmed:
         return f"{theme.SYMBOL_ATTENTION} Confirm well boundary · {method}", "attention"
     if positions_outside:
@@ -131,7 +132,7 @@ class CalibrationInspector(QFrame):
         manual = calibration.method is CalibrationMethod.MANUAL_THREE_POINT
         state = "accepted" if calibration.confirmed else "not accepted"
         self.method_label.setText(f"{'Manual 3 points' if manual else 'Automatic'} · {state}")
-        self.score_label.setText("—" if manual else f"{calibration.confidence:.0%}")
+        self.score_label.setText("—" if manual else percent(calibration.confidence))
         self.diameter_label.setText(f"{calibration.physical_diameter_mm:.2f} mm")
         scale_um = calibration.physical_diameter_mm * 1000 / (
             calibration.radius_x_px + calibration.radius_y_px

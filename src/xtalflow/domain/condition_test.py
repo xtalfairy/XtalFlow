@@ -104,6 +104,22 @@ def parse_minutes_list(text: str) -> tuple[int, ...]:
     return tuple(values)
 
 
+# A compact label joins its parts with - and +, and closes a name with _
+# before the percent. None of those may appear inside a name, and a name may
+# not end where the percent begins: "Solvent 2" at 3 % ran together as
+# "Solvent 23%" in MxLive, which read as a concentration nobody dispensed.
+COMPACT_RESERVED = "-+_%·,;\"'"
+
+
+def compact_name(name: str) -> str:
+    """An additive's name with nothing in it that could be read as structure."""
+    cleaned = "".join(
+        character for character in name
+        if not character.isspace() and character not in COMPACT_RESERVED
+    )
+    return cleaned or "additive"
+
+
 def _percent_text(value: Decimal) -> str:
     return f"{value.normalize():f}"
 
@@ -292,14 +308,18 @@ class ConditionTestDesign:
             name = self.additive(treatment.additive_id).name
             if treatment.final_percent == 0:
                 if index:
-                    text = f"NoAdditional{name}" if compact else f"No additional {name}"
+                    text = (
+                        f"NoAdditional{compact_name(name)}" if compact
+                        else f"No additional {name}"
+                    )
                 else:
-                    text = f"No{name}" if compact else f"No {name} added"
+                    text = f"No{compact_name(name)}" if compact else f"No {name} added"
                 parts.append(f"{text}-{time}" if compact else f"{text} · {time}")
                 continue
             percent = _percent_text(treatment.final_percent)
             parts.append(
-                f"{name}{percent}%-{time}" if compact else f"{name} {percent}% · {time}"
+                f"{compact_name(name)}_{percent}%-{time}" if compact
+                else f"{name} {percent}% · {time}"
             )
         return ("+" if compact else " → ").join(parts)
 

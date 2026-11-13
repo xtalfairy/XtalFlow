@@ -235,6 +235,19 @@ def _well_address(summary, image_sets) -> str:
 
 
 
+def _soak_id_examples(records, shown: int = 3) -> str:
+    """The names these records will carry in MxLive, as they will read there.
+
+    The upload is the last place a name can be caught; after it, MxLive holds
+    whatever was sent and a researcher reading it months later has only that.
+    """
+    names = [record.soak_id for record in records if getattr(record, "soak_id", "")]
+    if not names:
+        return "no names"
+    rest = len(names) - shown
+    return ", ".join(names[:shown]) + (f", and {rest} more" if rest > 0 else "")
+
+
 class ExperimentCoordinator:
     """Every experiment open in the window, and the steps each one is walking."""
 
@@ -987,6 +1000,7 @@ class ExperimentCoordinator:
         editor = self.current_editor
         if editor is None:
             return
+        editor.commit_pending_edits()
         steps = steps_for(editor.plan_type)
         if step not in steps:
             step = steps[0]
@@ -1144,6 +1158,10 @@ class ExperimentCoordinator:
         instruments = ", ".join(
             destination.label for destination in self._instruments_for(editor.plan_type)
         )
+        editor.commit_pending_edits()
+        warnings = editor.finalize_warnings()
+        # A warning makes No the safe answer: the dialog is answered from
+        # memory otherwise, and this one is here to be read.
         if QMessageBox.question(
             self.window,
             "Finalize experiment",
@@ -1152,10 +1170,11 @@ class ExperimentCoordinator:
             f"{counted(editor.selected_well_count, 'well')} · "
             f"{counted(editor.selected_position_count, 'position')}\n"
             f"Worksheets for: {instruments or 'no configured instruments'}\n\n"
-            "Finalizing fixes what the worksheets will contain. It does not start "
+            + "".join(f"{theme.SYMBOL_ATTENTION} {item}\n\n" for item in warnings)
+            + "Finalizing fixes what the worksheets will contain. It does not start "
             "the experiment; you can still change the plan and finalize again.",
             QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes,
+            QMessageBox.No if warnings else QMessageBox.Yes,
         ) != QMessageBox.Yes:
             return None
         return self._finalize_plan(editor)
@@ -1911,6 +1930,7 @@ class ExperimentCoordinator:
             self.window,
             "Upload finalized revision",
             f"Upload {len(records)} records for {revision.experiment_id}?\n\n"
+            f"Named in MxLive: {_soak_id_examples(records)}\n\n"
             f"Account: {account.username}\n"
             f"API project_id: {account.account_id}\n"
             f"Endpoint: {endpoint}",

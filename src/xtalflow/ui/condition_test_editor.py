@@ -99,6 +99,11 @@ def _dose_text(design: ConditionTestDesign, item, dose) -> str:
     )
 
 
+def _is_default_name(name: str, noun: str) -> bool:
+    """True for the "Solvent 2" a new series is given until somebody names it."""
+    return bool(re.fullmatch(rf"{re.escape(noun.capitalize())} \d+", name.strip()))
+
+
 CELL_WIDTH = 98
 CELL_HEIGHT = 32
 MATRIX_MAX_HEIGHT = 360
@@ -2285,6 +2290,38 @@ class ConditionTestEditor(PlanEditorBase):
                     "the amount reaching the drop unchanged",
                 ))
         return rows
+
+    def commit_pending_edits(self) -> None:
+        """Take the name, source wells and SMILES as typed, entered or not.
+
+        These apply on editingFinished, which needs the focus to leave the
+        field - and a click does not always move it. A solvent renamed and
+        then left behind would reach MxLive under its old name, which is how
+        a beamline user met a name they did not recognize.
+        """
+        self._name_edited()
+        self._source_wells_edited()
+        self.update_additive(smiles=self.smiles_input.text())
+
+    def finalize_warnings(self) -> tuple[str, ...]:
+        """Default names, which say nothing about what was actually soaked."""
+        unnamed = tuple(
+            additive.name for additive in self.design.additives
+            if _is_default_name(additive.name, self._noun)
+        )
+        if not unnamed:
+            return ()
+        return (
+            f"Still named {', '.join(unnamed)}. That name goes to MxLive with every "
+            f"crystal, e.g. {self._example_soak_id()}.",
+        )
+
+    def _example_soak_id(self) -> str:
+        """What one crystal will be called in MxLive, as the records will have it."""
+        conditions = self.design.conditions()
+        if not conditions:
+            return "—"
+        return f"{self.design.label(conditions[0], compact=True)}-r1"
 
     def record_builder(self) -> Callable:
         return build_condition_test_labworks

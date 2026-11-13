@@ -93,7 +93,7 @@ def test_combined_treatment_uses_the_enlarged_drop_and_schedules_later_additions
     first, second = compute_doses(design, condition)
 
     assert design.label(condition) == "DMSO 5% · 1 h → Glycerol 20% · 0 min"
-    assert design.label(condition, compact=True) == "DMSO5%-1h+Glycerol20%-0min"
+    assert design.label(condition, compact=True) == "DMSO_5%-1h+Glycerol_20%-0min"
     assert (first.volume_nl, first.start_minutes) == (Decimal("10.0"), 0)
     # Drop is 210 nL after DMSO; 20% glycerol from a 50% stock needs 140 nL.
     assert (second.volume_nl, second.start_minutes) == (Decimal("140.0"), 60)
@@ -214,6 +214,36 @@ def test_an_addition_too_small_to_reach_every_position_moves_no_empty_transfer()
     assert [row.transfer_volume_nl for row in rows] == [Decimal("2.5")]
 
 
+def test_a_name_that_ends_in_a_digit_cannot_be_read_as_a_concentration() -> None:
+    """MxLive showed "Solvent 23%" for 3 % and "Solvent 210%" for 10 %.
+
+    The compact label is what a researcher reads months later, with nothing
+    else beside it, so the name has to end where the percent begins.
+    """
+    from xtalflow.domain.labwork import build_condition_test_labworks
+
+    solvent = Additive("s2", "Solvent 2", Decimal("100"), "CS(=O)C", "SOLV-1", "A1")
+    series = new_series(solvent.id, (Decimal("3"), Decimal("10")), (60,), 1)
+    design = ConditionTestDesign((solvent,), (series,), Decimal("600"))
+
+    compact = [design.label(condition, compact=True) for condition in design.conditions()]
+    assert compact == ["Solvent2_3%-1h", "Solvent2_10%-1h"]
+    assert [design.label(condition) for condition in design.conditions()] == [
+        "Solvent 2 3% · 1 h", "Solvent 2 10% · 1 h"
+    ]
+
+    plan = build_condition_test_plan(design, _selection(2))
+    records = build_condition_test_labworks(
+        plan, experiment_id="PreTest-202611-BRD4-01", protein_name="BRD4",
+        username="jjh", account_id="jjh",
+    )
+    assert [record.soak_id for record in records] == [
+        "Solvent2_3%-1h-r1", "Solvent2_10%-1h-r1"
+    ]
+    # The volumes were right all along; only the name was unreadable.
+    assert [str(record.soak_volume_nl) for record in records] == ["17.5", "67.5"]
+
+
 def test_design_round_trips_through_json_and_templates_are_ready_to_edit() -> None:
     design = _design(replicates=3)
     assert ConditionTestDesign.from_json(design.to_json()) == design
@@ -254,7 +284,7 @@ def test_condition_worksheets_and_labworks_follow_dispense_and_harvest_times() -
     )
     payload = records[1].to_payload()
     assert (payload["soak_plate"], payload["soak_well"]) == ("pretest", "Z00")
-    assert payload["soak_id"] == "DMSO10%-0min-r1"
+    assert payload["soak_id"] == "DMSO_10%-0min-r1"
     assert payload["soak_smile"] == "CS(=O)C"
     assert records[0].to_payload()["soak_smile"] == "none"
     assert records[0].to_payload()["soak_id"] == "NoDMSO-0min-r1"

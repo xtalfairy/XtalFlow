@@ -366,6 +366,20 @@ class PlanEditorBase(QWidget):
             self.assigned_experiment_id, self.workflow_step,
         )
 
+    def commit_pending_edits(self) -> None:
+        """Apply what is typed into a field but not yet entered.
+
+        Fields that apply on editingFinished need the focus to leave them, and
+        a click does not always move it. Leaving the step or finalizing is the
+        researcher saying they are done, so what they typed is taken then - a
+        renamed solvent that never reached the design would otherwise be
+        uploaded to MxLive under the name they replaced.
+        """
+
+    def finalize_warnings(self) -> tuple[str, ...]:
+        """What a researcher should see once more before finalizing."""
+        return ()
+
     def conditions_error(self) -> str | None:
         """What stops the plan from being built, once the step has been reached."""
         if self.current_plan is not None or self.selection is None:

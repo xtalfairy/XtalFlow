@@ -4360,3 +4360,115 @@ def test_check_wells_walks_past_a_well_that_only_carries_a_warning(
     assert window.accept_calibration_button.isEnabled()
     window.close()
     app.processEvents()
+
+
+def test_a_renamed_solvent_reaches_mxlive_under_the_name_that_was_typed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A beamline user met "Solvent 23%" in MxLive and thought 23 % had been soaked.
+
+    Two things made that name: a name typed but never entered, and a compact
+    label that ran the name straight into the percent. Both are checked here,
+    through the path a researcher takes.
+    """
+    from PyQt5.QtTest import QTest
+    from xtalflow.domain.condition_test import new_series
+    from xtalflow.ui.condition_test_editor import ConditionTestEditor
+
+    app = QApplication.instance() or QApplication([])
+    key = tmp_path / "keys.dsa"
+    key.write_bytes(b"test-key-presence")
+    settings = replace(
+        DEFAULT_SETTINGS,
+        mxlive_base_url="https://mxlive.example",
+        mxlive_key_path=key,
+        mxlive_ca_bundle=None,
+        mxlive_config_path=None,
+        source_plate_record_directory=tmp_path / "source-plates",
+    )
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store, settings=settings)
+    monkeypatch.setattr("xtalflow.ui.experiment_coordinator.LegacyMxLiveReadClient", _FakeMxLiveReader)
+
+    window.workspace_sidebar.start_buttons["solvent_test"].click()
+    editor = window.experiments.current_editor
+    assert isinstance(editor, ConditionTestEditor)
+    editor.protein_input.setText("BRD4")
+    editor.drop_volume_input.setValue(600)
+    editor.replicates_input.setValue(1)
+    # One series, two conditions: 0 % and 3 %, both at 0 min.
+    editor.design = replace(
+        editor.design,
+        series=(new_series(
+            editor.design.additives[0].id, (Decimal("0"), Decimal("3")), (0,), 1
+        ),),
+    )
+    editor.update_additive(
+        source_plate="SOLVENT-09", source_well="a1", source_plate_type="384PP_DMSO2"
+    )
+    editor.add_series_button.click()
+    assert editor.design.additives[1].name == "Solvent 2"
+    assert editor.finalize_warnings()[0].startswith("Still named Solvent 2.")
+    editor.update_additive(
+        source_plate="SOLVENT-09", source_well="a2", source_plate_type="384PP_DMSO2"
+    )
+
+    # Typed, not entered: no Enter, and the focus stays in the field.
+    editor.additive_name_input.selectAll()
+    QTest.keyClicks(editor.additive_name_input, "EG 2")
+    assert editor.design.additives[1].name == "Solvent 2"
+
+    window.experiments.go_to_step(WorkflowStep.REVIEW)
+    assert editor.design.additives[1].name == "EG 2"
+    assert editor.finalize_warnings() == ()
+
+    required = editor.design.required_crystals
+    now = datetime.now(timezone.utc)
+    crystals = tuple(
+        SelectedCrystal(
+            f"image-{index}", "2070", f"{'ABCDEFGH'[index // 12]}{index % 12 + 1:02d}a",
+            (CrystalTarget(f"target-{index}", Decimal(0), Decimal(0), now + timedelta(seconds=index)),),
+            SWISSCI_MIDI_3_LENS.id, f"/rmserver/{index}.jpg",
+        )
+        for index in range(required)
+    )
+    window.experiments._sync_editor_selection(editor, crystals)
+    assert editor.current_plan is not None, editor.error_label.text()
+
+    unexpected_dialogs = []
+    monkeypatch.setattr(
+        QMessageBox, "warning",
+        lambda *args, **kwargs: unexpected_dialogs.append(("warning", args[2])),
+    )
+    revision = window.experiments._finalize_plan(editor)
+    assert revision is not None, unexpected_dialogs
+
+    class FakeWriter:
+        sent: list = []
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def upload_labworks(self, records):
+            FakeWriter.sent.extend(records)
+            return {"created": len(records)}
+
+    asked = []
+    monkeypatch.setattr("xtalflow.ui.experiment_coordinator.LegacyMxLiveWriteClient", FakeWriter)
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *args, **kwargs: asked.append(args[2]) or QMessageBox.Yes
+    )
+    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: QMessageBox.Ok)
+    window.experiments._upload_plan_labworks(editor)
+
+    # The names are shown before the upload, and they are what is sent.
+    assert (
+        "Named in MxLive: NoDMSO-0min-r1, DMSO_3%-0min-r1, NoEG2-0min-r1, and 1 more"
+        in asked[-1]
+    )
+    names = {record["soak_id"] for record in FakeWriter.sent}
+    assert "EG2_10%-0min-r1" in names
+    assert not any("EG210%" in name for name in names)
+    assert unexpected_dialogs == []
+    window.close()
+    app.processEvents()

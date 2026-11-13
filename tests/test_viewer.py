@@ -70,6 +70,19 @@ def _open_select_wells(window, plan_type=PlanType.RAW_CRYSTAL):
     return editor
 
 
+def _leave_every_boundary_to_the_person(window) -> None:
+    """Before ``load_plate``, for a test that needs a well to open unconfirmed.
+
+    A plate is trusted from the moment it loads, and its first well is
+    confirmed there and then if it scores at or above the user's number -
+    before a test can reach the checkbox to say otherwise. A01a of plate
+    2070 scores 0.89, so it stayed unconfirmed for as long as the default
+    was 90 and nobody had to say so. Say so: at 100 nothing is confirmed on
+    anybody's behalf, whatever the default becomes.
+    """
+    window.auto_confirm_confidence_input.setValue(100)
+
+
 class _FakeMxLiveReader:
     experiment_ids_by_year: dict[int, tuple[str, ...]] = {}
     error: Exception | None = None
@@ -1698,6 +1711,7 @@ def test_target_summary_uses_hidden_right_dock_and_jumps_to_image(
         RockMakerImageRepository(FIXTURE_ROOT),
         SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
     )
+    _leave_every_boundary_to_the_person(window)
     window.load_plate("2070", SWISSCI_MRC_2_WELL)
     window.auto_confirm_plate_checkbox.setChecked(False)
     window._auto_detect_calibration()
@@ -1785,6 +1799,7 @@ def test_valid_automatic_wells_can_be_confirmed_in_bulk(
         SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
         auto_advance_target_count=10,
     )
+    _leave_every_boundary_to_the_person(window)
     window.load_plate("2070", SWISSCI_MRC_2_WELL)
     window.auto_confirm_plate_checkbox.setChecked(False)
     window._auto_detect_calibration()
@@ -2014,6 +2029,7 @@ def test_live_selection_summary_highlights_counts_and_stays_in_image_review(
         preferences_store=JsonUserPreferencesStore(tmp_path / "preferences.json"),
     )
     _open_select_wells(window)
+    _leave_every_boundary_to_the_person(window)
     window.load_plate("2070", SWISSCI_MRC_2_WELL)
     window.auto_confirm_plate_checkbox.setChecked(False)
     window._auto_detect_calibration()
@@ -3295,6 +3311,7 @@ def test_the_view_does_not_leave_a_well_whose_boundary_is_unconfirmed(
         SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
         auto_advance_target_count=1,
     )
+    _leave_every_boundary_to_the_person(window)
     window.load_plate("2070", SWISSCI_MRC_2_WELL)
     window.auto_confirm_plate_checkbox.setChecked(False)
     held = window.well_input.text()
@@ -4261,6 +4278,7 @@ def test_a_position_outside_its_well_does_not_keep_it_out_of_bulk_confirming(
         SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
         auto_advance_target_count=10,
     )
+    _leave_every_boundary_to_the_person(window)
     window.load_plate("2070", SWISSCI_MRC_2_WELL)
     window.auto_confirm_plate_checkbox.setChecked(False)
     window._auto_detect_calibration()

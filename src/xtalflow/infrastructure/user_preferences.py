@@ -8,7 +8,14 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class UserPreferences:
-    auto_confirm_confidence_percent: int = 90
+    # Measured over the 1728 fixture images: 90 left 214 of them (12.4%) to
+    # be confirmed by hand, 18 to 38 on every plate walked, and every one of
+    # the 36 looked at had the outline in the right place. The score is low
+    # where the well wall cuts the lens circle in a straight line and there
+    # is no gradient to find, not where the circle is wrong. 80 leaves 20.
+    # Somebody who has already chosen a number keeps it: this is the number
+    # for somebody who has not.
+    auto_confirm_confidence_percent: int = 80
     auto_advance_target_count: int | None = None
     review_hint_shown: bool = False
     workspace_panel_visible: bool = True

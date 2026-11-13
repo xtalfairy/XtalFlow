@@ -165,7 +165,7 @@ class PlanEditorBase(QWidget):
         self.summary_label = QLabel()
         self.summary_label.setTextFormat(Qt.RichText)
         self.summary_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.warning_label = QLabel()
+        self.warning_label = QLabel(self)
         self.warning_label.setWordWrap(True)
         self.warning_label.setStyleSheet(theme.status_style("attention"))
         self.warning_label.hide()
@@ -177,7 +177,12 @@ class PlanEditorBase(QWidget):
         self.order_input.addItem("Keep selection order", AssignmentOrder.SELECTION)
         self.order_input.addItem("Plate and well order", AssignmentOrder.PLATE_WELL)
         self.order_input.setMaximumWidth(320)
-        self.error_label = QLabel()
+        # Every message widget is given a parent here, before anything can
+        # show it. A parentless widget that is made visible becomes a window
+        # of its own, and the steps are refreshed while the editor is being
+        # built - before its pages exist - so an unreachable source plate put
+        # a bare sentence on the desktop in a little frame of its own.
+        self.error_label = QLabel(self)
         self.error_label.setWordWrap(True)
         self.error_label.setStyleSheet(theme.status_style("attention"))
         self.error_label.hide()
@@ -477,9 +482,9 @@ class FragmentScreeningEditor(PlanEditorBase):
         self.all_rows_radio.setChecked(True)
         self.rows_input.setEnabled(False)
         # Problems appear under the input that causes them.
-        self.library_error_label = _field_error_label()
-        self.rows_error_label = _field_error_label()
-        self.volume_error_label = _field_error_label()
+        self.library_error_label = _field_error_label(self)
+        self.rows_error_label = _field_error_label(self)
+        self.volume_error_label = _field_error_label(self)
         self.assignment_table = _preview_table(
             ("Well", "Positions", "Fragment", "Per position", "Check"), stretch_last=True
         )
@@ -1154,8 +1159,9 @@ class RawCrystalEditor(PlanEditorBase):
         self.draft_changed.emit()
 
 
-def _field_error_label() -> QLabel:
-    label = QLabel()
+def _field_error_label(parent: QWidget | None = None) -> QLabel:
+    """A parent from the start: see the note on message widgets in this file."""
+    label = QLabel(parent)
     label.setWordWrap(True)
     label.setStyleSheet(theme.status_style("attention"))
     label.hide()

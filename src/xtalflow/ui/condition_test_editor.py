@@ -278,7 +278,7 @@ class ConditionTestEditor(PlanEditorBase):
         self.source_plate_input.setMinimumWidth(200)
         # True while the Plate field takes a new plate's name typed into it.
         self._naming_plate = False
-        self.new_plate_cancel_button = QPushButton("Cancel")
+        self.new_plate_cancel_button = QPushButton("Cancel", self)
         self.new_plate_cancel_button.setObjectName("LinkButton")
         self.new_plate_cancel_button.hide()
         self.source_well_input = QLineEdit()
@@ -289,7 +289,7 @@ class ConditionTestEditor(PlanEditorBase):
         self.preparation_label = QLabel()
         self.preparation_label.setTextFormat(Qt.RichText)
         self.preparation_label.setWordWrap(True)
-        self.source_message_label = QLabel()
+        self.source_message_label = QLabel(self)
         self.source_message_label.setObjectName("SourceMessage")
         self.source_message_label.setWordWrap(True)
         self.source_message_label.hide()
@@ -309,12 +309,12 @@ class ConditionTestEditor(PlanEditorBase):
         self._plate_records: dict[str, tuple[PlateRecordEntry, ...] | None] = {}
         # Additives whose wells were filled in by the rule rather than typed.
         self._auto_wells: set[str] = set()
-        self.fit_button = QPushButton()
+        self.fit_button = QPushButton(self)
         self.fit_button.hide()
-        self.fit_note_label = QLabel()
+        self.fit_note_label = QLabel(self)
         self.fit_note_label.setObjectName("Muted")
         self.fit_note_label.hide()
-        self.go_to_conditions_button = QPushButton("Go to Conditions")
+        self.go_to_conditions_button = QPushButton("Go to Conditions", self)
         self.go_to_conditions_button.hide()
         # The shared plates as last listed; None if they could not be read.
         self._plate_list: tuple[PlateSummary, ...] | None = None
@@ -327,7 +327,7 @@ class ConditionTestEditor(PlanEditorBase):
         self.skip_button.setObjectName("LinkButton")
         self.previous_button = QPushButton("Use previous well")
         self.previous_button.setObjectName("LinkButton")
-        self.record_note_label = QLabel()
+        self.record_note_label = QLabel(self)
         self.record_note_label.setObjectName("Muted")
         self.record_note_label.setWordWrap(True)
         self.record_note_label.hide()
@@ -337,7 +337,7 @@ class ConditionTestEditor(PlanEditorBase):
         self.advanced_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.advanced_button.setArrowType(Qt.RightArrow)
         self.advanced_button.setText("Advanced")
-        self.advanced_box = QWidget()
+        self.advanced_box = QWidget(self)
         self.advanced_box.hide()
         self.before_additive_input = QComboBox()
         self.before_percent_input = QDoubleSpinBox()
@@ -440,7 +440,7 @@ class ConditionTestEditor(PlanEditorBase):
             "record of when wells were actually dispensed or harvested."
         )
 
-        self.design_error_label = QLabel()
+        self.design_error_label = QLabel(self)
         self.design_error_label.setWordWrap(True)
         self.design_error_label.setStyleSheet(theme.status_style("attention"))
         self.design_error_label.hide()

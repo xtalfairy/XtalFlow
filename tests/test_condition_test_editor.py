@@ -909,3 +909,25 @@ def test_a_plan_that_builds_leaves_no_stale_reason_behind() -> None:
     assert editor.current_plan is not None
     assert editor.error_label.text() == ""
 
+
+def test_a_message_before_the_pages_exist_does_not_become_a_window() -> None:
+    """A parentless widget made visible is a window of its own.
+
+    The editor is built, and its steps refreshed, before its pages are
+    assembled: an unreachable source plate record put a bare sentence on the
+    researcher's desktop in a little frame, once per solvent test opened.
+    """
+    from xtalflow.ui.condition_test_editor import ConditionTestEditor
+
+    app = _app()
+    before = {id(widget) for widget in app.topLevelWidgets() if widget.isVisible()}
+    editor = ConditionTestEditor(solvent_test_template())
+    editor.refresh_plan()
+
+    stray = [
+        widget for widget in app.topLevelWidgets()
+        if widget.isVisible() and id(widget) not in before
+    ]
+    assert stray == [], [widget.metaObject().className() for widget in stray]
+    # Held until the assertion: an editor nothing refers to is deleted.
+    assert editor is not None

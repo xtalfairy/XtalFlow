@@ -43,6 +43,7 @@ from xtalflow.domain.plan_lifecycle import (
 from xtalflow.domain.instruments import ECHO_650, WorksheetKind
 from xtalflow.domain.mxlive import MxLiveReadError
 from xtalflow.application.experiment_workflow import (
+    FINISHED_STATES,
     STEP_LABELS,
     ExperimentFacts,
     ExperimentProgress,
@@ -1043,7 +1044,11 @@ class ExperimentCoordinator:
                 self.show_home()
             else:
                 self._save_plan_worksheets(editor)
-        elif step is WorkflowStep.SELECT_WELLS and editor.wells_needing_attention:
+        elif (
+            step is WorkflowStep.SELECT_WELLS
+            and editor.wells_needing_attention
+            and status.status_of(step).state not in FINISHED_STATES
+        ):
             self._review_target_warnings()
         elif (
             step is WorkflowStep.CONDITIONS
@@ -1067,7 +1072,9 @@ class ExperimentCoordinator:
                 state is StepState.COMPLETE,
             )
         if step is WorkflowStep.SELECT_WELLS:
-            if editor.wells_needing_attention:
+            # Only when they are in the way. A condition test that planned
+            # without them has nothing to check before going on.
+            if editor.wells_needing_attention and state not in FINISHED_STATES:
                 return f"Check {counted(editor.wells_needing_attention, 'well')}", True
             if editor.wells_unusable:
                 # There is nothing in the dock to check, so do not offer to
@@ -1257,9 +1264,20 @@ class ExperimentCoordinator:
             editor.wells_needing_attention = len(attention)
             crystals = ()
             editor.wells_unusable = None
-            if summaries and not attention:
+            editor.wells_left_out = 0
+            # A condition test puts one crystal in each well it uses and
+            # ignores the rest, so a well whose boundary is not confirmed is
+            # left out rather than taking the whole plan with it. One spare
+            # well picked in a hurry used to empty every table and every
+            # worksheet, and say "select at least one well" to somebody
+            # looking at thirty-four of them. The other plan types soak every
+            # well they are given, so they still ask for all of them.
+            leaves_wells_out = isinstance(editor, ConditionTestEditor)
+            if summaries and (not attention or leaves_wells_out):
                 try:
-                    crystals = self.window.project_controller.selected_crystals_for_plan()
+                    crystals = self.window.project_controller.selected_crystals_for_plan(
+                        skip_blocked=leaves_wells_out
+                    )
                 except IMAGE_SOURCE_ERRORS as error:
                     # Every well is confirmed and in bounds; something else
                     # stops a plan being made. Counting them all as needing
@@ -1268,10 +1286,20 @@ class ExperimentCoordinator:
                     # never about confirming.
                     editor.wells_unusable = str(error)
                     self.window.status_message_label.show_message(str(error))
+                else:
+                    if leaves_wells_out and attention:
+                        # The steps count what the plan can use, and say
+                        # separately what was left out of it.
+                        editor.wells_left_out = len(attention)
+                        editor.selected_well_count = len(crystals)
+                        editor.selected_position_count = sum(
+                            len(item.targets) for item in crystals
+                        )
         else:
             editor.selected_well_count = len(crystals)
             editor.selected_position_count = sum(len(item.targets) for item in crystals)
             editor.wells_needing_attention = 0
+            editor.wells_left_out = 0
             editor.wells_unusable = None
             editor.wells_attention_reason = ""
             editor.outside_positions_warning = ""

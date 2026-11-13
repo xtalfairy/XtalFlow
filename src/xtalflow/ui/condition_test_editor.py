@@ -2159,13 +2159,21 @@ class ConditionTestEditor(PlanEditorBase):
             selection = self._require_selection()
             plan = build_condition_test_plan(self.design, selection, self.order_input.currentData())
         except ValueError as error:
-            if not self.design_error and self.selection is not None:
+            # Reported for a selection that exists and for one that could not
+            # be made from the chosen wells alike: a plan that cannot be built
+            # has to say so either way.
+            if not self.design_error and (
+                self.selection is not None or self.selected_well_count
+            ):
                 self.selection_error = str(error)
             for table in (self.assignment_table, self.schedule_table, self.echo_table, self.shifter_table):
                 table.setRowCount(0)
             self._show_plan_error(error)
             return
         self.current_plan = plan
+        # Cleared, not only hidden: a stale reason is read back as the warning
+        # shown when a plan cannot be finalized.
+        self.error_label.clear()
         self.error_label.hide()
         self._fill_tables(plan)
         self._refresh_facts()

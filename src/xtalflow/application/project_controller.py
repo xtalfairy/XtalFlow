@@ -454,17 +454,36 @@ class ProjectController:
         ]
         return tuple(sorted(wells, key=lambda well: well.selected_at))
 
-    def selected_crystals_for_plan(self) -> tuple[SelectedCrystal, ...]:
-        """Return calibrated target images in first-selection order."""
+    def selected_crystals_for_plan(
+        self, skip_blocked: bool = False
+    ) -> tuple[SelectedCrystal, ...]:
+        """Return calibrated target images in first-selection order.
+
+        ``skip_blocked`` leaves out a well whose boundary is not confirmed
+        instead of refusing the whole selection. A plan that uses one well per
+        condition can be made from the wells that are ready, and the caller
+        says how many were left out; a plan that soaks every selected well
+        cannot, so it asks for all of them and gets the refusal.
+
+        A well is left out whole, never target by target: the positions in one
+        drop are dispensed to together, and dropping one of them would change
+        what the others receive.
+        """
         project = self._require_active_project()
         image_sets = {item.id: item for item in project.active_image_sets}
         grouped: dict[str, list[ProjectTargetSummary]] = {}
+        blocked: set[str] = set()
         for summary in self.project_target_summaries():
             if summary.blocks_planning:
-                raise ValueError(
-                    "all targets need a confirmed well boundary before planning"
-                )
+                if not skip_blocked:
+                    raise ValueError(
+                        "all targets need a confirmed well boundary before planning"
+                    )
+                blocked.add(summary.image.image_key)
+                continue
             grouped.setdefault(summary.image.image_key, []).append(summary)
+        for image_key in blocked:
+            grouped.pop(image_key, None)
 
         crystals: list[SelectedCrystal] = []
         for summaries in grouped.values():

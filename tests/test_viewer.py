@@ -38,7 +38,11 @@ from xtalflow.infrastructure import (
     RockMakerImageRepository,
     SQLiteReviewStore,
 )
-from xtalflow.application.experiment_workflow import StepState, WorkflowStep
+from xtalflow.application.experiment_workflow import (
+    StepState,
+    WorkflowStep,
+    evaluate_experiment,
+)
 from xtalflow.domain.mxlive import MxLiveLabwork, MxLiveReadError
 from xtalflow.ui import icons, theme
 from xtalflow.ui.plan_editors import FragmentScreeningEditor
@@ -3343,7 +3347,7 @@ def test_wells_that_cannot_be_planned_are_not_counted_as_wells_to_check(
     assert page.primary_button.text() == "Use 1 well"
     assert page.primary_button.isEnabled()
 
-    def refuse() -> None:
+    def refuse(skip_blocked: bool = False) -> None:
         raise ValueError("all target image sets need a supported plate format")
 
     monkeypatch.setattr(
@@ -4173,5 +4177,66 @@ def test_a_position_shows_on_the_plate_map_without_moving_first(
     window._refresh_plate_map()
 
     assert window.plate_map_panel.map._cells[well].positions == 1
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_a_spare_well_without_a_boundary_does_not_empty_a_condition_test(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Reported from BL-5C: every table and worksheet empty, and no reason given.
+
+    One well picked past what the conditions need, with its boundary not
+    confirmed, threw the whole selection away: the Review page said "0 wells"
+    and "Select at least one well" to somebody looking at the ones they had
+    just picked, and the worksheets were blank.
+    """
+    from decimal import Decimal
+
+    from xtalflow.domain.condition_test import Additive, ConditionTestDesign, new_series
+
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        auto_advance_target_count=10,
+    )
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    page = window.experiment_page
+    window.workspace_sidebar.start_buttons["solvent_test"].click()
+    editor = window.experiments.current_editor
+    editor.protein_input.setText("BRD4")
+    # Two wells needed, so a third is spare: the same shape as the plate at
+    # the beamline, without its thirty-two clicks.
+    dmso = Additive("dmso", "DMSO", Decimal("100"), "CS(=O)C", "LDV-1", "A1", "384PP_DMSO2")
+    editor.design = ConditionTestDesign(
+        (dmso,), (new_series(dmso.id, (Decimal("10"),), (0,), 2),), Decimal("100")
+    )
+    editor.refresh_plan()
+    assert editor.design.required_crystals == 2
+    window.experiments.go_to_step(WorkflowStep.SELECT_WELLS)
+    window.load_plate("2070", SWISSCI_MRC_2_WELL)
+    window.auto_confirm_plate_checkbox.setChecked(False)
+    for _well in range(2):
+        window._auto_detect_calibration()
+        window._accept_current_calibration()
+        window._handle_image_click(600, 500, Qt.LeftButton)
+        assert window.show_next()
+    # The spare one, placed without confirming the boundary.
+    window._handle_image_click(600, 500, Qt.LeftButton)
+    window.experiments._sync_current_selection()
+
+    assert editor.wells_left_out == 1
+    assert editor.current_plan is not None, "the plan is made from the wells that are ready"
+    assert len(editor.current_plan.assignments) == 2
+    assert editor.assignment_table.rowCount() == 2
+    assert editor.echo_table.rowCount()
+    assert editor.shifter_table.rowCount() == 2
+    status = window.experiments._experiment_facts(editor)
+    assert evaluate_experiment(status).ready_to_finalize
+    footer = page.footer_status_label.text()
+    assert "1 well left out" in footer, footer
     window.close()
     app.processEvents()

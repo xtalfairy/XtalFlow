@@ -874,3 +874,38 @@ def test_a_shared_plate_that_can_no_longer_be_checked_is_swapped_for_a_fresh_one
     editor.enter_new_plate("SOLVENT-77")
     assert editor.design.additives[0].source_plate == "SOLVENT-77"
     assert editor.record_note_label.text().endswith(UNCHECKED_NOTE)
+
+
+def test_wells_that_cannot_be_used_are_named_instead_of_asking_for_wells() -> None:
+    """"Select at least one well" to somebody who selected thirty-four is a dead end.
+
+    The coordinator hands the editor no selection when none of the chosen
+    wells can be used. What it says then is all the user has: the Review page
+    carries this sentence, and the tables beside it are empty.
+    """
+    editor = _editor(percents=("0", "10"), times=(0,), replicates=2)
+    editor.selected_well_count = 34
+    editor.wells_needing_attention = 34
+    editor.wells_attention_reason = "34 boundaries to confirm"
+
+    editor.set_selection(None)
+
+    assert editor.current_plan is None
+    assert editor.error_label.text() == (
+        "34 selected wells need attention · 34 boundaries to confirm. "
+        "Confirm them in Select wells, or deselect them."
+    )
+    assert editor.facts(False, False).selection_error == editor.error_label.text()
+
+
+def test_a_plan_that_builds_leaves_no_stale_reason_behind() -> None:
+    """The warning shown when finalizing is read back from this text."""
+    editor = _editor(percents=("0", "10"), times=(0,), replicates=2)
+    editor.set_selection(_selection(2))
+    assert editor.error_label.text()
+
+    editor.set_selection(_selection(4))
+
+    assert editor.current_plan is not None
+    assert editor.error_label.text() == ""
+

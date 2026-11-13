@@ -283,6 +283,11 @@ class ExperimentFacts:
     # What the wells needing attention actually need: a count alone cannot be
     # acted on, and the three reasons are not fixed in the same way.
     wells_attention_reason: str = ""
+    # Condition tests only: selected wells planned without, because their
+    # boundary is not confirmed. The plan uses one well per condition and had
+    # enough without them, so they are reported, not an obstacle. They are
+    # counted in wells_needing_attention too, and subtracted from it below.
+    wells_left_out: int = 0
     # Positions beyond their well boundary. A warning, never a block: the
     # detected outline is often smaller than the well, so only the person
     # looking at the image can say whether the position is where they meant.
@@ -326,32 +331,56 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
 
     selection = f"{counted(facts.well_count, 'well')} · {counted(facts.position_count, 'position')}"
     condition_test = facts.plan_type is PlanType.CONDITION_TEST
+    # Wells a condition test left out are not in the way: the plan was made
+    # from the rest. What is left is what somebody still has to deal with.
+    blocking_attention = max(facts.wells_needing_attention - facts.wells_left_out, 0)
+    left_out = (
+        f"{counted(facts.wells_left_out, 'well')} left out · "
+        f"{facts.wells_attention_reason or 'boundary not confirmed'}"
+    )
     if facts.images_unavailable:
         # Without the images the wells cannot be counted, so nothing below is known.
         statuses[WorkflowStep.SELECT_WELLS] = StepStatus(
             WorkflowStep.SELECT_WELLS, StepState.ATTENTION,
             f"Plate images unavailable · {facts.images_unavailable}",
         )
+    elif condition_test and facts.wells_left_out and facts.well_count == 0:
+        # Every selected well was left out. Saying "0 wells" to somebody who
+        # selected thirty-four of them explains nothing.
+        statuses[WorkflowStep.SELECT_WELLS] = StepStatus(
+            WorkflowStep.SELECT_WELLS, StepState.ATTENTION,
+            f"No well can be used · {left_out}",
+        )
     elif condition_test and facts.required_well_count and facts.well_count < facts.required_well_count:
         statuses[WorkflowStep.SELECT_WELLS] = StepStatus(
             WorkflowStep.SELECT_WELLS,
-            StepState.ATTENTION if facts.wells_needing_attention else StepState.INCOMPLETE,
-            f"{facts.well_count} of {facts.required_well_count} wells selected",
+            StepState.ATTENTION if blocking_attention or facts.wells_left_out
+            else StepState.INCOMPLETE,
+            f"{facts.well_count} of {facts.required_well_count} wells ready · {left_out}"
+            if facts.wells_left_out
+            else f"{facts.well_count} of {facts.required_well_count} wells selected",
         )
-    elif condition_test and facts.selection_error and not facts.wells_needing_attention:
+    elif condition_test and facts.selection_error and not blocking_attention:
         statuses[WorkflowStep.SELECT_WELLS] = StepStatus(
             WorkflowStep.SELECT_WELLS, StepState.ATTENTION, facts.selection_error
+        )
+    elif condition_test and facts.wells_left_out:
+        # Enough wells are ready and the plan is made from them. A warning
+        # rather than a block: the ones left out are spare, and holding the
+        # experiment up for wells it does not need costs beamtime.
+        statuses[WorkflowStep.SELECT_WELLS] = StepStatus(
+            WorkflowStep.SELECT_WELLS, StepState.WARNING, f"{selection} · {left_out}"
         )
     elif facts.well_count == 0:
         statuses[WorkflowStep.SELECT_WELLS] = StepStatus(
             WorkflowStep.SELECT_WELLS, StepState.INCOMPLETE,
             "Select at least one well to continue.",
         )
-    elif facts.wells_needing_attention:
+    elif blocking_attention:
         statuses[WorkflowStep.SELECT_WELLS] = StepStatus(
             WorkflowStep.SELECT_WELLS, StepState.ATTENTION,
-            f"{counted(facts.wells_needing_attention, 'well')} "
-            f"{'needs' if facts.wells_needing_attention == 1 else 'need'} attention · "
+            f"{counted(blocking_attention, 'well')} "
+            f"{'needs' if blocking_attention == 1 else 'need'} attention · "
             f"{facts.wells_attention_reason or selection}",
         )
     elif facts.wells_unusable:
@@ -370,6 +399,13 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
             WorkflowStep.SELECT_WELLS, StepState.COMPLETE, selection
         )
 
+    if condition_test and facts.wells_left_out:
+        notes.append(
+            f"{counted(facts.wells_left_out, 'selected well')} "
+            f"{'is' if facts.wells_left_out == 1 else 'are'} left out of the plan: "
+            f"{facts.wells_attention_reason or 'the boundary is not confirmed'}. "
+            "Confirm them in Select wells to use them."
+        )
     if condition_test and facts.unused_well_count:
         notes.append(
             f"The last {counted(facts.unused_well_count, 'selected well')} "

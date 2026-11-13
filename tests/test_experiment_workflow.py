@@ -292,3 +292,72 @@ def test_the_beamline_stages_come_from_mxlive_records() -> None:
     # Nothing from the beamline yet, or no answer from MxLive at all.
     assert stage(BeamlineProgress(36, 0, ()))[0] == "Sent r1"
     assert stage(None)[0] == "Sent r1"
+
+
+def test_a_spare_well_without_a_confirmed_boundary_does_not_stop_the_test() -> None:
+    """One extra well picked in a hurry used to empty every table and worksheet.
+
+    A condition test puts one crystal in each well it uses and ignores the
+    rest, so a well it planned without is reported, not an obstacle: holding a
+    finished plan up for a well it does not need costs beamtime.
+    """
+    facts = ExperimentFacts(
+        PlanType.CONDITION_TEST, "BRD4", well_count=16, position_count=16,
+        required_well_count=16, conditions_summary="8 conditions · 16 crystals",
+        wells_needing_attention=2, wells_left_out=2,
+        wells_attention_reason="2 boundaries to confirm",
+    )
+
+    status = evaluate_experiment(facts)
+
+    wells = status.status_of(WorkflowStep.SELECT_WELLS)
+    assert wells.state is StepState.WARNING, "a spare well is not a reason to stop"
+    assert wells.message == (
+        "16 wells · 16 positions · 2 wells left out · 2 boundaries to confirm"
+    )
+    assert status.ready_to_finalize
+    assert status.notes == (
+        "2 selected wells are left out of the plan: 2 boundaries to confirm. "
+        "Confirm them in Select wells to use them.",
+    )
+
+
+def test_wells_left_out_are_named_when_too_few_are_left_to_plan_with() -> None:
+    """Fourteen ready of sixteen says so; "14 of 16 selected" hides the reason."""
+    facts = ExperimentFacts(
+        PlanType.CONDITION_TEST, "BRD4", well_count=14, position_count=14,
+        required_well_count=16, wells_needing_attention=2, wells_left_out=2,
+        wells_attention_reason="2 boundaries to confirm",
+    )
+
+    wells = evaluate_experiment(facts).status_of(WorkflowStep.SELECT_WELLS)
+
+    assert wells.state is StepState.ATTENTION
+    assert wells.message == (
+        "14 of 16 wells ready · 2 wells left out · 2 boundaries to confirm"
+    )
+
+
+def test_no_usable_well_says_why_rather_than_no_wells() -> None:
+    """"0 wells" to somebody looking at the two they selected explains nothing."""
+    facts = ExperimentFacts(
+        PlanType.CONDITION_TEST, "BRD4", well_count=0, position_count=0,
+        required_well_count=16, wells_needing_attention=2, wells_left_out=2,
+        wells_attention_reason="2 boundaries to confirm",
+    )
+
+    wells = evaluate_experiment(facts).status_of(WorkflowStep.SELECT_WELLS)
+
+    assert wells.state is StepState.ATTENTION
+    assert wells.message == "No well can be used · 2 wells left out · 2 boundaries to confirm"
+
+
+def test_wells_that_still_need_attention_are_counted_apart_from_the_ones_left_out() -> None:
+    """A plan that soaks every well still reports all of them."""
+    both = evaluate_experiment(
+        replace(READY_FRAGMENT, wells_needing_attention=3, wells_attention_reason="3 to confirm")
+    )
+
+    wells = both.status_of(WorkflowStep.SELECT_WELLS)
+    assert wells.state is StepState.ATTENTION
+    assert wells.message == "3 wells need attention · 3 to confirm"

@@ -316,6 +316,12 @@ class ConditionTestEditor(PlanEditorBase):
         self.fit_note_label.hide()
         self.go_to_conditions_button = QPushButton("Go to Conditions", self)
         self.go_to_conditions_button.hide()
+        # The source plate, the drop volume and the conditions are entered on
+        # the Conditions step, so a plan held up by one of them is fixed
+        # there. Offered beside the reason rather than left to be found.
+        self.fix_in_conditions_button = QPushButton("Go to Conditions", self)
+        self.fix_in_conditions_button.setObjectName("Primary")
+        self.fix_in_conditions_button.hide()
         # The shared plates as last listed; None if they could not be read.
         self._plate_list: tuple[PlateSummary, ...] | None = None
         # Read once, then again only when the list is opened or the record changes.
@@ -478,6 +484,7 @@ class ConditionTestEditor(PlanEditorBase):
         self.skip_button.clicked.connect(self.skip_well)
         self.fit_button.clicked.connect(self.fit_to_selected_wells)
         self.go_to_conditions_button.clicked.connect(self.conditions_requested.emit)
+        self.fix_in_conditions_button.clicked.connect(self.conditions_requested.emit)
         self.previous_button.clicked.connect(self.use_previous_well)
         self.smiles_input.editingFinished.connect(
             lambda: self.update_additive(smiles=self.smiles_input.text())
@@ -719,7 +726,14 @@ class ConditionTestEditor(PlanEditorBase):
         fit.addWidget(self.go_to_conditions_button)
         fit.addStretch()
         widget.layout().insertLayout(widget.layout().indexOf(self.error_label) + 1, fit)
+        self.plan_problem_actions.insertWidget(1, self.fix_in_conditions_button)
         return widget
+
+    def _show_plan_problem(self, text: str) -> None:
+        super()._show_plan_problem(text)
+        self.fix_in_conditions_button.setVisible(
+            bool(text) and text == (self.design_error or "")
+        )
 
     # -- Words for the kind of test -----------------------------------------------------
 
@@ -2174,7 +2188,7 @@ class ConditionTestEditor(PlanEditorBase):
         # Cleared, not only hidden: a stale reason is read back as the warning
         # shown when a plan cannot be finalized.
         self.error_label.clear()
-        self.error_label.hide()
+        self._show_plan_problem("")
         self._fill_tables(plan)
         self._refresh_facts()
         self._refresh_experiment_id()

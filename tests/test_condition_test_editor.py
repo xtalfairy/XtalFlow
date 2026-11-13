@@ -931,3 +931,42 @@ def test_a_message_before_the_pages_exist_does_not_become_a_window() -> None:
     assert stray == [], [widget.metaObject().className() for widget in stray]
     # Held until the assertion: an editor nothing refers to is deleted.
     assert editor is not None
+
+
+def test_a_plan_that_cannot_be_built_says_so_where_the_preview_would_be() -> None:
+    """Reported twice from BL-5C as "nothing comes up at all".
+
+    The reason was there: one thin line above three empty tables, which is
+    read as no reason at all. It belongs where the content would have been,
+    with the way to fix it beside it.
+    """
+    from xtalflow.ui.condition_test_editor import ConditionTestEditor
+
+    _app()
+    editor = ConditionTestEditor(solvent_test_template())
+    editor.review = editor.review_widget()
+    editor.page = editor.conditions_widget()
+
+    # No drop volume and no source plate: the Conditions step's business.
+    assert editor.design_error
+    assert editor.plan_problem_label.text() == editor.design_error
+    assert not editor.plan_problem_panel.isHidden()
+    assert editor.preview_tabs.isHidden(), "empty tables explain nothing"
+    assert not editor.fix_in_conditions_button.isHidden()
+    # Said once, not twice.
+    assert editor.error_label.isHidden()
+
+    editor.design = _editor(percents=("0",), times=(0,), replicates=2).design
+    editor.refresh_plan()
+
+    # Now it is the wells that are missing, and that is not fixed in
+    # Conditions, so the panel says the new reason without the old offer.
+    assert not editor.design_error
+    assert editor.plan_problem_label.text() == "Select at least one well to continue."
+    assert editor.fix_in_conditions_button.isHidden()
+
+    editor.set_selection(_selection(2))
+
+    assert editor.current_plan is not None
+    assert editor.plan_problem_panel.isHidden()
+    assert not editor.preview_tabs.isHidden()

@@ -192,6 +192,32 @@ class PlanEditorBase(QWidget):
         self.webdb_status_label = QLabel("MxLive account: not configured")
         self.webdb_status_label.setObjectName("Muted")
         self.webdb_upload_state = ""
+        # Shown in the tables' place when there is no plan to preview. A
+        # reason written in one thin line above three empty tables is read as
+        # "nothing comes up": the beamline reported exactly that, twice, for
+        # two different reasons. Where the content would have been, it is the
+        # answer to the question the empty space asks.
+        self.plan_problem_label = QLabel(self)
+        self.plan_problem_label.setWordWrap(True)
+        self.plan_problem_label.setAlignment(Qt.AlignCenter)
+        self.plan_problem_label.setStyleSheet(theme.status_style("attention"))
+        self.plan_problem_actions = QHBoxLayout()
+        self.plan_problem_actions.addStretch()
+        self.plan_problem_actions.addStretch()
+        self.plan_problem_panel = QWidget(self)
+        self.plan_problem_panel.setObjectName("Card")
+        problem_layout = QVBoxLayout()
+        problem_layout.setContentsMargins(
+            theme.SPACING_L, theme.SPACING_L, theme.SPACING_L, theme.SPACING_L
+        )
+        problem_layout.setSpacing(theme.SPACING_M)
+        problem_layout.addStretch()
+        problem_layout.addWidget(self.plan_problem_label)
+        problem_layout.addLayout(self.plan_problem_actions)
+        problem_layout.addStretch()
+        self.plan_problem_panel.setLayout(problem_layout)
+        self.plan_problem_panel.hide()
+
         self.webdb_table = _preview_table(LABWORK_COLUMNS)
         self.webdb_upload_button = QPushButton("Upload to MxLive…")
         self.webdb_upload_button.setEnabled(False)
@@ -216,6 +242,7 @@ class PlanEditorBase(QWidget):
         layout.addWidget(self.summary_label)
         layout.addWidget(self.warning_label)
         layout.addWidget(self.error_label)
+        layout.addWidget(self.plan_problem_panel, 1)
         layout.addWidget(self.preview_tabs, 1)
         widget.setLayout(layout)
         return widget
@@ -421,10 +448,22 @@ class PlanEditorBase(QWidget):
             raise ValueError("Select at least one well to continue.")
         return self.selection
 
+    def _show_plan_problem(self, text: str) -> None:
+        """Put the reason where the preview would be, or take it away again.
+
+        The one-line label keeps the text, because the warning shown when an
+        invalid plan is finalized is read back from it, but it does not also
+        say it: one sentence in two places on one screen is noise.
+        """
+        self.plan_problem_label.setText(text)
+        self.plan_problem_panel.setVisible(bool(text))
+        self.preview_tabs.setVisible(not text)
+        self.error_label.setVisible(False)
+
     def _show_plan_error(self, error: ValueError) -> None:
         self.current_plan = None
         self.error_label.setText(str(error))
-        self.error_label.show()
+        self._show_plan_problem(str(error))
         self.webdb_table.setRowCount(0)
         self._refresh_facts()
         self._refresh_webdb_preview()
@@ -789,7 +828,7 @@ class FragmentScreeningEditor(PlanEditorBase):
             return
         self.current_plan = plan
         self.error_label.setText("")
-        self.error_label.hide()
+        self._show_plan_problem("")
         self._show_field_error("")
         self._refresh_assignments(plan, selected_library, volume)
         self.table.setRowCount(len(plan.assignments))
@@ -1128,7 +1167,7 @@ class RawCrystalEditor(PlanEditorBase):
             return
         self.current_plan = plan
         self.error_label.setText("")
-        self.error_label.hide()
+        self._show_plan_problem("")
         self.summary_table.setRowCount(len(plan.selections))
         for row, selection in enumerate(plan.selections):
             selected_well = selection.selected_well

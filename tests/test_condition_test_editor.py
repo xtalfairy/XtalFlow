@@ -970,3 +970,28 @@ def test_a_plan_that_cannot_be_built_says_so_where_the_preview_would_be() -> Non
     assert editor.current_plan is not None
     assert editor.plan_problem_panel.isHidden()
     assert not editor.preview_tabs.isHidden()
+
+
+def test_an_addition_spread_unevenly_over_positions_is_named_in_review() -> None:
+    """What stopped BL-5C: 600 nL drop, DMSO 5 %, three crystals in one well.
+
+    32.5 nL is 13 steps of 2.5 nL and 13 does not divide by 3, so Review has
+    to show where the extra step goes rather than refuse the plan.
+    """
+    editor = _editor(percents=("5",), times=(0,), replicates=1, drop="600")
+    editor.review = editor.review_widget()
+    editor.set_selection(_selection(1, positions=3))
+
+    assert editor.current_plan is not None
+    assert editor.assignment_table.item(0, 3).text() == (
+        "DMSO 32.5 nL (12.5 / 10 / 10) → 5.1 %"
+    )
+    within = dict(editor._summary_rows())["Within a well"]
+    assert within == (
+        "1 well cannot divide an addition evenly between its positions · "
+        "spread in 2.5 nL steps, the amount reaching the drop unchanged"
+    )
+    # Three positions, three transfers, none of them empty.
+    assert [editor.echo_table.item(row, 3).text() for row in range(editor.echo_table.rowCount())] == [
+        "12.5", "10.0", "10.0"
+    ]

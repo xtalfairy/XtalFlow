@@ -56,6 +56,7 @@ from xtalflow.domain.condition_test import (
     parse_percent_list,
 )
 from xtalflow.domain.crystal_workflow import AssignmentOrder
+from xtalflow.domain.fragment_screening import TRANSFER_INCREMENT_NL
 from xtalflow.domain.echo_source import (
     SOURCE_PLATE_TYPES,
     PlateRecordEntry,
@@ -80,6 +81,23 @@ from xtalflow.ui.forms import form_layout
 from xtalflow.ui.help_button import HelpButton
 from xtalflow.text import counted
 from xtalflow.ui.plan_editors import PlanEditorBase, _preview_table
+
+def _dose_text(design: ConditionTestDesign, item, dose) -> str:
+    """One addition as the table shows it, naming the per-position amounts.
+
+    When the 2.5 nL step cannot divide the dose evenly the positions receive
+    slightly different amounts, so the table prints them: the number before
+    the bracket is what reaches the drop, the bracket is where it lands.
+    """
+    volumes = [volume for _position, volume in item.position_volumes(dose)]
+    split = ""
+    if len(set(volumes)) > 1:
+        split = " (" + " / ".join(f"{volume.normalize():f}" for volume in volumes) + ")"
+    return (
+        f"{design.additive(dose.additive_id).name} {dose.volume_nl.normalize():f} nL"
+        f"{split} → {dose.actual_percent} %"
+    )
+
 
 CELL_WIDTH = 98
 CELL_HEIGHT = 32
@@ -2202,9 +2220,7 @@ class ConditionTestEditor(PlanEditorBase):
                 design.label(item.condition),
                 str(item.replicate),
                 " · ".join(
-                    f"{design.additive(dose.additive_id).name} {dose.volume_nl.normalize():f} nL"
-                    f" → {dose.actual_percent} %"
-                    for dose in item.doses
+                    _dose_text(design, item, dose) for dose in item.doses
                 ) or "none",
                 f"T+{format_minutes(item.harvest_minutes)}",
             )
@@ -2257,6 +2273,17 @@ class ConditionTestEditor(PlanEditorBase):
                 rows.insert(4, ("Source use", totals))
             harvest = ", ".join(f"T+{format_minutes(minute)}" for minute, _ in plan.harvest_groups)
             rows.insert(4, ("Planned harvest", harvest))
+            # The dispenser moves in 2.5 nL steps, so some wells receive a
+            # little more at one position than another. Say so here rather
+            # than leaving it to be noticed in the ECHO table.
+            uneven = tuple(item for item in plan.assignments if item.splits_unevenly())
+            if uneven:
+                rows.insert(5, (
+                    "Within a well",
+                    f"{counted(len(uneven), 'well')} cannot divide an addition evenly "
+                    f"between its positions · spread in {TRANSFER_INCREMENT_NL} nL steps, "
+                    "the amount reaching the drop unchanged",
+                ))
         return rows
 
     def record_builder(self) -> Callable:

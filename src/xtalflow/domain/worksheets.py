@@ -149,8 +149,12 @@ def build_condition_echo_rounds(
             selected_well = assignment.selected_well
             plate_format = _plate_format_for(selected_well)
             additive = plan.design.additive(dose.additive_id)
-            per_position = dose.volume_nl / len(selected_well.soaking_positions)
-            for position in selected_well.soaking_positions:
+            # A dose that does not divide evenly is spread as evenly as the
+            # 2.5 nL step allows; a position left at 0 nL gets no row, because
+            # the ECHO cannot be asked to move nothing.
+            for position, volume_nl in assignment.position_volumes(dose):
+                if not volume_nl:
+                    continue
                 x_um, y_um = plate_format.echo_offset_um(
                     selected_well.well_address, float(position.x_mm), float(position.y_mm)
                 )
@@ -160,7 +164,7 @@ def build_condition_echo_rounds(
                         source_wells[
                             (selected_well.image_key, dose.additive_id, dose.start_minutes)
                         ],
-                        per_position,
+                        volume_nl,
                         selected_well.plate_code,
                         selected_well.well_address,
                         plate_format.echo_destination_well(selected_well.well_address),

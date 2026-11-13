@@ -16,7 +16,12 @@ from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from uuid import uuid4
 
-from .crystal_selection import CrystalSelection, SelectedWell, order_selected_wells
+from .crystal_selection import (
+    CrystalSelection,
+    SelectedWell,
+    SoakingPosition,
+    order_selected_wells,
+)
 from .crystal_workflow import AssignmentOrder
 from .echo_source import (
     USED,
@@ -29,7 +34,7 @@ from .echo_source import (
     source_plate_type,
     well_history,
 )
-from .fragment_screening import TRANSFER_INCREMENT_NL
+from .fragment_screening import TRANSFER_INCREMENT_NL, split_between_positions
 
 HUNDRED = Decimal("100")
 
@@ -648,6 +653,25 @@ class ConditionAssignment:
     def total_volume_nl(self) -> Decimal:
         return sum((dose.volume_nl for dose in self.doses), Decimal("0"))
 
+    def position_volumes(self, dose: Dose) -> tuple[tuple[SoakingPosition, Decimal], ...]:
+        """Where this dose lands and how much goes to each place.
+
+        The whole dose reaches the one drop the positions share, so an amount
+        that cannot be divided evenly is spread as evenly as the 2.5 nL step
+        allows instead of being refused.
+        """
+        volumes = split_between_positions(
+            dose.volume_nl, len(self.selected_well.soaking_positions)
+        )
+        return tuple(zip(self.selected_well.soaking_positions, volumes))
+
+    def splits_unevenly(self) -> bool:
+        """True when some position in this well receives more than another."""
+        return any(
+            len({volume for _position, volume in self.position_volumes(dose)}) > 1
+            for dose in self.doses
+        )
+
 
 @dataclass(frozen=True)
 class ConditionTestPlan:
@@ -759,13 +783,6 @@ def build_condition_test_plan(
         count = len(well.soaking_positions)
         if not count:
             raise ValueError(f"{well.well_address} needs at least one soaking position.")
-        for dose in doses_by_condition[condition.id]:
-            if (dose.volume_nl / TRANSFER_INCREMENT_NL) % count:
-                raise ValueError(
-                    f"{design.label(condition)}: {dose.volume_nl.normalize():f} nL cannot be "
-                    f"split equally between {count} positions in {well.well_address}. "
-                    "Use one position per well for this condition."
-                )
         assignments.append(
             ConditionAssignment(well, condition, replicate, doses_by_condition[condition.id])
         )

@@ -171,6 +171,32 @@ def build_fragment_screen_plan(
     )
 
 
+def split_between_positions(total_nl: Decimal, positions: int) -> tuple[Decimal, ...]:
+    """How much each position receives, in whole 2.5 nL steps, adding up to the total.
+
+    The dispenser moves in 2.5 nL steps, so a total that is not a multiple of
+    the position count cannot be shared equally: 32.5 nL over three positions
+    is 13 steps over three. The leftover steps go to the first positions
+    (12.5, 10, 10) rather than to nobody, because every position sits in the
+    same drop - the total reaching that drop sets the concentration, and the
+    positions only say where the liquid lands. A position left with nothing
+    gets nothing, and the caller leaves it out of the worksheet.
+    """
+    if positions < 1:
+        raise ValueError("at least one soaking position is needed")
+    steps = total_nl / TRANSFER_INCREMENT_NL
+    if steps != steps.to_integral_value():
+        raise ValueError(
+            f"{total_nl.normalize():f} nL is not a whole number of "
+            f"{TRANSFER_INCREMENT_NL} nL steps"
+        )
+    base, extra = divmod(int(steps), positions)
+    return tuple(
+        TRANSFER_INCREMENT_NL * (base + (1 if index < extra else 0))
+        for index in range(positions)
+    )
+
+
 def volume_that_splits(
     volume_nl: Decimal, position_counts: "Iterable[int]"
 ) -> tuple[Decimal, bool]:

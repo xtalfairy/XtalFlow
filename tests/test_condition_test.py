@@ -156,8 +156,62 @@ def test_plan_refuses_too_few_wells_missing_sources_and_unequal_splits() -> None
     with pytest.raises(ValueError, match="source plate and well for DMSO"):
         build_condition_test_plan(no_source, _selection(8))
 
-    with pytest.raises(ValueError, match="cannot be split equally between 3 positions"):
-        build_condition_test_plan(_design(replicates=1), _selection(4, positions=3))
+    no_positions = _selection(4)
+    naked = replace(
+        no_positions,
+        wells=(replace(no_positions.wells[0], soaking_positions=()),) + no_positions.wells[1:],
+    )
+    with pytest.raises(ValueError, match="needs at least one soaking position"):
+        build_condition_test_plan(_design(replicates=1), naked)
+
+
+def test_an_addition_that_cannot_divide_evenly_is_spread_over_the_positions() -> None:
+    """The case that stopped BL-5C: 600 nL drop, DMSO 5 %, three crystals per well.
+
+    5 % of 600 nL is 31.6 nL, dispensed as 13 steps of 2.5 nL, and 13 does not
+    divide by 3. Every position sits in the same drop, so what matters is the
+    32.5 nL reaching that drop, not that each position gets the same share.
+    """
+    from xtalflow.domain.worksheets import build_condition_echo_rounds
+
+    design = _design(drop="600", percents=("5",), times=(0,), replicates=1)
+    plan = build_condition_test_plan(design, _selection(1, positions=3))
+
+    (assignment,) = plan.assignments
+    (dose,) = assignment.doses
+    assert dose.volume_nl == Decimal("32.5")
+    volumes = [volume for _position, volume in assignment.position_volumes(dose)]
+    assert volumes == [Decimal("12.5"), Decimal("10.0"), Decimal("10.0")]
+    assert sum(volumes) == dose.volume_nl
+    assert assignment.splits_unevenly()
+
+    ((_minute, rows),) = build_condition_echo_rounds(plan)
+    assert [row.transfer_volume_nl for row in rows] == volumes
+    assert {row.destination_well for row in rows} == {"A01"}
+    assert len(rows) == 3
+
+
+def test_an_addition_too_small_to_reach_every_position_moves_no_empty_transfer() -> None:
+    """One 2.5 nL step over three positions lands in one place, not three.
+
+    The ECHO cannot be asked to move nothing, so a position left at 0 nL gets
+    no row at all rather than a row the dispenser would reject.
+    """
+    from xtalflow.domain.worksheets import build_condition_echo_rounds
+
+    # 2.5 % of 100 nL from a 100 % stock is 2.5 nL: a single step.
+    design = _design(drop="100", percents=("2.5",), times=(0,), replicates=1)
+    plan = build_condition_test_plan(design, _selection(1, positions=3))
+
+    (assignment,) = plan.assignments
+    (dose,) = assignment.doses
+    assert dose.volume_nl == Decimal("2.5")
+    assert [volume for _position, volume in assignment.position_volumes(dose)] == [
+        Decimal("2.5"), Decimal("0.0"), Decimal("0.0")
+    ]
+
+    ((_minute, rows),) = build_condition_echo_rounds(plan)
+    assert [row.transfer_volume_nl for row in rows] == [Decimal("2.5")]
 
 
 def test_design_round_trips_through_json_and_templates_are_ready_to_edit() -> None:

@@ -380,3 +380,73 @@ def test_a_row_wider_than_the_header_refuses_the_file() -> None:
 
     assert read.harvested == ()
     assert read.notes == ("wider: not a worksheet XtalFlow wrote.",)
+
+
+# The whole of a file this beamline's SHIFTER 2 returned on 2026-11-17, from a
+# worksheet XtalFlow wrote with ExternalComment filled. Four rows, all
+# attempted: two picked, two failed. Kept verbatim - every surprise in it was
+# a surprise.
+REAL_RETURNED_FILE = (
+    "SwissCI-MRC-3d,2069,AM,A,1,a,OK: Clear:No comment,XTal-1,"
+    "2026-11-17 17:16:55.4,2026-11-17 17:17:00.0,00:00:04.6,5C-0001,1,,"
+    "XF_XFTEST-202611-MARK-01_r1_c001\r\n"
+    "SwissCI-MRC-3d,2069,AM,A,1,c,FAIL: Clear:Melted,,"
+    "2026-11-17 17:17:03.6,2026-11-17 17:17:07.4,00:00:03.8,,,,\r\n"
+    "SwissCI-MRC-3d,2069,AM,A,1,d,OK: No comment:No comment,XTal-2,"
+    "2026-11-17 17:17:10.6,2026-11-17 17:17:11.2,00:00:00.6,5C-0001,2,,"
+    "XF_XFTEST-202611-MARK-01_r1_c003\r\n"
+    "SwissCI-MRC-3d,2069,AM,A,2,a,FAIL: No comment:No comment,,"
+    "2026-11-17 17:17:14.6,2026-11-17 17:17:17.7,00:00:03.1,,,,"
+    "XF_XFTEST-202611-MARK-01_r1_c004_LEN0040\r\n"
+)
+
+
+def test_the_whole_of_a_file_the_instrument_returned() -> None:
+    """Read end to end, against the file rather than against my idea of it.
+
+    Three things in here were not what the earlier fixtures showed:
+
+    - the middle field of Comment is not always "No comment". This file has
+      ``OK: Clear:No comment`` and ``FAIL: Clear:Melted``, so a reader that
+      looked for the literal string would call a picked crystal unpicked;
+    - a failed row carries all three times but no puck and no position, so
+      time alone does not mean a crystal was stored;
+    - ExternalComment came back byte for byte on picked, failed and empty
+      rows alike, and nowhere near Comment.
+    """
+    from xtalflow.domain.shifter_results import read_shifter_results
+
+    read = read_shifter_results(REAL_RETURNED_FILE, "shifter2")
+
+    assert [(row.well_address, row.puck_name, row.puck_position, row.harvest_time)
+            for row in read.harvested] == [
+        ("A01a", "5C-0001", "1", "2026-11-17 17:17:00.0"),
+        ("A01d", "5C-0001", "2", "2026-11-17 17:17:11.2"),
+    ]
+    # Attempted and failed: shown to the person, never sent to MxLive.
+    assert [(row.well_address, row.comment) for row in read.attempted] == [
+        ("A01c", "FAIL: Clear:Melted"),
+        ("A02a", "FAIL: No comment:No comment"),
+    ]
+    assert all(not row.puck_name and not row.puck_position for row in read.attempted)
+    assert read.notes == ()
+
+
+def test_the_column_we_fill_for_ourselves_is_not_read_as_data() -> None:
+    """A marker in ExternalComment must change nothing about the harvest.
+
+    The instrument preserves that column, so XtalFlow could write a marker
+    there to say which experiment and revision a file came from. Whether it
+    should is open; that it must never reach a harvest value is not.
+    """
+    from xtalflow.domain.shifter_results import read_shifter_results
+
+    with_marker = read_shifter_results(REAL_RETURNED_FILE, "shifter2")
+    without = read_shifter_results(
+        REAL_RETURNED_FILE.replace("XF_XFTEST-202611-MARK-01_r1_c001", "")
+        .replace("XF_XFTEST-202611-MARK-01_r1_c003", "")
+        .replace("XF_XFTEST-202611-MARK-01_r1_c004_LEN0040", ""),
+        "shifter2",
+    )
+
+    assert with_marker == without

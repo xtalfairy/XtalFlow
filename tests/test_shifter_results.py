@@ -1,10 +1,16 @@
 """Reading a SHIFTER worksheet back after the harvest.
 
-The filled format has not been seen yet: no harvested file exists on this
-machine, and what these tests feed in follows the one documented example, the
-legacy XtalViewer sample record (` 2021-08-27 12:52:56.0`, puck `ISA-020`,
-position `8`). Nothing here depends on that format being right - a time and a
-puck are carried through as text - but the fixtures say where the guess is.
+The fixtures are the real thing. These lines were read off
+/smbmount/shifter1 at BL-5C on 2026-11-17, from a worksheet XtalFlow wrote on
+2026-10-19 and the SHIFTER rewrote in place, with the account, experiment id
+and protein name left out. The 2025-06 FAIL line comes from a legacy file in
+the same folder.
+
+Two things the real file settled, both of which the first version of this
+reader got wrong:
+- the SHIFTER **drops the header line**, so a returned file starts with data;
+- its row order cannot be assumed to be ours, so wells are matched by key and
+  compared as a set, never by position.
 """
 
 from decimal import Decimal
@@ -15,6 +21,7 @@ from xtalflow.domain.shifter_results import (
     SHIFTER_HEADER,
     collect_harvest,
     expected_wells,
+    file_holds_these_wells,
     read_shifter_results,
     wells_in_file,
 )
@@ -29,12 +36,32 @@ HEADER = ",".join(SHIFTER_HEADER)
 def _row(
     well: str, plate: str = "1070", time: str = "", puck: str = "",
     position: str = "", comment: str = "", arrival: str = "",
+    crystal_id: str = "", duration: str = "",
 ) -> str:
-    """One worksheet line, as the SHIFTER returns it."""
+    """One worksheet line, in the shape the SHIFTER returns."""
     return ",".join((
         "SwissCI-MRC-3d", plate, "AM", well[0], str(int(well[1:3])), well[3],
-        comment, "", arrival, time, "", puck, position, "", "",
+        comment, crystal_id, arrival, time, duration, puck, position, "", "",
     ))
+
+
+# Exactly as they came off the instrument.
+REAL_PICKED = (
+    "SwissCI-MRC-3d,2184,AM,A,1,a,OK: No comment:No comment,XTal-1,"
+    "2026-10-19 16:03:53.3,2026-10-19 16:07:29.9,00:03:36.5,ISA-003,1,,"
+)
+REAL_PICKED_SECOND = (
+    "SwissCI-MRC-3d,2184,AM,A,7,a,OK: No comment:No comment,XTal-2,"
+    "2026-10-19 16:07:33.1,2026-10-19 16:09:39.4,00:02:06.2,ISA-003,2,,"
+)
+REAL_FAILED = (
+    "SwissCI-MRC-3d,2184,AM,C,10,d,FAIL: No comment:Melted,,"
+    "2025-06-26 17:00:23.8,2025-06-26 17:00:39.3,00:00:15.4,,,,"
+)
+REAL_INTERRUPTED = (
+    "SwissCI-MRC-3d,2184,AM,B,1,a,,,2026-10-19 15:38:57.5,,,,,,"
+)
+REAL_UNPICKED = "SwissCI-MRC-3d,2184,AM,C,1,a,,,,,,,,,"
 
 
 def _file(*rows: str) -> str:
@@ -64,30 +91,62 @@ def test_the_wells_a_worksheet_was_written_with_are_read_back_from_it() -> None:
     assert _expected(wells) == (("1070", "A01a"), ("1070", "A02a"), ("1070", "B12c"))
     written = _file(*(_row(well) for well in wells))
     assert wells_in_file(written) == _expected(wells)
+    assert file_holds_these_wells(_expected(wells), written)
+
+    # Compared as a set: the SHIFTER rewrites the file and its row order has
+    # not been checked against a copy of what we wrote.
+    shuffled = _file(_row("B12c"), _row("A01a"), _row("A02a"))
+    assert wells_in_file(shuffled) != _expected(wells)
+    assert file_holds_these_wells(_expected(wells), shuffled)
+
+    # A well missing or added means it is not this revision's worksheet.
+    assert not file_holds_these_wells(_expected(wells), _file(_row("A01a"), _row("A02a")))
+    assert not file_holds_these_wells(
+        _expected(wells), _file(*(_row(w) for w in (*wells, "H12a")))
+    )
 
     # A file that is not one of ours gives nothing rather than a guess.
     assert wells_in_file("Plate,Well\n1070,A01a\n") == ()
-
-
-def test_a_row_is_a_harvest_only_with_both_a_time_and_a_puck() -> None:
-    text = _file(
-        _row("A01a", time=" 2026-11-17 09:12:05.0", puck="5C-0029", position="1",
-             comment="OK: No comment:No comment"),
-        _row("A02a"),
-        _row("A03a", time=" 2026-11-17 09:15:40.0"),
-        _row("A04a", puck="5C-0029"),
+    assert read_shifter_results("Plate,Well\n1070,A01a\n", "other.csv").notes == (
+        "other.csv: not a worksheet XtalFlow wrote.",
     )
-    (crystal,), notes = read_shifter_results(text, "/smbmount/shifter1/jjh/PreTest.csv")
 
-    assert crystal.well_address == "A01a"
-    # Not reformatted: the time keeps the instrument's own shape. Only the
-    # space the separator leaves behind is trimmed - the documented sample
-    # reads " 2021-08-27 12:52:56.0" because nobody trimmed it.
-    assert crystal.harvest_time == "2026-11-17 09:12:05.0"
-    assert (crystal.puck_name, crystal.puck_position) == ("5C-0029", "1")
-    assert crystal.comment == "OK: No comment:No comment"
-    assert crystal.source.endswith("PreTest.csv")
-    assert notes == ("PreTest.csv: 3 rows not picked yet.",)
+
+def test_the_file_the_shifter_returns_is_read_without_its_header() -> None:
+    """The real file starts with data: the SHIFTER rewrote ours and dropped the header."""
+    returned = "\r\n".join((
+        REAL_PICKED, REAL_PICKED_SECOND, REAL_INTERRUPTED, REAL_UNPICKED
+    )) + "\r\n"
+    read = read_shifter_results(returned, "/smbmount/shifter1/jjh/FragSC.csv")
+
+    assert [crystal.well_address for crystal in read.harvested] == ["A01a", "A07a"]
+    first = read.harvested[0]
+    # Carried through as the instrument wrote it, not reformatted.
+    assert first.harvest_time == "2026-10-19 16:07:29.9"
+    assert first.arrival_time == "2026-10-19 16:03:53.3"
+    assert (first.puck_name, first.puck_position) == ("ISA-003", "1")
+    assert first.comment == "OK: No comment:No comment"
+    assert first.plate_code == "2184"
+    assert first.source.endswith("FragSC.csv")
+    # Started and not finished is not a harvest, and not a failed pick either.
+    assert [crystal.well_address for crystal in read.attempted] == []
+    assert read.notes == ("FragSC.csv: 2 rows not picked yet.",)
+
+    # A header, when there is one, is read and not taken for data.
+    with_header = _file(REAL_PICKED, REAL_UNPICKED)
+    assert [c.well_address for c in read_shifter_results(with_header).harvested] == ["A01a"]
+
+
+def test_a_pick_that_failed_is_kept_apart_from_a_harvest() -> None:
+    """FAIL rows have times and no puck: the only record the crystal was lost."""
+    read = read_shifter_results("\n".join((REAL_PICKED, REAL_FAILED)), "FragSC.csv")
+
+    assert [crystal.well_address for crystal in read.harvested] == ["A01a"]
+    (failed,) = read.attempted
+    assert failed.well_address == "C10d"
+    assert failed.comment == "FAIL: No comment:Melted"
+    assert failed.harvest_time == "2025-06-26 17:00:39.3"
+    assert failed.puck_name == ""
 
 
 def test_both_stations_and_later_saves_are_one_harvest_when_they_agree() -> None:
@@ -154,10 +213,10 @@ def test_an_unreadable_well_is_named_rather_than_skipped_quietly() -> None:
         "SwissCI-MRC-3d,1070,AM,A,x,a,,,, 2026-11-17 09:00:00.0,,5C-0029,1,,",
         _row("A01a", time=" 2026-11-17 09:12:05.0", puck="5C-0029", position="1"),
     )
-    harvested, notes = read_shifter_results(text, "PreTest.csv")
+    read = read_shifter_results(text, "PreTest.csv")
 
-    assert [crystal.well_address for crystal in harvested] == ["A01a"]
-    assert notes == ("PreTest.csv: line 2: Axa is not a well address.",)
+    assert [crystal.well_address for crystal in read.harvested] == ["A01a"]
+    assert read.notes == ("PreTest.csv: line 2: Axa is not a well address.",)
 
 
 def test_nothing_harvested_cannot_be_recorded() -> None:
@@ -168,3 +227,24 @@ def test_nothing_harvested_cannot_be_recorded() -> None:
     assert report.harvested == ()
     assert report.not_harvested == ("1070 A01a", "1070 A02a")
     assert not report.can_be_recorded
+
+
+def test_one_well_address_on_two_plates_refuses_the_whole_recording() -> None:
+    """MxLive's update filter leaves the plate out, so writing one writes both.
+
+    Its AddLabwork view finds a record by project, experiment, protein, plate
+    and well, then applies the update filtered on everything but the plate. A
+    harvest written onto one of two records sharing a well address lands on
+    both, putting the wrong crystal in that puck position.
+    """
+    expected = _expected(("A01a",)) + _expected(("A01a", "A02a"), plate="2070")
+    picked = _row("A01a", time="2026-11-17 09:12:05.0", puck="ISA-003", position="1")
+    report = collect_harvest(expected, (("/shifter1/jjh/FragSC.csv", _file(picked)),))
+
+    assert report.shared_addresses == ("A01a is on 1070, 2070",)
+    assert not report.can_be_recorded
+    # One plate each, and the same wells are fine.
+    plain = collect_harvest(
+        _expected(("A01a", "A02a")), (("/shifter1/jjh/FragSC.csv", _file(picked)),)
+    )
+    assert plain.shared_addresses == () and plain.can_be_recorded

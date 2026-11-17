@@ -99,6 +99,11 @@ class HarvestReport:
     # One well reported twice with different values, so neither can be trusted.
     conflicts: tuple[str, ...] = ()
     notes: tuple[str, ...] = field(default=())
+    # Reached and lost: picked, with no puck to record it against.
+    attempted: tuple[HarvestedCrystal, ...] = ()
+    # One well address on two plates in the same experiment. MxLive's update
+    # filter leaves the plate out, so writing one of them writes both.
+    shared_addresses: tuple[str, ...] = ()
 
     @property
     def can_be_recorded(self) -> bool:
@@ -107,7 +112,12 @@ class HarvestReport:
         Partial sending would leave somebody to work out which half went, and
         the one thing MxLive cannot do is take a record back.
         """
-        return bool(self.harvested) and not self.conflicts and not self.unexpected
+        return (
+            bool(self.harvested)
+            and not self.conflicts
+            and not self.unexpected
+            and not self.shared_addresses
+        )
 
 
 def expected_wells(rows: tuple[ShifterWorksheetRow, ...]) -> tuple[tuple[str, str], ...]:
@@ -125,33 +135,61 @@ def expected_wells(rows: tuple[ShifterWorksheetRow, ...]) -> tuple[tuple[str, st
 def wells_in_file(text: str) -> tuple[tuple[str, str], ...]:
     """(plate, well) for each readable row of a returned file, in file order.
 
-    Only the columns XtalFlow wrote are read. Comparing these with
-    ``expected_wells`` is what tells us the file at a recorded path is still
-    the worksheet this revision sent, since nothing inside the file names the
-    experiment or the revision.
+    Only the columns XtalFlow wrote are read. Use ``file_holds_these_wells``
+    to compare with a revision rather than this order: see there.
     """
     found = []
-    for row in _rows(text):
+    for row in _rows(text).rows:
         well = _well_address(row)
         if well is not None:
             found.append((row.get("PlateID", "").strip(), well))
     return tuple(found)
 
 
-def read_shifter_results(
-    text: str, source: str = ""
-) -> tuple[tuple[HarvestedCrystal, ...], tuple[str, ...]]:
+def file_holds_these_wells(
+    expected: tuple[tuple[str, str], ...], text: str
+) -> bool:
+    """Whether a returned file holds exactly the wells a revision sent.
+
+    This is how we know the file at a recorded path is still the worksheet
+    this revision sent: nothing inside names the experiment or the revision,
+    so the plates and wells are the fingerprint.
+
+    Compared with their counts but not in order. The SHIFTER rewrites our file
+    in place and keeps the rows it has not picked, so the set is complete, but
+    whether it keeps the original row order has not been verified against a
+    copy of what we wrote.
+    """
+    return sorted(wells_in_file(text)) == sorted(expected)
+
+
+@dataclass(frozen=True)
+class ShifterFile:
+    """What one returned worksheet says."""
+
+    # Picked and stored: a time and a puck, so there is something to record.
+    harvested: tuple[HarvestedCrystal, ...] = ()
+    # Picked and not stored - a crystal cracked, melted or was dropped. The
+    # instrument records a time but no puck. Worth showing: it is the only
+    # record that the crystal was reached and lost.
+    attempted: tuple[HarvestedCrystal, ...] = ()
+    notes: tuple[str, ...] = field(default=())
+
+
+def read_shifter_results(text: str, source: str = "") -> ShifterFile:
     """The harvests one returned file reports, and what was passed over.
 
-    A row with no time or no puck is not a harvest: it is a crystal the
-    operator has not picked, or has not stored. Those are counted, not
-    reported one by one, because a plate left half-harvested is the normal
-    state of a plate in the middle of a session.
+    A row needs both a time and a puck to be a harvest. A time without a puck
+    is a pick that failed, which is reported separately; neither time nor puck
+    is a crystal nobody has reached yet, and those are only counted, because a
+    plate half harvested is the normal state of a plate mid-session.
     """
     harvested: list[HarvestedCrystal] = []
+    attempted: list[HarvestedCrystal] = []
     notes: list[str] = []
+    read = _rows(text)
     unpicked = 0
-    for number, row in enumerate(_rows(text), start=2):
+    for number, row in enumerate(read.rows, start=read.first_line):
         well = _well_address(row)
         if well is None:
             notes.append(
@@ -162,20 +200,23 @@ def read_shifter_results(
             continue
         time = _cell(row, TIME_COLUMN)
         puck = _cell(row, PUCK_COLUMN)
-        if not time or not puck:
+        if not time and not puck:
             unpicked += 1
             continue
-        harvested.append(HarvestedCrystal(
+        crystal = HarvestedCrystal(
             _cell(row, "PlateID"), well, time, puck,
             _cell(row, POSITION_COLUMN), _cell(row, COMMENT_COLUMN),
             _cell(row, ARRIVAL_COLUMN), source,
-        ))
+        )
+        (harvested if time and puck else attempted).append(crystal)
     if unpicked:
         notes.append(
             f"{_where(source)}{unpicked} "
             f"{'row' if unpicked == 1 else 'rows'} not picked yet."
         )
-    return tuple(harvested), tuple(notes)
+    if not read.rows:
+        notes.append(f"{_where(source)}not a worksheet XtalFlow wrote.")
+    return ShifterFile(tuple(harvested), tuple(attempted), tuple(notes))
 
 
 def collect_harvest(
@@ -194,10 +235,12 @@ def collect_harvest(
     conflicts: list[str] = []
     unexpected: list[str] = []
     notes: list[str] = []
+    attempted: list[HarvestedCrystal] = []
     for source, text in files:
-        rows, file_notes = read_shifter_results(text, source)
-        notes.extend(file_notes)
-        for row in rows:
+        read = read_shifter_results(text, source)
+        notes.extend(read.notes)
+        attempted.extend(read.attempted)
+        for row in read.harvested:
             if row.key not in wanted:
                 unexpected.append(f"{row.describe()} · {_name(source)} · not in this plan")
                 continue
@@ -217,26 +260,59 @@ def collect_harvest(
         tuple(dict.fromkeys(unexpected)),
         tuple(dict.fromkeys(conflicts)),
         tuple(notes),
+        tuple(row for row in attempted if row.key in wanted),
+        _addresses_on_more_than_one_plate(expected),
     )
 
 
-def _rows(text: str) -> list[dict[str, str]]:
-    """Rows keyed by the column names XtalFlow wrote the file with.
+def _addresses_on_more_than_one_plate(
+    expected: tuple[tuple[str, str], ...],
+) -> tuple[str, ...]:
+    """Well addresses this revision sent from more than one plate.
 
-    Read by name and not by position: a column the instrument adds or moves
-    would otherwise shift a puck name into a time.
+    MxLive finds a record by project, experiment, protein, plate and well, but
+    the update it then applies filters on everything except the plate (its
+    ``AddLabwork`` view). So writing a harvest onto one of two records sharing
+    a well address writes it onto both, and the wrong crystal is then said to
+    be in that puck position. Such an experiment is refused rather than
+    half-written.
     """
+    plates: dict[str, set[str]] = {}
+    for plate, well in expected:
+        plates.setdefault(well, set()).add(plate)
+    return tuple(
+        f"{well} is on {', '.join(sorted(found))}"
+        for well, found in plates.items() if len(found) > 1
+    )
+
+
+@dataclass(frozen=True)
+class _Read:
+    rows: list[dict[str, str]]
+    # Which line of the file the first row is on, for naming a bad one.
+    first_line: int = 1
+
+
+def _rows(text: str) -> _Read:
+    """Rows keyed by the column names the worksheet was written with.
+
+    The SHIFTER rewrites our file in place and **drops the header line**, so a
+    returned file begins with data. The names are then taken from the order
+    XtalFlow wrote, and only from a line that has exactly as many fields: a
+    file with a different shape is not read at all rather than read crookedly,
+    because the fields are a puck name and a time and mistaking one for the
+    other would be recorded as fact.
+    """
+    names = [name.lstrip(";") for name in SHIFTER_HEADER]
     reader = csv.reader(StringIO(text))
     rows = [row for row in reader if any(cell.strip() for cell in row)]
     if not rows:
-        return []
-    header = [cell.strip().lstrip(";") for cell in rows[0]]
-    if header[: len(SHIFTER_HEADER)] != [
-        name.lstrip(";") for name in SHIFTER_HEADER
-    ]:
-        # Not a worksheet of ours. Nothing is guessed from it.
-        return []
-    return [dict(zip(header, row)) for row in rows[1:]]
+        return _Read([])
+    if [cell.strip().lstrip(";") for cell in rows[0]][: len(names)] == names:
+        return _Read([dict(zip(names, row)) for row in rows[1:]], 2)
+    if all(len(row) == len(names) for row in rows):
+        return _Read([dict(zip(names, row)) for row in rows])
+    return _Read([])
 
 
 def _cell(row: dict[str, str], column: str) -> str:

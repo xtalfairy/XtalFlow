@@ -321,6 +321,7 @@ class ConditionTestEditor(PlanEditorBase):
         self._source_well_error: str | None = None
         # The shared source plates' records (see infrastructure.source_plate_record).
         self._source_record = None
+        self._record_is_reachable = None
         self._username = ""
         # The shared plate names from the last reading that worked. While the
         # record cannot be read this is the only way to tell a name that
@@ -971,13 +972,29 @@ class ConditionTestEditor(PlanEditorBase):
 
     # -- Shared source plates ----------------------------------------------------------
 
-    def set_source_record(self, record, username: str) -> None:
-        """The shared record of source plate wells; None where no ECHO folder is set."""
+    def set_source_record(self, record, username: str, is_reachable=None) -> None:
+        """The shared record of source plate wells; None where no ECHO folder is set.
+
+        ``is_reachable`` answers whether the record can be read without going
+        to the filesystem. The record usually lives under the ECHO folder,
+        which at the beamline is a network share, and asking a dropped SMB
+        mount takes the best part of a minute - on this thread, with the
+        window drawn and unable to repaint. The answer comes instead from the
+        reading the share lamps make on a worker thread.
+        """
         self._source_record = record
         self._username = username
+        self._record_is_reachable = is_reachable
         self._plate_records = {}
         self._plate_list_read = False
         self.refresh_plan()
+
+    def _record_is_away(self) -> bool:
+        """Whether the record is known to be out of reach, without asking it."""
+        return (
+            self._record_is_reachable is not None
+            and not self._record_is_reachable()
+        )
 
     def refresh_plate_records(self) -> None:
         """Read the shared records again, e.g. after this experiment's wells were recorded."""
@@ -988,6 +1005,14 @@ class ConditionTestEditor(PlanEditorBase):
     def _plate_entries(self, plate: str, fresh: bool = False) -> tuple[PlateRecordEntry, ...] | None:
         """A plate's record, read once per plate unless ``fresh``; None if it cannot be read."""
         if self._source_record is None or not plate:
+            return None
+        if self._record_is_away():
+            self._plate_records[plate] = None
+            self._needs_fresh_plate = True
+            _show_message(
+                self.record_note_label,
+                f"The shared source plate record cannot be reached. {AWAY_NOTE}",
+            )
             return None
         if fresh or plate not in self._plate_records:
             try:
@@ -1020,6 +1045,13 @@ class ConditionTestEditor(PlanEditorBase):
     def _shared_plates(self) -> tuple[PlateSummary, ...] | None:
         """Plates on the shared record, or None when there is none or it cannot be read."""
         if self._source_record is None:
+            return None
+        if self._record_is_away():
+            self._needs_fresh_plate = True
+            _show_message(
+                self.record_note_label,
+                f"The shared source plate record cannot be reached. {AWAY_NOTE}",
+            )
             return None
         try:
             return self._source_record.plates()

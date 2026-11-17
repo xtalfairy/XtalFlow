@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from xtalflow.infrastructure import mounts
 from xtalflow.infrastructure.mounts import is_network_mount
 
 
@@ -85,3 +86,33 @@ def test_a_share_that_cannot_be_asked_is_not_called_mounted(tmp_path, monkeypatc
     assert not state.mounted
     assert state.state == "error"
     assert "Host is down" in state.detail
+
+
+def test_a_mount_table_that_cannot_be_read_is_looked_for_once(monkeypatch) -> None:
+    """The one reading must not send every share off to run ``mount`` again.
+
+    A table that comes back empty is an answer. Handed on as None it reads as
+    "not supplied", and each share looks for it afresh - the cost this holder
+    exists to pay once, paid per share in exactly the case it was built for.
+    """
+    from dataclasses import replace
+
+    from xtalflow.settings import DEFAULT_SETTINGS, standard_instruments
+
+    looked = []
+    monkeypatch.setattr(
+        mounts, "_system_mount_table", lambda: looked.append(1) or None
+    )
+    root = Path(__file__).parent
+    settings = replace(
+        DEFAULT_SETTINGS,
+        rmserver_root=root,
+        instruments=standard_instruments(root, root, root),
+    )
+
+    states = mounts.share_states(settings)
+
+    assert len(looked) == 1
+    assert [state.mounted for state in states] == [False] * len(states)
+    # The folders are all there; only the mount answer is missing.
+    assert all(state.exists for state in states)

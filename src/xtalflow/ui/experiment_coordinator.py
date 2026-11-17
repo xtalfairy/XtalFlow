@@ -949,7 +949,12 @@ class ExperimentCoordinator:
                 CONDITION_TEMPLATES[template or "solvent"](), self.editor_holder
             )
             self._catch_up_source_record()
-            editor.set_source_record(self._source_plate_record(), getpass.getuser())
+            record = self._source_plate_record()
+            editor.set_source_record(
+                record, getpass.getuser(),
+                None if record is None
+                else lambda item=record: self._record_is_reachable(item),
+            )
             editor.conditions_requested.connect(
                 lambda: self.go_to_step(WorkflowStep.CONDITIONS)
             )

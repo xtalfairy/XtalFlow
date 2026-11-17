@@ -4669,3 +4669,105 @@ def test_the_worksheets_step_never_asks_the_instrument_folders_anything(
     assert where["SHIFTER 1"].startswith(str(tmp_path / "shifter1"))
     window.close()
     app.processEvents()
+
+
+def test_a_folder_that_is_not_a_mounted_share_counts_as_away(tmp_path: Path) -> None:
+    """The beamline's own case: the folder is there, the share behind it is not.
+
+    An unmounted mountpoint is an ordinary empty directory, so a worksheet
+    written into it is accepted and then vanishes when the share returns. A
+    site that asked for mounted shares must be told the instrument is away;
+    one that did not is looking at a local folder that works.
+    """
+    app = QApplication.instance() or QApplication([])
+    for name in ("echo650", "shifter1", "shifter2"):
+        (tmp_path / name).mkdir()
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        instruments=standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
+        ),
+        require_network_instrument_mounts=True,
+        require_network_image_root=False,
+        create_missing_instrument_roots=False,
+    )
+    window = ViewerWindow(
+        RockMakerImageRepository(_share_with_one_plate(tmp_path / "images")),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"), settings=settings,
+    )
+    _wait_for_share_reading(app, window)
+
+    # Every folder exists; none of them is a mounted share.
+    assert all(state.exists for state in window._share_states)
+    assert set(window.shares_found_away()) == {"echo650", "shifter1", "shifter2"}
+
+    # The same machine, by a site that never asked for mounted shares.
+    window.settings = replace(settings, require_network_instrument_mounts=False)
+    assert window.shares_found_away() == {}
+    window.close()
+    app.processEvents()
+
+
+def test_a_condition_test_opens_without_asking_the_shared_record(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The record lives under the ECHO folder, which is a share that can drop.
+
+    Reading it here is done on the window's own thread, so one look at a
+    dropped SMB mount holds the window for the best part of a minute - and
+    opening a condition test takes several. Whether it can be read comes from
+    the reading the share lamps make on a worker thread instead.
+    """
+    app = QApplication.instance() or QApplication([])
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        source_plate_record_directory=None,
+        instruments=standard_instruments(
+            tmp_path / "gone-echo", tmp_path / "shifter1", tmp_path / "shifter2"
+        ),
+        require_network_instrument_mounts=True,
+        require_network_image_root=False,
+        create_missing_instrument_roots=False,
+    )
+    window = ViewerWindow(
+        RockMakerImageRepository(_share_with_one_plate(tmp_path / "images")),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"), settings=settings,
+    )
+    _wait_for_share_reading(app, window)
+    assert "echo650" in window.shares_found_away()
+
+    touched = []
+    real_is_dir, real_glob = Path.is_dir, Path.glob
+    echo = tmp_path / "gone-echo"
+
+    def counting_is_dir(self):
+        if echo == self or echo in self.parents:
+            touched.append(f"is_dir {self}")
+        return real_is_dir(self)
+
+    def counting_glob(self, pattern):
+        if echo == self or echo in self.parents:
+            touched.append(f"glob {self}")
+        return real_glob(self, pattern)
+
+    monkeypatch.setattr(Path, "is_dir", counting_is_dir)
+    monkeypatch.setattr(Path, "glob", counting_glob)
+
+    editor = window.experiments.start_experiment(PlanType.CONDITION_TEST)
+    app.processEvents()
+    editor.refresh_plate_records()
+    app.processEvents()
+    # A named plate is the other way in: its own entries are looked up, not
+    # just the list of plates that have a record at all.
+    assert editor._plate_entries("SP-2026-01") is None
+    assert editor._plate_entries("SP-2026-01", fresh=True) is None
+    assert editor._shared_plates() is None
+
+    assert touched == []
+    # And the user is told, so nobody books wells against a record nobody read.
+    assert "cannot be reached" in editor.record_note_label.text()
+    assert "fresh source plate" in editor.record_note_label.text()
+    window.close()
+    app.processEvents()

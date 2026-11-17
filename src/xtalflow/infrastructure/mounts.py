@@ -127,9 +127,15 @@ def share_state(key: str, label: str, path: Path, mount_table=None) -> ShareStat
             return ShareState(
                 key, label, path, False, "the folder is not there", exists=False
             )
-        mounted = is_network_mount(
-            path, mount_table.text() if mount_table is not None else None
-        )
+        if mount_table is None:
+            mounted = is_network_mount(path)
+        else:
+            # A table that could not be read is an answer, not a missing one.
+            # Passing None on would read as "not supplied" and send every
+            # share off to run ``mount`` again - "once per reading" failing
+            # in exactly the case it was meant to hold for.
+            text = mount_table.text()
+            mounted = text is not None and is_network_mount(path, text)
     except OSError as error:
         return ShareState(key, label, path, False, str(error), exists=False)
     return ShareState(

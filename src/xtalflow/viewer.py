@@ -90,7 +90,7 @@ from xtalflow.infrastructure import (
     SQLiteReviewStore,
 )
 from xtalflow.infrastructure.instrument_config import load_instrument_destinations
-from xtalflow.infrastructure.mounts import ShareState, share_states
+from xtalflow.infrastructure.mounts import IMAGE_SHARE, ShareState, share_states
 from xtalflow.infrastructure.examples import load_examples
 from xtalflow.infrastructure.user_preferences import JsonUserPreferencesStore
 from xtalflow.presentation import ProjectImageSetListModel
@@ -2238,8 +2238,16 @@ class ViewerWindow(QMainWindow):
         if states is None:
             self.workspace_sidebar.show_share_states(self._share_states)
             return
+        changed = states != self._share_states
         self._share_states = states
         self.workspace_sidebar.show_share_states(states)
+        if changed:
+            # Whatever is on screen was drawn from the reading before this
+            # one. The Worksheets step in particular says which instrument is
+            # away and where its worksheet will wait, and that line has to
+            # arrive by itself: the step cannot ask the shares without
+            # freezing the window for as long as the dead one takes to answer.
+            self.experiments.shares_were_read()
 
     def share_is_mounted(self, key: str) -> bool:
         """Whether the last reading found this share mounted.
@@ -2253,6 +2261,33 @@ class ViewerWindow(QMainWindow):
         return any(
             state.key == key and state.mounted for state in self._share_states
         )
+
+    def shares_found_away(self) -> dict[str, str]:
+        """Instrument shares the last reading found unmounted, and why.
+
+        From the reading the panel's lamps already make on a worker thread.
+        Asking the shares themselves is what froze the window: ``is_dir`` on a
+        dropped SMB mount answers only after the best part of a minute, and
+        the Worksheets step asks on every refresh.
+
+        Empty before the first reading has come back. Nothing is called away
+        on a guess - a share named here is drawn as unreachable and its
+        worksheet routed to the folder that waits, which would be wrong for a
+        share that is in fact up. The save itself looks at the real folders on
+        a worker thread, so being out of date here costs a correction on
+        screen, never a file in the wrong place.
+        """
+        require_mounts = self.settings.require_network_instrument_mounts
+        return {
+            state.key: state.detail
+            for state in self._share_states
+            if state.key != IMAGE_SHARE
+            and not state.mounted
+            # A folder that is simply a local folder is perfectly usable at a
+            # site that has not asked for mounted shares - a test setup, or a
+            # machine that keeps its instrument folders on its own disk.
+            and (require_mounts or not state.exists)
+        }
 
     def _positions_outside(self, calibration) -> int:
         """How many of this image's positions fall beyond the well boundary."""
@@ -2646,7 +2681,11 @@ class ViewerWindow(QMainWindow):
                 outcome["error"] = error
 
         worker = threading.Thread(target=work, name="xtalflow-io", daemon=True)
-        progress = QProgressDialog(message, None, 0, 0, self)
+        # The name goes in the text, not only the title. A window-modal dialog
+        # is drawn as a sheet on macOS, and a sheet has no title bar: the title
+        # set below is never shown there, which left a small nameless box with
+        # a striped bar as the only thing on screen while a share was slow.
+        progress = QProgressDialog(f"{APP_TITLE}\n\n{message}", None, 0, 0, self)
         progress.setWindowTitle(APP_TITLE)
         progress.setWindowModality(Qt.WindowModal)
         # QProgressDialog's own delayed show ignores later setMinimumDuration

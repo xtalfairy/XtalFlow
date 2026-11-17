@@ -1410,6 +1410,22 @@ def test_a_condition_test_takes_a_fresh_plate_only_when_the_record_itself_is_awa
     app.processEvents()
 
 
+def _wait_for_share_reading(app, window, seconds: float = 5.0) -> None:
+    """Pump events until the window has a reading of the shares.
+
+    The reading runs on a worker thread, so a test that looks at anything
+    drawn from it has to let it land first.
+    """
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        app.processEvents()
+        if window._share_states and not window._share_check_busy:
+            app.processEvents()
+            return
+        time.sleep(0.01)
+    raise AssertionError("the shares were never read")
+
+
 def test_worksheets_go_to_the_instruments_that_are_up(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1434,6 +1450,10 @@ def test_worksheets_go_to_the_instruments_that_are_up(
     assert window.experiments._finalize_plan(editor) is not None
     window.experiments.go_to_step(WorkflowStep.WORKSHEETS)
     step = editor.worksheets_step
+    # Which instruments are up is read on a worker thread - asking a dropped
+    # SMB mount here would freeze the window for as long as it takes to
+    # answer - so the line arrives when that reading lands, not before.
+    _wait_for_share_reading(app, window)
 
     # Before anybody presses save, the page already says which one is away
     # and where its worksheet will wait.
@@ -4588,5 +4608,64 @@ def test_the_harvest_of_an_uploaded_experiment_is_read_and_shown(
     note = step.harvest_note_label.text()
     assert "status" in note and "Active" in note
     assert "attachment" in note
+    window.close()
+    app.processEvents()
+
+
+def test_the_worksheets_step_never_asks_the_instrument_folders_anything(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Refreshing the step must not touch the shares, however many times it runs.
+
+    Asking a dropped SMB mount whether it is a folder answers only after the
+    best part of a minute, and the step refreshes after every edit. Doing it
+    here froze the window for minutes at a time with two instruments away -
+    long enough that macOS left the progress sheet of whatever ran last
+    stranded on screen, a small box with a striped bar and nothing else.
+
+    What is up is read on a worker thread for the panel's lamps, and the step
+    draws from that reading.
+    """
+    app = QApplication.instance() or QApplication([])
+    (tmp_path / "echo650").mkdir()
+    (tmp_path / "shifter1").mkdir()
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        pending_worksheet_directory=tmp_path / "pending",
+        instruments=standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "missing-shifter2"
+        ),
+        create_missing_instrument_roots=False,
+    )
+    window, _store, editor = _fragment_plan_window(tmp_path, settings)
+    assert window.experiments._finalize_plan(editor) is not None
+    window.experiments.go_to_step(WorkflowStep.WORKSHEETS)
+    _wait_for_share_reading(app, window)
+    roots = tuple(item.output_directory for item in settings.instruments)
+
+    touched = []
+    real_is_dir = Path.is_dir
+
+    def counting_is_dir(self):
+        if any(root == self or root in self.parents for root in roots):
+            touched.append(str(self))
+        return real_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", counting_is_dir)
+    for _ in range(5):
+        window.experiments._refresh_worksheets_step(editor)
+        app.processEvents()
+
+    assert touched == []
+    # And it still says which one is away, from the reading that already ran.
+    step = editor.worksheets_step
+    where = {
+        step.instrument_table.item(row, 0).text():
+            step.instrument_table.item(row, 3).text()
+        for row in range(step.instrument_table.rowCount())
+    }
+    assert where["SHIFTER 2"].startswith("not connected · will wait in ")
+    assert where["SHIFTER 1"].startswith(str(tmp_path / "shifter1"))
     window.close()
     app.processEvents()

@@ -103,6 +103,11 @@ class ShareState:
     path: Path
     mounted: bool
     detail: str
+    # Whether the folder is there at all, apart from whether it is a share.
+    # A folder that is missing is unusable everywhere; one that is merely
+    # local is unusable only where a mounted share is required, and the two
+    # cannot be told apart from ``mounted`` alone.
+    exists: bool = True
 
     @property
     def state(self) -> str:
@@ -110,14 +115,23 @@ class ShareState:
         return "ok" if self.mounted else "error"
 
 
-def share_state(key: str, label: str, path: Path) -> ShareState:
-    """Look at one share. Slow enough on a dropped mount to belong off the GUI thread."""
+def share_state(key: str, label: str, path: Path, mount_table=None) -> ShareState:
+    """Look at one share. Slow enough on a dropped mount to belong off the GUI thread.
+
+    ``mount_table`` is a holder for the system's mount list, shared by a whole
+    reading so that finding it - a subprocess on macOS - is paid once, and
+    only by the first share that gets as far as needing it.
+    """
     try:
         if not path.is_dir():
-            return ShareState(key, label, path, False, "the folder is not there")
-        mounted = is_network_mount(path)
+            return ShareState(
+                key, label, path, False, "the folder is not there", exists=False
+            )
+        mounted = is_network_mount(
+            path, mount_table.text() if mount_table is not None else None
+        )
     except OSError as error:
-        return ShareState(key, label, path, False, str(error))
+        return ShareState(key, label, path, False, str(error), exists=False)
     return ShareState(
         key, label, path, mounted,
         "mounted" if mounted else "a local folder, not a mounted share",
@@ -125,12 +139,31 @@ def share_state(key: str, label: str, path: Path) -> ShareState:
 
 
 def share_states(settings) -> tuple[ShareState, ...]:
-    """Every share this installation depends on: the images first, then the instruments."""
-    states = [
-        share_state(IMAGE_SHARE, IMAGE_SHARE_LABEL, settings.rmserver_root)
-    ]
-    states.extend(
-        share_state(item.instrument, item.label, item.output_directory)
+    """Every share this installation depends on: the images first, then the instruments.
+
+    The mount table is read at most once for the whole reading, and only when
+    some folder is actually there to place in it. Finding it runs ``mount`` on
+    macOS, and forking from a thread inside a Qt process is not free: doing it
+    once per share aborted the application in CoreFoundation.
+    """
+    wanted = [(IMAGE_SHARE, IMAGE_SHARE_LABEL, settings.rmserver_root)]
+    wanted.extend(
+        (item.instrument, item.label, item.output_directory)
         for item in settings.instruments
     )
-    return tuple(states)
+    table = _MountTable()
+    return tuple(share_state(key, label, path, table) for key, label, path in wanted)
+
+
+class _MountTable:
+    """The system's mount list, found once and only if something asks for it."""
+
+    def __init__(self) -> None:
+        self._text: str | None = None
+        self._read = False
+
+    def text(self) -> str | None:
+        if not self._read:
+            self._text = _system_mount_table()
+            self._read = True
+        return self._text

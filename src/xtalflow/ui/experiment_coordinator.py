@@ -2374,14 +2374,38 @@ class ExperimentCoordinator:
         self._refresh_worksheets_step(editor)
         self._refresh_experiment_status(editor)
 
+    def shares_were_read(self) -> None:
+        """A fresh reading of the shares has landed; redraw what depends on it.
+
+        Only the Worksheets step does: it names the instruments that are away
+        and where their worksheets will wait. Called from the window's own
+        thread once the worker's reading is in.
+        """
+        editor = self.current_editor
+        if editor is None or getattr(editor, "worksheets_step", None) is None:
+            return
+        self._refresh_worksheets_step(editor)
+        self._refresh_experiment_status(editor)
+
     def _unreachable_instruments(self) -> dict[str, str]:
-        """Which instrument folders cannot be reached, and why, right now."""
-        try:
-            return WorksheetExporter(
-                self.window.settings, getpass.getuser()
-            ).unreachable_instruments()
-        except (OSError, ValueError):
+        """Which instrument folders cannot be reached, and why.
+
+        From the reading the panel's lamps make on a worker thread, never by
+        asking the folders here. This is called on every refresh of the
+        Worksheets step, and a refresh follows every edit; asking a dropped
+        SMB mount takes the best part of a minute per share, so the window
+        froze for minutes at a time with two instruments away - long enough
+        for macOS to leave the progress sheet of whatever ran last stranded
+        on screen with nothing drawn in it.
+
+        The save still looks at the real folders, on a worker thread, at the
+        moment it writes. So a reading that is a few seconds out of date costs
+        a line on screen being briefly wrong, never a worksheet written into
+        an empty mountpoint.
+        """
+        if self.window.settings.create_missing_instrument_roots:
             return {}
+        return self.window.shares_found_away()
 
     def _source_record_is_away(self) -> bool:
         """Whether the record of which source wells are taken can be reached at all.

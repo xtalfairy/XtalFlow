@@ -247,3 +247,103 @@ def test_what_a_harvest_write_changes_without_reading_it_is_stated() -> None:
     assert len(WRITTEN_BLIND) == 2
     assert any("status" in item and "Active" in item for item in WRITTEN_BLIND)
     assert any("attachment" in item for item in WRITTEN_BLIND)
+
+
+def _harvest(**kwargs: Any):
+    return _crystal("A01a", **kwargs)
+
+
+ORIGINAL = {
+    "name": "jjh", "expri_id": "PreTest-202611-BRD4-01", "protein_name": "BRD4",
+    "plate_code": "2069", "plate_well": "A01a", "status": 5, "attachment": "null",
+    "soak_vol": 33, "soak_id": "DMSO_13%-0min", "project_id": "7",
+    "staff_comments": "Uploaded by XtalFlow · Condition Test",
+}
+
+
+def test_the_whole_record_goes_back_with_the_harvest_added() -> None:
+    """MxLive has no partial update: a column not sent becomes NULL.
+
+    So each field comes from the place that still knows it - the address and
+    the plan's columns from the payload this experiment was uploaded with,
+    staff_comments from what MxLive holds now, the harvest from the file.
+    """
+    from xtalflow.domain.harvest_record import harvest_payload
+
+    payload = harvest_payload(
+        ORIGINAL,
+        _record("A01a", staff_comments="Uploaded by XtalFlow · Condition Test"),
+        _harvest(),
+    )
+
+    assert payload["harvest_time"] == "2026-11-17 17:17:00.0"
+    assert payload["puck_name"] == "5C-0001"
+    # An IntegerField there, so a number, not the file's text.
+    assert payload["puck_nohole"] == 1
+    # The instrument's own words, as every record on this beamline since 2022.
+    assert payload["harvest_comment"] == "OK: No comment:No comment"
+    # The plan's columns are the ones first uploaded, never invented.
+    assert payload["soak_id"] == "DMSO_13%-0min"
+    assert payload["plate_code"] == "2069" and payload["plate_well"] == "A01a"
+    assert payload["status"] == 5 and payload["attachment"] == "null"
+    # No rank is invented: absent, so NULL.
+    assert "harvest_order" not in payload
+
+
+def test_a_staff_comment_written_since_the_upload_is_kept_and_marked() -> None:
+    """MxLive records no author, so a mark is the only way to tell ours apart.
+
+    It goes beside the upload signature the history page already reads, not
+    into harvest_comment, which holds the instrument's words.
+    """
+    from xtalflow.domain.harvest_record import HARVEST_MARK, harvest_payload
+
+    payload = harvest_payload(
+        ORIGINAL,
+        _record(
+            "A01a",
+            staff_comments="Uploaded by XtalFlow · Condition Test · re-imaged 11-14",
+        ),
+        _harvest(),
+    )
+
+    assert payload["staff_comments"] == (
+        f"Uploaded by XtalFlow · Condition Test · re-imaged 11-14 · {HARVEST_MARK}"
+    )
+    # Marked once, however many times a harvest is recorded.
+    again = harvest_payload(ORIGINAL, _record("A01a", staff_comments=payload["staff_comments"]), _harvest())
+    assert again["staff_comments"].count(HARVEST_MARK) == 1
+
+
+def test_a_staff_comment_too_long_to_mark_keeps_its_words_instead() -> None:
+    """The column holds 256 characters and the database cuts the rest.
+
+    Somebody's own words are worth more than our mark.
+    """
+    from xtalflow.domain.harvest_record import (
+        HARVEST_MARK,
+        STAFF_COMMENTS_LIMIT,
+        harvest_payload,
+    )
+
+    long_note = "crystal looked poor after soaking, see logbook. " * 5
+    assert len(long_note) <= STAFF_COMMENTS_LIMIT
+    payload = harvest_payload(
+        ORIGINAL, _record("A01a", staff_comments=long_note), _harvest()
+    )
+
+    assert payload["staff_comments"] == long_note.strip()
+    assert HARVEST_MARK not in payload["staff_comments"]
+
+
+def test_a_puck_position_that_is_not_a_number_is_refused() -> None:
+    """``puck_nohole`` is an IntegerField and MxLive validates nothing."""
+    rows = plan_harvest_records(
+        (("2069", "A01a"),),
+        HarvestReport(harvested=(_crystal("A01a", position="top"),)),
+        (_record("A01a"),),
+        _payloads("A01a"),
+    )
+
+    assert rows[0].outcome is HarvestOutcome.PUCK_POSITION_NOT_A_NUMBER
+    assert rows[0].outcome.needs_attention

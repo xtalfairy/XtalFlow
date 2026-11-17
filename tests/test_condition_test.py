@@ -549,19 +549,50 @@ def test_what_a_requested_concentration_actually_becomes_is_available() -> None:
     assert previews[0].named_as == "10"
 
 
-def test_two_concentrations_that_would_share_one_soak_id_are_named() -> None:
-    """Whole percents make this possible, and MxLive cannot be corrected.
+def test_a_whole_percent_is_kept_only_where_it_is_unambiguous() -> None:
+    """A refusal somebody cannot resolve is the wrong tool.
 
-    Two conditions under one soak_id are indistinguishable there for good, so
-    the design says so rather than letting it happen quietly.
+    Naming 10.2 % and 10.4 % both 10 % would put two conditions under one
+    soak_id in MxLive, where nothing can be corrected. But telling a
+    researcher to change their concentrations to suit our identifier is the
+    wrong way round, so the figure is kept instead - the dot appears only
+    where the science asks for it.
     """
-    design = _design(percents=("10.2", "10.4"), times=(0,))
+    alone = _design(percents=("12.5",), times=(0,))
+    assert [alone.label(c, compact=True) for c in alone.conditions()] == ["DMSO_13%-0min"]
 
-    collisions = design.labels_that_collide()
+    close = _design(percents=("10.2", "10.4"), times=(0,))
+    assert [close.label(c, compact=True) for c in close.conditions()] == [
+        "DMSO_10.2%-0min", "DMSO_10.4%-0min",
+    ]
+    assert close.labels_that_collide() == ()
+    # A whole percent next to a close one keeps its own shape.
+    mixed = _design(percents=("10", "10.4", "25"), times=(0,))
+    assert [mixed.label(c, compact=True) for c in mixed.conditions()] == [
+        "DMSO_10%-0min", "DMSO_10.4%-0min", "DMSO_25%-0min",
+    ]
+
+
+def test_two_conditions_that_are_genuinely_the_same_are_named() -> None:
+    """What naming cannot fix: the same additive, concentration and time twice.
+
+    Two series can hold it, and no shortening or lengthening of a name tells
+    them apart - they are one condition entered twice, and they would share
+    one record in MxLive.
+    """
+    dmso = Additive("dmso", "DMSO", Decimal("100"), "CS(=O)C", "LDV-1", "A1")
+    twice = ConditionTestDesign(
+        (dmso,),
+        (
+            new_series(dmso.id, (Decimal("10"),), (0,), 1),
+            new_series(dmso.id, (Decimal("10"),), (0,), 1),
+        ),
+        Decimal("100"),
+    )
+
+    collisions = twice.labels_that_collide()
 
     assert len(collisions) == 1
     compact, full = collisions[0]
     assert compact == "DMSO_10%-0min"
-    assert full == ("DMSO 10.2% · 0 min", "DMSO 10.4% · 0 min")
-    # Percents a whole number apart are safe.
-    assert _design(percents=("10", "11"), times=(0,)).labels_that_collide() == ()
+    assert full == ("DMSO 10% · 0 min", "DMSO 10% · 0 min")

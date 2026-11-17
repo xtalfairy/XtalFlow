@@ -135,9 +135,10 @@ def compact_percent(value: Decimal) -> str:
     and the exact figure is not what the name is for - the name says which
     condition this is, and the app says what concentration it reached.
 
-    Two conditions can round to the same whole percent, which would put two
-    different conditions under one soak_id. That is checked separately rather
-    than hidden here, because MxLive cannot be corrected afterwards.
+    Two concentrations less than a whole percent apart would round to the same
+    name, and a design keeps the figure as typed for those - see
+    ``ConditionTestDesign.compact_percents``. Rounding is never allowed to
+    merge two conditions, because a record on MxLive cannot be corrected.
     """
     return f"{value.quantize(Decimal('1'), rounding=ROUND_HALF_UP):f}"
 
@@ -309,6 +310,34 @@ class ConditionTestDesign:
     def conditions(self) -> tuple[Condition, ...]:
         return tuple(condition for series in self.series for condition in series.conditions())
 
+    def compact_percents(self) -> dict[Decimal, str]:
+        """The text each concentration carries in a name.
+
+        A whole percent where that is unambiguous, and the figure as typed
+        where it is not. 12.5 % alone is named 13 %; 10.2 % beside 10.4 %
+        keeps both figures, because naming them both 10 % would put two
+        conditions under one soak_id in MxLive, where nothing can be
+        corrected afterwards.
+
+        Concentrations are grouped by value alone, not by additive and time,
+        so a figure is sometimes kept where a name would not actually have
+        clashed. Deciding that per name would make a name depend on which
+        other series exist, which is harder to predict than a dot.
+        """
+        used = sorted({
+            treatment.final_percent
+            for condition in self.conditions()
+            for treatment in condition.treatments
+            if treatment.final_percent > 0
+        })
+        grouped: dict[str, list[Decimal]] = {}
+        for percent in used:
+            grouped.setdefault(compact_percent(percent), []).append(percent)
+        return {
+            percent: (whole if len(group) == 1 else _percent_text(percent))
+            for whole, group in grouped.items() for percent in group
+        }
+
     def dose_previews(self) -> tuple[DosePreview, ...]:
         """Every distinct requested concentration, and what it becomes.
 
@@ -320,6 +349,7 @@ class ConditionTestDesign:
         The same percent appears twice when an earlier treatment has enlarged
         the drop, because the volume needed is then different. Both are kept.
         """
+        named = self.compact_percents()
         previews: list[DosePreview] = []
         for condition in self.conditions():
             try:
@@ -334,6 +364,7 @@ class ConditionTestDesign:
                 preview = DosePreview(
                     self.additive(dose.additive_id).name,
                     treatment.final_percent, dose.volume_nl, dose.actual_percent,
+                    named.get(treatment.final_percent, ""),
                 )
                 if preview not in previews:
                     previews.append(preview)
@@ -344,8 +375,13 @@ class ConditionTestDesign:
 
         A compact label is the soak_id, and two conditions under one soak_id
         are indistinguishable in MxLive for good - there is no correcting a
-        record there. Whole percents are what makes this possible: 10.2 % and
-        10.4 % are both named 10 %. Rare, and silent if nobody looks.
+        record there.
+
+        Rounding no longer causes this, since a design keeps the figure where
+        a whole percent would be ambiguous. What is left is two conditions
+        that are genuinely the same: the same additive at the same
+        concentration and the same time, in two series. No naming can tell
+        those apart, so the step says so and one of them has to go.
         """
         found: dict[str, list[str]] = {}
         for condition in self.conditions():
@@ -367,6 +403,7 @@ class ConditionTestDesign:
         untreated control, so it is named for what happens: no solvent added, or
         no additional solvent after an earlier treatment.
         """
+        percents = self.compact_percents() if compact else {}
         parts = []
         for index, treatment in enumerate(condition.treatments):
             time = format_minutes(treatment.minutes, compact)
@@ -382,7 +419,7 @@ class ConditionTestDesign:
                 parts.append(f"{text}-{time}" if compact else f"{text} · {time}")
                 continue
             parts.append(
-                f"{compact_name(name)}_{compact_percent(treatment.final_percent)}%-{time}"
+                f"{compact_name(name)}_{percents[treatment.final_percent]}%-{time}"
                 if compact
                 else f"{name} {_percent_text(treatment.final_percent)}% · {time}"
             )
@@ -543,15 +580,17 @@ class DosePreview:
     requested_percent: Decimal
     volume_nl: Decimal
     actual_percent: Decimal
+    # The percent this condition carries in its name, which the design
+    # decides: whole where that is unambiguous, as typed where it is not.
+    named_as: str = ""
 
     @property
     def is_exact(self) -> bool:
         return self.actual_percent == self.requested_percent
 
     @property
-    def named_as(self) -> str:
-        """The whole percent this condition carries in its name."""
-        return compact_percent(self.requested_percent)
+    def is_renamed(self) -> bool:
+        return self.named_as != _percent_text(self.requested_percent)
 
     def describe(self) -> str:
         reached = (

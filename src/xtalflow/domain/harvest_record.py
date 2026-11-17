@@ -33,6 +33,9 @@ from .mxlive import MxLiveLabwork
 from .shifter_results import HarvestReport, HarvestedCrystal
 
 __all__ = [
+    "HARVEST_MARK",
+    "STAFF_COMMENTS_LIMIT",
+    "harvest_payload",
     "HarvestOutcome",
     "WRITTEN_BLIND",
     "HarvestRow",
@@ -42,6 +45,9 @@ __all__ = [
 
 PUCK_NAME_LIMIT = 10
 """MxLive's ``Labwork.puck_name`` is ``CharField(max_length=10)``."""
+
+STAFF_COMMENTS_LIMIT = 256
+"""MxLive's ``Labwork.staff_comments`` is ``CharField(max_length=256)``."""
 
 WRITTEN_BLIND = (
     "MxLive never returns a record's status, so recording a harvest sets it "
@@ -80,6 +86,7 @@ class HarvestOutcome(Enum):
     SEVERAL_RECORDS = "more than one record on MxLive"
     NO_PAYLOAD = "this experiment's upload is not in the local audit"
     PUCK_NAME_TOO_LONG = "the puck name is too long for MxLive"
+    PUCK_POSITION_NOT_A_NUMBER = "the puck position is not a number"
 
     @property
     def is_sendable(self) -> bool:
@@ -187,7 +194,22 @@ def _outcome(
         return HarvestOutcome.NO_PAYLOAD
     if len(harvest.puck_name) > PUCK_NAME_LIMIT:
         return HarvestOutcome.PUCK_NAME_TOO_LONG
+    if not _position_number(harvest.puck_position):
+        return HarvestOutcome.PUCK_POSITION_NOT_A_NUMBER
     return HarvestOutcome.WILL_RECORD
+
+
+def _position_number(text: str) -> int | None:
+    """The puck position as MxLive's ``IntegerField`` needs it.
+
+    The instrument writes it as text and every file seen holds 1 to 12, but
+    the column is an integer and MxLive validates nothing: anything else would
+    reach the database as it stands. Refused here instead.
+    """
+    try:
+        return int(text.strip())
+    except (AttributeError, ValueError):
+        return None
 
 
 def _has_harvest(record: MxLiveLabwork) -> bool:
@@ -236,3 +258,74 @@ def _detail(
     if len(harvest.puck_name) > PUCK_NAME_LIMIT:
         return f"{harvest.puck_name!r} is {len(harvest.puck_name)} characters"
     return ""
+
+
+HARVEST_MARK = "Harvest by XtalFlow"
+"""Added to ``staff_comments`` so a harvest can be told from a staff entry.
+
+MxLive records no author for any field, so the only way a reader - or
+XtalFlow itself, later, from another computer - can tell who wrote a harvest
+is a mark left in a field that reads back. ``staff_comments`` already carries
+``Uploaded by XtalFlow · …`` and the history page reads that signature
+(``beamline_history.py:98``), so the harvest joins it there rather than in
+``harvest_comment``, which belongs to the instrument's own words.
+"""
+
+
+def harvest_payload(
+    original: Mapping[str, Any],
+    record: MxLiveLabwork,
+    harvest: HarvestedCrystal,
+) -> dict[str, Any]:
+    """The whole record as it must be sent to add one harvest to it.
+
+    MxLive's write endpoint builds its column dict with ``info.get(...)`` per
+    column, so every column it is not sent becomes ``NULL``. There is no
+    partial update: adding a harvest means sending the record back whole.
+
+    So each field comes from the place that still knows it:
+
+    - the address and the plan's own columns from ``original``, the payload
+      this experiment was uploaded with. That is the only proof of who owns
+      the record, and MxLive validates nothing, so an invented one would be
+      accepted;
+    - ``staff_comments`` from what MxLive holds now, because staff may have
+      written there since, and sending the original would undo it. The
+      harvest mark is appended to it, once;
+    - the harvest itself from the returned worksheet. ``harvest_comment``
+      carries the instrument's own comment, as every record on this beamline
+      since 2022 does; leaving it out would make ours the only ones without
+      it.
+
+    ``harvest_order`` is deliberately absent, and so becomes ``NULL``. Any
+    rank XtalFlow invented would have to stay stable across presses, and a
+    file read later with an earlier time would shift ranks already written -
+    which cannot be corrected.
+
+    ``status`` and ``attachment`` come from ``original`` because MxLive does
+    not return them at all; see ``WRITTEN_BLIND``.
+    """
+    payload = dict(original)
+    payload["staff_comments"] = _marked(record.raw.get("staff_comments"))
+    payload["harvest_time"] = harvest.harvest_time
+    payload["harvest_comment"] = harvest.comment
+    payload["puck_name"] = harvest.puck_name
+    payload["puck_nohole"] = _position_number(harvest.puck_position)
+    payload.pop("harvest_order", None)
+    return payload
+
+
+def _marked(staff_comments: Any) -> str:
+    """The staff comment with the harvest mark appended, where it fits.
+
+    The column holds 256 characters and the database would cut whatever is
+    over. Somebody's own words are worth more than our mark, so a comment
+    long enough to be cut keeps its words and goes unmarked.
+    """
+    text = str(staff_comments or "").strip()
+    if HARVEST_MARK in text:
+        return text
+    if not text:
+        return HARVEST_MARK
+    marked = f"{text} · {HARVEST_MARK}"
+    return marked if len(marked) <= STAFF_COMMENTS_LIMIT else text

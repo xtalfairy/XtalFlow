@@ -2100,15 +2100,16 @@ class ConditionTestEditor(PlanEditorBase):
         conditions = self.design.conditions()
         if not conditions:
             return "Include at least one condition."
-        # A condition's name becomes its soak_id in MxLive, where percents are
-        # whole numbers, and a record there cannot be corrected. Two conditions
-        # under one soak_id would be indistinguishable for good.
+        # A condition's name becomes its soak_id in MxLive, and a record there
+        # cannot be corrected, so two conditions may not share a name. Naming
+        # cannot separate conditions that are genuinely the same.
         collisions = self.design.labels_that_collide()
         if collisions:
             compact, full = collisions[0]
             return (
-                f"{' and '.join(full)} would both be named {compact} in MxLive. "
-                f"Use concentrations that differ by at least one percent."
+                f"{counted(len(full), 'condition')} are the same: {full[0]}. "
+                f"They would share one record in MxLive, named {compact}. "
+                f"Remove one, or change its concentration or time."
             )
         try:
             transfers = additive_transfers(self.design)
@@ -2309,10 +2310,7 @@ class ConditionTestEditor(PlanEditorBase):
                     " · ".join(item.describe() for item in inexact[:4])
                     + (f" · and {len(inexact) - 4} more" if len(inexact) > 4 else ""),
                 ))
-            renamed = tuple(
-                item for item in previews
-                if item.named_as != f"{item.requested_percent.normalize():f}"
-            )
+            renamed = tuple(item for item in previews if item.is_renamed)
             if renamed:
                 rows.insert(5, (
                     "Named in MxLive",

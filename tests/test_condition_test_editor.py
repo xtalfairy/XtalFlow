@@ -1020,22 +1020,35 @@ def test_a_solvent_that_is_not_dmso_is_warned_about_on_the_dmso_calibration() ->
     assert editor.finalize_warnings() == ()
 
 
-def test_two_concentrations_that_would_share_a_soak_id_block_the_step() -> None:
+def test_two_conditions_that_are_the_same_block_the_step() -> None:
     """A name a person reads is one thing; an identifier is another.
 
-    MxLive holds whole percents in soak_id, and a record there cannot be
-    corrected, so two conditions under one soak_id are indistinguishable for
-    good. This is not a warning that can be clicked past.
+    Concentrations less than a whole percent apart keep their figures, so
+    rounding never merges two conditions. What is left is a condition entered
+    twice in two series, which no naming can separate - they would share one
+    record in MxLive, and a record there cannot be corrected.
     """
-    editor = _editor(percents=("10.2", "10.4"), times=(0,))
+    from xtalflow.ui.condition_test_editor import ConditionTestEditor
+
+    _app()
+    dmso = Additive("dmso", "DMSO", Decimal("100"), "CS(=O)C", "LDV-1", "A1", "384PP_DMSO2")
+    editor = ConditionTestEditor(ConditionTestDesign(
+        (dmso,),
+        (
+            new_series(dmso.id, (Decimal("10"),), (0,), 1),
+            new_series(dmso.id, (Decimal("10"),), (0,), 1),
+        ),
+        Decimal("100"),
+    ))
+    editor.page = editor.conditions_widget()
 
     error = editor.conditions_error()
 
     assert error is not None
-    assert "would both be named DMSO_10%-0min in MxLive" in error
-    assert "differ by at least one percent" in error
-    # A whole percent apart is fine.
-    assert _editor(percents=("10", "11"), times=(0,)).conditions_error() is None
+    assert "2 conditions are the same: DMSO 10% · 0 min" in error
+    assert "named DMSO_10%-0min" in error
+    # Close concentrations are not a problem any more: both keep their figure.
+    assert _editor(percents=("10.2", "10.4"), times=(0,)).conditions_error() is None
 
 
 def test_the_summary_says_what_a_typed_concentration_actually_becomes() -> None:

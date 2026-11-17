@@ -248,3 +248,45 @@ def test_one_well_address_on_two_plates_refuses_the_whole_recording() -> None:
         _expected(("A01a", "A02a")), (("/shifter1/jjh/FragSC.csv", _file(picked)),)
     )
     assert plain.shared_addresses == () and plain.can_be_recorded
+
+
+def test_the_results_are_taken_from_whichever_file_the_operator_loaded() -> None:
+    """At BL-5C the original stayed empty and the harvests were in split files.
+
+    PreTest-202611-TCTP-01 went out as one worksheet and was also split by
+    harvest group into _H1_1h00m, _H2_2h00m and _H3_16h00m. The operator
+    loaded the split files, so those came back filled while the original kept
+    its header and its empty rows. A well therefore appears twice - empty in
+    one file, picked in another - and the filled row is the one that counts.
+    """
+    first = (
+        "SwissCI-MRC-3d,2192,AM,A,4,c,OK: No comment:No comment,XTal-1,"
+        "2026-11-13 18:25:34.9,2026-11-13 18:26:43.3,00:01:08.3,5C-0051,1,,"
+    )
+    second = (
+        "SwissCI-MRC-3d,2192,AM,B,4,c,OK: No comment:No comment,XTal-1,"
+        "2026-11-14 09:48:02.1,2026-11-14 09:49:10.7,00:01:08.6,5C-0051,7,,"
+    )
+    wells = ("A04c", "B04c", "C04c")
+    expected = _expected(wells, plate="2192")
+    report = collect_harvest(expected, (
+        # The original, as XtalFlow wrote it and as it stayed: header, no picks.
+        ("/shifter2/jjh/PreTest.csv", _file(*(_row(w, plate="2192") for w in wells))),
+        ("/shifter2/jjh/PreTest_H1_1h00m.csv", first + "\r\n"),
+        ("/shifter2/jjh/PreTest_H3_16h00m.csv", second + "\r\n"),
+    ))
+
+    assert [(c.well_address, c.puck_position) for c in report.harvested] == [
+        ("A04c", "1"), ("B04c", "7")
+    ]
+    assert [c.source.rsplit("/", 1)[-1] for c in report.harvested] == [
+        "PreTest_H1_1h00m.csv", "PreTest_H3_16h00m.csv"
+    ]
+    # An empty row never covers a filled one, whichever file is read first.
+    assert report.not_harvested == ("2192 C04c",)
+    assert report.conflicts == () and report.unexpected == ()
+    assert report.can_be_recorded
+
+    # The split files hold a third of the wells each, so only their union is
+    # this revision's worksheet: no single one of them is.
+    assert not file_holds_these_wells(expected, first)

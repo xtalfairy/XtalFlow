@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 from xtalflow.infrastructure.user_preferences import (
@@ -34,3 +35,20 @@ def test_the_default_confidence_accepts_the_wells_a_person_would() -> None:
     boundaries on every plate is not protecting them from anything.
     """
     assert UserPreferences().auto_confirm_confidence_percent == 80
+
+
+def test_a_number_already_chosen_is_not_moved_to_the_new_default(tmp_path: Path) -> None:
+    """Lowering the default does not reach into files that already have a number.
+
+    90 was the default before it was measured, so most stored 90s were never
+    chosen - but some were, and nothing here can tell the two apart. The
+    researchers who want 80 move the field once; nobody is moved by us.
+    """
+    path = tmp_path / "preferences.json"
+    store = JsonUserPreferencesStore(path)
+    store.save(UserPreferences(90))
+
+    assert store.load().auto_confirm_confidence_percent == 90
+    # Saved again, for any other reason: still 90.
+    store.save(replace(store.load(), review_hint_shown=True))
+    assert store.load().auto_confirm_confidence_percent == 90

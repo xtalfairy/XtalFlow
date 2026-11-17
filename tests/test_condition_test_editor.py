@@ -1018,3 +1018,51 @@ def test_a_solvent_that_is_not_dmso_is_warned_about_on_the_dmso_calibration() ->
     editor.update_additive(source_plate_type="384PP_AQ_CP")
     assert editor.source_message_label.text() == ""
     assert editor.finalize_warnings() == ()
+
+
+def test_two_concentrations_that_would_share_a_soak_id_block_the_step() -> None:
+    """A name a person reads is one thing; an identifier is another.
+
+    MxLive holds whole percents in soak_id, and a record there cannot be
+    corrected, so two conditions under one soak_id are indistinguishable for
+    good. This is not a warning that can be clicked past.
+    """
+    editor = _editor(percents=("10.2", "10.4"), times=(0,))
+
+    error = editor.conditions_error()
+
+    assert error is not None
+    assert "would both be named DMSO_10%-0min in MxLive" in error
+    assert "differ by at least one percent" in error
+    # A whole percent apart is fine.
+    assert _editor(percents=("10", "11"), times=(0,)).conditions_error() is None
+
+
+def test_the_summary_says_what_a_typed_concentration_actually_becomes() -> None:
+    """The dispenser moves in whole 2.5 nL steps, so 10 % is not 10 %.
+
+    12.5 % of a 100 nL drop needs 14.28 nL, and six whole steps are 15 nL,
+    which reaches 13 %. Nothing else in the app says so before the ECHO
+    worksheet is written. The name carries a whole percent, which is a second
+    difference, so both are said here.
+    """
+    editor = _editor(percents=("12.5",), times=(0,), replicates=1)
+    editor.set_selection(_selection(1))
+
+    rows = dict(editor._summary_rows())
+
+    assert rows["Dispensed"] == "DMSO 12.5% → 15 nL → 13 %"
+    assert rows["Named in MxLive"] == (
+        "DMSO 12.5% is named 13% · whole percents only there"
+    )
+
+
+def test_a_whole_percent_reached_exactly_says_nothing_extra() -> None:
+    """Noise on every plan would train people to stop reading the summary."""
+    editor = _editor(percents=("0",), times=(0,), replicates=1)
+    editor.set_selection(_selection(1))
+
+    rows = dict(editor._summary_rows())
+
+    assert "Dispensed" not in rows
+    assert "Named in MxLive" not in rows

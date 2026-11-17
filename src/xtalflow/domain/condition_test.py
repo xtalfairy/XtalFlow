@@ -126,6 +126,22 @@ def _percent_text(value: Decimal) -> str:
     return f"{value.normalize():f}"
 
 
+def compact_percent(value: Decimal) -> str:
+    """A percent for a name: whole, rounded half up.
+
+    A compact label becomes a soak_id in MxLive and reads back there for
+    years, and it is the kind of string that ends up in a file name or a
+    folder. A decimal point inside an identifier is trouble in all of those,
+    and the exact figure is not what the name is for - the name says which
+    condition this is, and the app says what concentration it reached.
+
+    Two conditions can round to the same whole percent, which would put two
+    different conditions under one soak_id. That is checked separately rather
+    than hidden here, because MxLive cannot be corrected afterwards.
+    """
+    return f"{value.quantize(Decimal('1'), rounding=ROUND_HALF_UP):f}"
+
+
 @dataclass(frozen=True)
 class Additive:
     id: str
@@ -293,6 +309,53 @@ class ConditionTestDesign:
     def conditions(self) -> tuple[Condition, ...]:
         return tuple(condition for series in self.series for condition in series.conditions())
 
+    def dose_previews(self) -> tuple[DosePreview, ...]:
+        """Every distinct requested concentration, and what it becomes.
+
+        Taken from the design rather than from a built plan, so it can be shown
+        while the numbers are being entered. A condition whose doses cannot be
+        computed yet - no drop volume, a concentration at or above stock - is
+        skipped silently; the editor already says why in its own words.
+
+        The same percent appears twice when an earlier treatment has enlarged
+        the drop, because the volume needed is then different. Both are kept.
+        """
+        previews: list[DosePreview] = []
+        for condition in self.conditions():
+            try:
+                doses = compute_doses(self, condition)
+            except ValueError:
+                continue
+            requested = [
+                treatment for treatment in condition.treatments
+                if treatment.final_percent > 0
+            ]
+            for treatment, dose in zip(requested, doses):
+                preview = DosePreview(
+                    self.additive(dose.additive_id).name,
+                    treatment.final_percent, dose.volume_nl, dose.actual_percent,
+                )
+                if preview not in previews:
+                    previews.append(preview)
+        return tuple(previews)
+
+    def labels_that_collide(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        """Compact labels that more than one condition would share.
+
+        A compact label is the soak_id, and two conditions under one soak_id
+        are indistinguishable in MxLive for good - there is no correcting a
+        record there. Whole percents are what makes this possible: 10.2 % and
+        10.4 % are both named 10 %. Rare, and silent if nobody looks.
+        """
+        found: dict[str, list[str]] = {}
+        for condition in self.conditions():
+            found.setdefault(self.label(condition, compact=True), []).append(
+                self.label(condition)
+            )
+        return tuple(
+            (compact, tuple(full)) for compact, full in found.items() if len(full) > 1
+        )
+
     @property
     def required_crystals(self) -> int:
         return sum(condition.replicates for condition in self.conditions())
@@ -318,10 +381,10 @@ class ConditionTestDesign:
                     text = f"No{compact_name(name)}" if compact else f"No {name} added"
                 parts.append(f"{text}-{time}" if compact else f"{text} · {time}")
                 continue
-            percent = _percent_text(treatment.final_percent)
             parts.append(
-                f"{compact_name(name)}_{percent}%-{time}" if compact
-                else f"{name} {percent}% · {time}"
+                f"{compact_name(name)}_{compact_percent(treatment.final_percent)}%-{time}"
+                if compact
+                else f"{name} {_percent_text(treatment.final_percent)}% · {time}"
             )
         return ("+" if compact else " → ").join(parts)
 
@@ -464,6 +527,40 @@ def cryo_test_template() -> ConditionTestDesign:
 
 
 TEMPLATES = {"solvent": solvent_test_template, "cryo": cryo_test_template}
+
+
+@dataclass(frozen=True)
+class DosePreview:
+    """What one requested concentration actually becomes.
+
+    The dispenser moves in whole 2.5 nL steps, so a requested concentration is
+    reached only as closely as one step allows. This is that difference, ready
+    to be shown while the number is being typed rather than discovered in the
+    ECHO worksheet.
+    """
+
+    additive_name: str
+    requested_percent: Decimal
+    volume_nl: Decimal
+    actual_percent: Decimal
+
+    @property
+    def is_exact(self) -> bool:
+        return self.actual_percent == self.requested_percent
+
+    @property
+    def named_as(self) -> str:
+        """The whole percent this condition carries in its name."""
+        return compact_percent(self.requested_percent)
+
+    def describe(self) -> str:
+        reached = (
+            f"{_percent_text(self.actual_percent)} %" if not self.is_exact else "exactly"
+        )
+        return (
+            f"{self.additive_name} {_percent_text(self.requested_percent)}% → "
+            f"{self.volume_nl.normalize():f} nL → {reached}"
+        )
 
 
 @dataclass(frozen=True)

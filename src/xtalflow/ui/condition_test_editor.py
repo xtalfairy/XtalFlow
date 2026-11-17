@@ -2100,6 +2100,16 @@ class ConditionTestEditor(PlanEditorBase):
         conditions = self.design.conditions()
         if not conditions:
             return "Include at least one condition."
+        # A condition's name becomes its soak_id in MxLive, where percents are
+        # whole numbers, and a record there cannot be corrected. Two conditions
+        # under one soak_id would be indistinguishable for good.
+        collisions = self.design.labels_that_collide()
+        if collisions:
+            compact, full = collisions[0]
+            return (
+                f"{' and '.join(full)} would both be named {compact} in MxLive. "
+                f"Use concentrations that differ by at least one percent."
+            )
         try:
             transfers = additive_transfers(self.design)
         except ValueError as error:
@@ -2287,6 +2297,30 @@ class ConditionTestEditor(PlanEditorBase):
             # The dispenser moves in 2.5 nL steps, so some wells receive a
             # little more at one position than another. Say so here rather
             # than leaving it to be noticed in the ECHO table.
+            # What the typed concentration actually becomes. The dispenser
+            # moves in whole 2.5 nL steps, so a concentration is reached only
+            # as closely as one step allows, and the name carries a whole
+            # percent - so this is the only place both are said.
+            previews = design.dose_previews()
+            inexact = tuple(item for item in previews if not item.is_exact)
+            if inexact:
+                rows.insert(4, (
+                    "Dispensed",
+                    " · ".join(item.describe() for item in inexact[:4])
+                    + (f" · and {len(inexact) - 4} more" if len(inexact) > 4 else ""),
+                ))
+            renamed = tuple(
+                item for item in previews
+                if item.named_as != f"{item.requested_percent.normalize():f}"
+            )
+            if renamed:
+                rows.insert(5, (
+                    "Named in MxLive",
+                    " · ".join(
+                        f"{item.additive_name} {item.requested_percent.normalize():f}% "
+                        f"is named {item.named_as}%" for item in renamed[:3]
+                    ) + " · whole percents only there",
+                ))
             uneven = tuple(item for item in plan.assignments if item.splits_unevenly())
             if uneven:
                 rows.insert(5, (

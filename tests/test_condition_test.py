@@ -505,3 +505,63 @@ def test_a_test_is_fitted_to_fewer_wells_evenly_and_only_when_asked() -> None:
     assert fit_to_wells(design, 20) == (design, ())
     with pytest.raises(ValueError, match="3 wells cannot hold 4 conditions"):
         fit_to_wells(design, 3)
+
+
+def test_a_name_carries_a_whole_percent_and_the_long_label_keeps_the_figure() -> None:
+    """A compact label becomes a soak_id, and reads back from MxLive for years.
+
+    It is also the kind of string that ends up in a file or folder name, where
+    a decimal point is trouble. The figure typed is not lost - it stays in the
+    label a person reads in the app.
+    """
+    from xtalflow.domain.condition_test import compact_percent
+
+    assert compact_percent(Decimal("10")) == "10"
+    assert compact_percent(Decimal("10.4")) == "10"
+    # Half up, so one ECHO step's worth never rounds down to nothing.
+    assert compact_percent(Decimal("2.5")) == "3"
+    assert compact_percent(Decimal("12.5")) == "13"
+
+    design = _design(percents=("12.5",), times=(0,))
+    (condition,) = design.conditions()
+    assert design.label(condition, compact=True) == "DMSO_13%-0min"
+    assert design.label(condition) == "DMSO 12.5% · 0 min"
+
+
+def test_what_a_requested_concentration_actually_becomes_is_available() -> None:
+    """The dispenser moves in whole 2.5 nL steps, so 10 % is reached as 10.1 %.
+
+    This comes from the design, not from a built plan, so it can be shown
+    while the number is being typed instead of being discovered in the ECHO
+    worksheet.
+    """
+    # A 100 nL drop: 10 % needs 11.1 nL, and one 2.5 nL step short of that
+    # leaves 9.1 %, which is the kind of gap worth seeing before dispensing.
+    design = _design(percents=("10", "25"), times=(0,))
+
+    previews = design.dose_previews()
+
+    assert [item.describe() for item in previews] == [
+        "DMSO 10% → 10 nL → 9.1 %",
+        "DMSO 25% → 32.5 nL → 24.5 %",
+    ]
+    assert not previews[0].is_exact
+    assert previews[0].named_as == "10"
+
+
+def test_two_concentrations_that_would_share_one_soak_id_are_named() -> None:
+    """Whole percents make this possible, and MxLive cannot be corrected.
+
+    Two conditions under one soak_id are indistinguishable there for good, so
+    the design says so rather than letting it happen quietly.
+    """
+    design = _design(percents=("10.2", "10.4"), times=(0,))
+
+    collisions = design.labels_that_collide()
+
+    assert len(collisions) == 1
+    compact, full = collisions[0]
+    assert compact == "DMSO_10%-0min"
+    assert full == ("DMSO 10.2% · 0 min", "DMSO 10.4% · 0 min")
+    # Percents a whole number apart are safe.
+    assert _design(percents=("10", "11"), times=(0,)).labels_that_collide() == ()

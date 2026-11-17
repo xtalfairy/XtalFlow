@@ -67,6 +67,12 @@ from xtalflow.application.worksheet_export import (
     SUCCEEDED as WORKSHEETS_SUCCEEDED,
     WorksheetExportService,
 )
+from xtalflow.application.harvest_review import (
+    HarvestReviewError,
+    prepare_harvest_review,
+    read_harvest,
+)
+from xtalflow.domain.harvest_record import WRITTEN_BLIND
 from xtalflow.domain.labwork import mxlive_soak_volume
 from xtalflow.application.labwork_upload import (
     FAILED,
@@ -234,6 +240,50 @@ def _well_address(summary, image_sets) -> str:
         )
     )
 
+
+
+def _read_text_file(path: str) -> str:
+    """A returned worksheet, read and never written.
+
+    The SHIFTER owns these files and rewrites them in place. Encoding errors
+    are replaced rather than raised: a worksheet is ASCII, and a stray byte
+    should not hide a whole session's harvest.
+    """
+    with open(path, encoding="utf-8", errors="replace", newline="") as stream:
+        return stream.read()
+
+
+def _harvest_rows(review) -> tuple[tuple[str, ...], ...]:
+    return tuple(
+        (
+            row.plate_code, row.well_address, row.condition,
+            row.harvest.harvest_time if row.harvest else "",
+            row.harvest.puck_name if row.harvest else "",
+            row.harvest.puck_position if row.harvest else "",
+            _file_name(row.harvest.source) if row.harvest else "",
+            f"{row.outcome.value}{f' · {row.detail}' if row.detail else ''}",
+        )
+        for row in review.rows
+    )
+
+
+def _file_name(path: str) -> str:
+    return path.rsplit("/", 1)[-1] if path else ""
+
+
+def _harvest_notes(review) -> str:
+    """What the person must be told before a harvest could be sent.
+
+    The blind-write warnings come first because no check can catch them: they
+    are properties of MxLive's API, not of this experiment.
+    """
+    notes = list(review.warnings)
+    for path, state in review.sources:
+        if state != "read":
+            notes.append(f"{_file_name(path)}: {state}.")
+    if review.sendable:
+        notes.extend(WRITTEN_BLIND)
+    return "\n".join(f"{theme.SYMBOL_ATTENTION} {note}" for note in notes)
 
 
 def _rounded_dose_note(records) -> str:
@@ -963,6 +1013,9 @@ class ExperimentCoordinator:
             lambda _=False, selected_editor=editor: self._save_plan_worksheets(
                 selected_editor
             )
+        )
+        editor.worksheets_step.harvest_check_button.clicked.connect(
+            lambda _checked=False, item=editor: self._check_harvest(item)
         )
         editor.worksheets_step.choose_location_button.clicked.connect(
             lambda _=False, selected_editor=editor: self._save_worksheets_elsewhere(
@@ -1803,6 +1856,7 @@ class ExperimentCoordinator:
         try:
             self._update_webdb_upload_controls(editor, failure)
         finally:
+            self._update_harvest_controls(editor)
             self._refresh_experiment_status(editor)
 
     def _update_webdb_upload_controls(
@@ -1853,6 +1907,100 @@ class ExperimentCoordinator:
         if editor.webdb_upload_state != state:
             editor.webdb_upload_state = state
             editor._refresh_webdb_preview()
+
+    def _update_harvest_controls(self, editor: PlanEditorBase) -> None:
+        """Reading a harvest is offered once the records it would join exist.
+
+        Before the upload there is nothing on MxLive to compare a returned
+        worksheet against, and the line says which of the two is missing
+        rather than leaving a dead button to be puzzled over.
+        """
+        step = getattr(editor, "worksheets_step", None)
+        if step is None:
+            return
+        revision = editor.last_revision
+        reason = ""
+        if revision is None:
+            reason = "Finalize a revision first"
+        elif self.window.review_store is None:
+            reason = "Open a review database to read the harvest"
+        elif self.mxlive_account is None or not self.mxlive_account.upload_ready:
+            reason = "MxLive access is not configured"
+        else:
+            lock = self._webdb_upload_lock(revision.experiment_id)
+            if lock is None or lock.availability is not UploadAvailability.UPLOADED:
+                reason = "Upload this experiment to MxLive first"
+        step.harvest_check_button.setEnabled(not reason)
+        if reason:
+            step.show_harvest(reason)
+
+    def _check_harvest(self, editor: PlanEditorBase) -> None:
+        """Read the returned worksheets and say where the harvest stands.
+
+        Reading only. Nothing here sends anything to MxLive, and the files are
+        opened read-only - the SHIFTER owns them.
+        """
+        revision = editor.last_revision
+        account = self.mxlive_account
+        store = self.window.review_store
+        if revision is None or account is None or store is None:
+            return
+        reader = self._mxlive_reader()
+        try:
+            # The review database belongs to this thread - SQLite connections
+            # are not shared - so the audit is read here, and only the files
+            # and MxLive go to the worker, where an unreachable share or
+            # server cannot freeze the window.
+            sources = prepare_harvest_review(
+                revision.experiment_id,
+                store.audit,
+                lambda revision_id: plan_from_snapshot(
+                    editor.plan_id, self._snapshot_of(editor, revision_id)
+                ),
+                username=account.username,
+            )
+            review = self.window._run_in_background(
+                f"Reading the harvest of {revision.experiment_id}…",
+                lambda: read_harvest(
+                    sources,
+                    _read_text_file,
+                    lambda expid: tuple(
+                        item for item in reader.labworks(expid)
+                        if item.experiment_id == expid
+                    ),
+                ),
+            )
+        except HarvestReviewError as error:
+            editor.worksheets_step.show_harvest(str(error))
+            return
+        except (MxLiveReadError, ReviewPersistenceError, ValueError, OSError) as error:
+            editor.worksheets_step.show_harvest(
+                f"The harvest could not be read: {error}"
+            )
+            return
+        editor.worksheets_step.show_harvest(
+            review.summary(), _harvest_rows(review), _harvest_notes(review)
+        )
+
+    def _snapshot_of(self, editor: PlanEditorBase, revision_id: str) -> str:
+        """The finalized snapshot of the revision that was uploaded.
+
+        Not the current plan, and not necessarily the newest revision: a plan
+        edited after its upload would otherwise be compared against wells that
+        were never sent.
+        """
+        if editor.last_revision is not None and editor.last_revision.id == revision_id:
+            return editor.last_revision.snapshot_json
+        store = self.window.review_store
+        if store is None:
+            raise HarvestReviewError("The review database is not open.")
+        for revision in store.planning.list_plan_revisions(editor.plan_id):
+            if revision.id == revision_id:
+                return revision.snapshot_json
+        raise HarvestReviewError(
+            f"The revision that was uploaded ({revision_id}) is not in this "
+            f"review database, so what it sent cannot be rebuilt."
+        )
 
     def _webdb_upload_lock(self, experiment_id: str) -> UploadLockState | None:
         """Return None when upload history is unreadable, which blocks uploading."""

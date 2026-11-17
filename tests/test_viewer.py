@@ -4473,3 +4473,120 @@ def test_a_renamed_solvent_reaches_mxlive_under_the_name_that_was_typed(
     assert unexpected_dialogs == []
     window.close()
     app.processEvents()
+
+
+def test_the_harvest_of_an_uploaded_experiment_is_read_and_shown(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The whole read path, from the save's own audit to the table.
+
+    Nothing in this is sent: the files are opened read-only, MxLive is only
+    asked what it holds, and the section exists so a person can see where a
+    harvest stands before anything irreversible is offered.
+    """
+    app = QApplication.instance() or QApplication([])
+    key = tmp_path / "keys.dsa"
+    key.write_bytes(b"test-key-presence")
+    settings = replace(
+        DEFAULT_SETTINGS,
+        mxlive_base_url="https://mxlive.example",
+        mxlive_key_path=key,
+        mxlive_ca_bundle=None,
+        mxlive_config_path=None,
+        worksheet_staging_directory=tmp_path / "staging",
+        instruments=standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
+        ),
+        create_missing_instrument_roots=True,
+    )
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store, settings=settings)
+
+    held: list = []
+
+    class Holds(_FakeMxLiveReader):
+        def labworks(self, experiment_id):
+            return tuple(held)
+
+    monkeypatch.setattr(
+        "xtalflow.ui.experiment_coordinator.LegacyMxLiveReadClient", Holds
+    )
+    monkeypatch.setattr(
+        "xtalflow.ui.experiment_coordinator.LegacyMxLiveWriteClient", _RecordingWriter
+    )
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    dialogs = []
+    for name in ("warning", "critical", "information"):
+        monkeypatch.setattr(
+            QMessageBox, name,
+            lambda *args, _name=name, **kwargs: dialogs.append((_name, args[2])),
+        )
+
+    crystals = tuple(
+        SelectedCrystal(
+            f"image-{index}", "1070", f"A0{index + 1}a",
+            (CrystalTarget(f"t{index}", Decimal(0), Decimal(0),
+                           datetime.now(timezone.utc)),),
+            SWISSCI_MIDI_3_LENS.id, "/rmserver/image.jpg",
+        )
+        for index in range(2)
+    )
+    editor = _start(window, PlanType.RAW_CRYSTAL, crystals)
+    editor.set_crystals(crystals)
+    editor.protein_input.setText("BRD4")
+
+    window.experiments.go_to_step(WorkflowStep.REVIEW)
+    window.experiment_page.primary_button.click()          # Finalize r1
+    window.experiment_page.primary_button.click()           # Save worksheets
+    revision = editor.last_revision
+    step = editor.worksheets_step
+
+    # Before the upload there is nothing on MxLive for a harvest to join, and
+    # the line says which of the two is missing.
+    assert not step.harvest_check_button.isEnabled()
+    assert step.harvest_status_label.text() == "Upload this experiment to MxLive first"
+
+    window.experiments._upload_plan_labworks(editor)
+    assert _RecordingWriter.posted, dialogs
+    held.extend(
+        MxLiveLabwork.from_mapping(dict(payload, harvest_time=None, puck_name=None))
+        for payload in _RecordingWriter.posted[-1]
+    )
+    assert step.harvest_check_button.isEnabled()
+
+    # The SHIFTER rewrites our file in place, dropping the header. One crystal
+    # was picked, the other failed.
+    path = store.audit.list_worksheet_exports(revision.id)[0].path_for("shifter1")
+    rows = Path(path).read_text(encoding="utf-8").splitlines()[1:]
+    picked = rows[0].split(",")
+    picked[6:13] = [
+        "OK: Clear:No comment", "XTal-1", "2026-11-17 17:16:55.4",
+        "2026-11-17 17:17:00.0", "00:00:04.6", "5C-0001", "1",
+    ]
+    failed = rows[1].split(",")
+    failed[6:13] = [
+        "FAIL: Clear:Melted", "", "2026-11-17 17:17:03.6",
+        "2026-11-17 17:17:07.4", "00:00:03.8", "", "",
+    ]
+    Path(path).write_text(
+        ",".join(picked) + "\r\n" + ",".join(failed) + "\r\n", encoding="utf-8"
+    )
+
+    step.harvest_check_button.click()
+
+    assert step.harvest_status_label.text() == "1 to record · 1 picks failed"
+    table = step.harvest_table
+    assert table.rowCount() == 2
+    assert [table.item(0, column).text() for column in (0, 1, 3, 4, 5, 7)] == [
+        "1070", "A01a", "2026-11-17 17:17:00.0", "5C-0001", "1", "will be recorded",
+    ]
+    # The instrument's own words on the failed pick, shown and never sent.
+    assert table.item(1, 7).text() == "pick failed; not sent · FAIL: Clear:Melted"
+    assert table.item(1, 4).text() == ""
+    # What no check can catch is said out loud, since a harvest write cannot
+    # read a record's status back before replacing it.
+    note = step.harvest_note_label.text()
+    assert "status" in note and "Active" in note
+    assert "attachment" in note
+    window.close()
+    app.processEvents()

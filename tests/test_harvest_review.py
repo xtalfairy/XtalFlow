@@ -11,7 +11,8 @@ import pytest
 
 from xtalflow.application.harvest_review import (
     HarvestReviewError,
-    review_harvest,
+    prepare_harvest_review,
+    read_harvest,
 )
 from xtalflow.application.labwork_upload import FAILED, SUCCEEDED
 from xtalflow.application.worksheet_export import SUCCEEDED as EXPORT_SUCCEEDED
@@ -117,10 +118,10 @@ def _records(plan, **filled: Any) -> Sequence[MxLiveLabwork]:
 
 
 def _review(plan, store, files, records, *, username: str = "jjh"):
-    return review_harvest(
-        EXPID, store, lambda _revision: plan, lambda path: files[path],
-        lambda _expid: records, username=username,
+    sources = prepare_harvest_review(
+        EXPID, store, lambda _revision: plan, username=username
     )
+    return read_harvest(sources, lambda path: files[path], lambda _expid: records)
 
 
 def test_a_returned_worksheet_is_read_and_each_crystal_placed() -> None:
@@ -157,9 +158,8 @@ def test_a_file_that_cannot_be_read_is_reported_and_stops_nothing_silently() -> 
             raise FileNotFoundError(2, "No such file or directory")
         return files[path]
 
-    review = review_harvest(
-        EXPID, store, lambda _r: plan, read, lambda _e: _records(plan), username="jjh",
-    )
+    sources = prepare_harvest_review(EXPID, store, lambda _r: plan, username="jjh")
+    review = read_harvest(sources, read, lambda _e: _records(plan))
 
     assert dict(review.sources)["/s1/h2.csv"] == "cannot be read"
     assert any("cannot be read" in note for note in review.warnings)

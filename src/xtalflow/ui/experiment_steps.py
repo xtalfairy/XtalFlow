@@ -23,6 +23,13 @@ from xtalflow.ui.forms import form_layout
 # Wide enough for the longest field and message, so the centred form never resizes.
 SETUP_WIDTH = 620
 
+# One crystal per row. "State" last because it is what the eye goes to, and a
+# person reading down the column should not have to cross the detail first.
+HARVEST_COLUMNS = (
+    "Plate", "Well", "Condition", "Harvest time", "Puck", "Position",
+    "From", "State",
+)
+
 
 def _section_title(text: str) -> QLabel:
     label = QLabel(text)
@@ -169,6 +176,38 @@ class WorksheetsStep(QWidget):
         mxlive_header.addWidget(self.mxlive_toggle)
         mxlive_header.addWidget(self.upload_button)
 
+        # What the SHIFTER gave back, read from the files the save recorded.
+        # Reading only: nothing in this section sends anything.
+        self.harvest_status_label = QLabel("Not checked")
+        self.harvest_status_label.setObjectName("Muted")
+        self.harvest_status_label.setWordWrap(True)
+        self.harvest_table = QTableWidget(0, len(HARVEST_COLUMNS))
+        self.harvest_table.setHorizontalHeaderLabels(HARVEST_COLUMNS)
+        self.harvest_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.harvest_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.harvest_table.verticalHeader().setVisible(False)
+        harvest_head = self.harvest_table.horizontalHeader()
+        harvest_head.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        harvest_head.setSectionResizeMode(QHeaderView.ResizeToContents)
+        harvest_head.setStretchLastSection(True)
+        self.harvest_table.hide()
+        self.harvest_check_button = QPushButton("Check harvest…")
+        self.harvest_check_button.setEnabled(False)
+        self.harvest_toggle = QPushButton("Show crystals")
+        self.harvest_toggle.setCheckable(True)
+        self.harvest_toggle.setEnabled(False)
+        self.harvest_toggle.toggled.connect(self._toggle_harvest)
+        self.harvest_note_label = QLabel()
+        self.harvest_note_label.setWordWrap(True)
+        self.harvest_note_label.setStyleSheet(theme.status_style("attention"))
+        self.harvest_note_label.hide()
+        harvest_header = QHBoxLayout()
+        harvest_header.setSpacing(theme.SPACING_M)
+        harvest_header.addWidget(_section_title("Harvest"))
+        harvest_header.addWidget(self.harvest_status_label, 1)
+        harvest_header.addWidget(self.harvest_toggle)
+        harvest_header.addWidget(self.harvest_check_button)
+
         layout = QVBoxLayout()
         layout.setContentsMargins(0, theme.SPACING_M, 0, 0)
         layout.setSpacing(theme.SPACING_M)
@@ -180,6 +219,10 @@ class WorksheetsStep(QWidget):
         layout.addSpacing(theme.SPACING_XL)
         layout.addLayout(mxlive_header)
         layout.addWidget(self.mxlive_table, 1)
+        layout.addSpacing(theme.SPACING_XL)
+        layout.addLayout(harvest_header)
+        layout.addWidget(self.harvest_note_label)
+        layout.addWidget(self.harvest_table, 1)
         self._stretch = QWidget()
         layout.addWidget(self._stretch, 1)
         self.setLayout(layout)
@@ -225,5 +268,32 @@ class WorksheetsStep(QWidget):
 
     def _toggle_mxlive(self, visible: bool) -> None:
         self.mxlive_table.setVisible(visible)
-        self._stretch.setVisible(not visible)
+        self._stretch.setVisible(not visible and not self.harvest_table.isVisible())
         self.mxlive_toggle.setText("Hide records" if visible else "Show records")
+
+    def _toggle_harvest(self, visible: bool) -> None:
+        self.harvest_table.setVisible(visible)
+        self._stretch.setVisible(not visible and not self.mxlive_table.isVisible())
+        self.harvest_toggle.setText("Hide crystals" if visible else "Show crystals")
+
+    def show_harvest(
+        self, status: str, rows: tuple[tuple[str, ...], ...] = (), notes: str = ""
+    ) -> None:
+        """What was read, one line and one row per crystal.
+
+        Called with rows only after a check: before that the line says so,
+        because an empty table under a heading reads as "there is nothing",
+        and here it means "nobody has looked yet".
+        """
+        self.harvest_status_label.setText(status)
+        self.harvest_table.setRowCount(len(rows))
+        for row, values in enumerate(rows):
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setToolTip(value)
+                self.harvest_table.setItem(row, column, item)
+        self.harvest_toggle.setEnabled(bool(rows))
+        if not rows and self.harvest_toggle.isChecked():
+            self.harvest_toggle.setChecked(False)
+        self.harvest_note_label.setText(notes)
+        self.harvest_note_label.setVisible(bool(notes))

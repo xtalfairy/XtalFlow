@@ -29,7 +29,13 @@ from ..domain.shifter_results import (
     worksheets_a_revision_sent,
 )
 
-__all__ = ["HarvestReview", "HarvestReviewError", "review_harvest"]
+__all__ = [
+    "HarvestReview",
+    "HarvestReviewError",
+    "HarvestSources",
+    "prepare_harvest_review",
+    "read_harvest",
+]
 
 
 class HarvestReviewError(Exception):
@@ -96,22 +102,39 @@ class HarvestReviewPort(Protocol):
     ) -> Sequence[WorksheetExportEvent]: ...
 
 
-def review_harvest(
+@dataclass(frozen=True)
+class HarvestSources:
+    """What the local database says to read, and what to compare it against.
+
+    Separate from reading it because the review database belongs to the thread
+    that opened it - SQLite connections are not shared - while the files and
+    MxLive have to be read off the interface thread, since an unreachable
+    share or server would otherwise freeze the window.
+    """
+
+    experiment_id: str
+    revision_id: str
+    account_username: str
+    expected: tuple[tuple[str, str], ...]
+    # Each file's wells, for telling one of this revision's worksheets from
+    # another experiment's file at the same path.
+    candidates: tuple[tuple[tuple[str, str], ...], ...]
+    paths: tuple[str, ...]
+    payloads: Mapping[tuple[str, str], Mapping[str, Any]]
+
+
+def prepare_harvest_review(
     experiment_id: str,
     store: HarvestReviewPort,
     plan_for_revision: Callable[[str], Any],
-    read_file: Callable[[str], str],
-    labworks: Callable[[str], Sequence[MxLiveLabwork]],
     *,
     username: str,
-) -> HarvestReview:
-    """One experiment's harvest, read from the audit, the files and MxLive.
+) -> HarvestSources:
+    """Everything the local database knows: which revision, and which files.
 
     ``plan_for_revision`` rebuilds the plan from the finalized revision's
     snapshot, so the wells compared against are the ones that were sent, not
-    whatever the plan says now. ``read_file`` raises for a file it cannot read,
-    and that is reported rather than skipped: an unreadable file may be the one
-    that disagrees.
+    whatever the plan says now.
     """
     upload = _succeeded_upload(experiment_id, store)
     if upload.username != username:
@@ -120,34 +143,51 @@ def review_harvest(
             f"only that account's records can be added to."
         )
     plan = plan_for_revision(upload.revision_id)
-    candidates = worksheets_a_revision_sent(plan)
-    expected = expected_wells(_whole_worksheet(plan))
-    payloads = _payloads_by_well(upload)
+    return HarvestSources(
+        experiment_id, upload.revision_id, upload.username,
+        expected_wells(_whole_worksheet(plan)),
+        worksheets_a_revision_sent(plan),
+        _shifter_paths(upload.revision_id, store),
+        _payloads_by_well(upload),
+    )
 
+
+def read_harvest(
+    sources: HarvestSources,
+    read_file: Callable[[str], str],
+    labworks: Callable[[str], Sequence[MxLiveLabwork]],
+) -> HarvestReview:
+    """The files and MxLive, read off the interface thread.
+
+    ``read_file`` raises for a file it cannot read, and that is reported
+    rather than skipped: an unreadable file may be the one that disagrees.
+    """
     files: list[tuple[str, str]] = []
-    sources: list[tuple[str, str]] = []
+    read_states: list[tuple[str, str]] = []
     warnings: list[str] = []
-    for path in _shifter_paths(upload.revision_id, store):
+    for path in sources.paths:
         try:
             text = read_file(path)
         except OSError as error:
-            sources.append((path, "cannot be read"))
+            read_states.append((path, "cannot be read"))
             warnings.append(f"{path} cannot be read ({error.strerror or error}).")
             continue
-        if not file_is_one_of(candidates, text):
+        if not file_is_one_of(sources.candidates, text):
             # Not refused outright: a worksheet saved twice, or one the
             # instrument has not touched yet, both land here.
-            sources.append((path, "not a worksheet of this revision"))
+            read_states.append((path, "not a worksheet of this revision"))
             continue
-        sources.append((path, "read"))
+        read_states.append((path, "read"))
         files.append((path, text))
 
-    report = collect_harvest(expected, tuple(files))
-    records = tuple(labworks(experiment_id))
-    rows = plan_harvest_records(expected, report, records, payloads)
+    report = collect_harvest(sources.expected, tuple(files))
+    records = tuple(labworks(sources.experiment_id))
+    rows = plan_harvest_records(
+        sources.expected, report, records, sources.payloads
+    )
     return HarvestReview(
-        experiment_id, upload.revision_id, upload.username, rows, report,
-        tuple(sources), tuple(warnings) + report.notes,
+        sources.experiment_id, sources.revision_id, sources.account_username,
+        rows, report, tuple(read_states), tuple(warnings) + report.notes,
     )
 
 

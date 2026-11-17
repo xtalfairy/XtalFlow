@@ -114,6 +114,10 @@ class HarvestRow:
     plate_code: str
     well_address: str
     outcome: HarvestOutcome
+    # The condition as MxLive names it, from the payload this experiment was
+    # uploaded with. A table of wells without it says little about a condition
+    # test, where the whole point is which well had which treatment.
+    condition: str = ""
     # What the files say, when they say anything.
     harvest: HarvestedCrystal | None = None
     # What MxLive holds now, when it holds a record.
@@ -158,6 +162,7 @@ def plan_harvest_records(
         rows.append(HarvestRow(
             plate_code, well,
             _outcome(key, harvest, attempted, conflicts, found, payloads),
+            str(payloads.get(key, {}).get("soak_id") or ""),
             harvest,
             found[0] if len(found) == 1 else None,
             _detail(key, harvest, attempted, found),

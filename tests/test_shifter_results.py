@@ -290,3 +290,51 @@ def test_the_results_are_taken_from_whichever_file_the_operator_loaded() -> None
     # The split files hold a third of the wells each, so only their union is
     # this revision's worksheet: no single one of them is.
     assert not file_holds_these_wells(expected, first)
+
+
+def test_a_split_worksheet_is_recognised_as_one_this_revision_sent() -> None:
+    """A condition test harvested at several times goes out as a file per time.
+
+    Each of those holds a fraction of the wells, so the whole-worksheet check
+    rejects every one of them. What identifies a file is being either the
+    whole worksheet or exactly one of its harvest groups.
+    """
+    from xtalflow.domain.condition_test import (
+        Additive,
+        ConditionTestDesign,
+        build_condition_test_plan,
+        new_series,
+    )
+    from xtalflow.domain.shifter_results import (
+        file_is_one_of,
+        worksheets_a_revision_sent,
+    )
+    from xtalflow.domain.worksheets import shifter_worksheet_groups
+
+    dmso = Additive("dmso", "DMSO", Decimal("100"), "CS(=O)C", "LDV-1", "A1")
+    design = ConditionTestDesign(
+        (dmso,), (new_series(dmso.id, (Decimal("10"),), (0, 60), 1),), Decimal("200")
+    )
+    plan = build_condition_test_plan(design, _selection(("A01a", "A02a"), plate="2069"))
+    groups = shifter_worksheet_groups(plan)
+    assert [minute for minute, _rows in groups] == [0, 60]
+
+    candidates = worksheets_a_revision_sent(plan)
+    for _minute, rows in groups:
+        one_group = _file(*(
+            _row(f"{row.plate_row}{int(row.plate_column):02d}{row.subwell}", plate=row.plate_id)
+            for row in rows
+        ))
+        assert not file_holds_these_wells(expected_wells(
+            build_shifter_worksheet_for_selected_wells(plan.selection.wells)
+        ), one_group)
+        assert file_is_one_of(candidates, one_group)
+
+    # The whole worksheet is still recognised: a revision exported before the
+    # split went out that way, and the audit records paths, not their shape.
+    whole = _file(*(_row(well, plate="2069") for well in ("A01a", "A02a")))
+    assert file_is_one_of(candidates, whole)
+
+    # Half a group, or wells from two groups and not a whole worksheet, is not
+    # a file XtalFlow wrote.
+    assert not file_is_one_of(candidates, _file(_row("A01a", plate="2069"), _row("H12a", plate="2069")))

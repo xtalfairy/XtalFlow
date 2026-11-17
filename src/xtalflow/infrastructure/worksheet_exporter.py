@@ -18,7 +18,7 @@ from xtalflow.domain.worksheets import (
     SHIFTER_HEADER,
     build_condition_echo_rounds,
     build_echo_worksheet,
-    build_shifter_worksheet,
+    shifter_worksheet_groups,
 )
 from xtalflow.infrastructure.mounts import is_network_mount
 from xtalflow.scratch import private_directory
@@ -73,17 +73,43 @@ class WorksheetFile:
     rows: tuple[tuple[str, ...], ...]
 
 
+def harvest_suffix(index: int, minutes: int | None) -> str:
+    """_H1_1h00m for the worksheet due an hour after the first dispense.
+
+    The index does the sorting, not the duration: 16h00m would otherwise come
+    before 1h00m in a folder listing. The duration is there to be read at the
+    instrument, in one fixed shape rather than the three ``format_minutes``
+    gives, and it is time since the first dispense, not a clock time.
+
+    The harvest part always begins with H, so it cannot be taken for the
+    _01, _02 a later save of the same experiment adds.
+    """
+    if minutes is None:
+        return ""
+    hours, rest = divmod(minutes, 60)
+    return f"_H{index}_{hours}h{rest:02d}m"
+
+
 def worksheets_for(plan: WorksheetPlan) -> dict[WorksheetKind, tuple[WorksheetFile, ...]]:
     """Every worksheet file a plan needs, by worksheet kind.
 
     Raw crystal plans only harvest, so they need no ECHO dispensing worksheet.
     A condition test dispenses at several times, so it gets one ECHO file per
-    time, suffixed _R1, _R2, ... when there is more than one.
+    time, suffixed _R1, _R2, ... when there is more than one, and harvests at
+    several times, so its SHIFTER worksheet is split the same way.
     """
-    shifter = WorksheetFile(
-        "", SHIFTER_HEADER, tuple(row.values() for row in build_shifter_worksheet(plan))
-    )
-    worksheets = {WorksheetKind.SHIFTER: (shifter,)}
+    worksheets = {
+        WorksheetKind.SHIFTER: tuple(
+            WorksheetFile(
+                harvest_suffix(index, minute),
+                SHIFTER_HEADER,
+                tuple(row.values() for row in rows),
+            )
+            for index, (minute, rows) in enumerate(
+                shifter_worksheet_groups(plan), start=1
+            )
+        )
+    }
     if isinstance(plan, FragmentScreenPlan):
         worksheets[WorksheetKind.ECHO] = (
             WorksheetFile(
@@ -247,8 +273,11 @@ class WorksheetExporter:
         directories: tuple[Path, ...],
     ) -> WorksheetExportResult:
         try:
+            # "" is always among them: a file saved earlier without suffixes
+            # would otherwise be invisible to the stem search, and this save
+            # would take a stem another revision's files already use.
             suffixes = tuple(
-                {item.suffix for files in worksheets.values() for item in files}
+                {""} | {item.suffix for files in worksheets.values() for item in files}
             )
             file_stem = self._available_file_stem(experiment_id, directories, suffixes)
             with self._staging_directory(file_stem) as staging_path:

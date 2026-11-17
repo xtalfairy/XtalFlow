@@ -23,10 +23,17 @@ import re
 from dataclasses import dataclass, field
 from io import StringIO
 
-from .worksheets import SHIFTER_HEADER, ShifterWorksheetRow
+from .worksheets import (
+    SHIFTER_HEADER,
+    ShifterWorksheetRow,
+    build_shifter_worksheet,
+    shifter_worksheet_groups,
+)
 
 __all__ = [
     "SHIFTER_HEADER",
+    "file_is_one_of",
+    "worksheets_a_revision_sent",
     "HarvestedCrystal",
     "HarvestReport",
     "collect_harvest",
@@ -161,6 +168,33 @@ def file_holds_these_wells(
     copy of what we wrote.
     """
     return sorted(wells_in_file(text)) == sorted(expected)
+
+
+def worksheets_a_revision_sent(plan) -> tuple[tuple[tuple[str, str], ...], ...]:
+    """The wells of each file this plan can have gone out as.
+
+    A condition test harvested at several times goes out as one file per
+    harvest time, and a plan exported before that was the rule went out whole.
+    The export audit records paths, not which shape they were, so both are
+    offered and the file itself decides by its content.
+    """
+    whole = expected_wells(build_shifter_worksheet(plan))
+    groups = tuple(
+        expected_wells(rows) for _minute, rows in shifter_worksheet_groups(plan)
+    )
+    return (whole, *(group for group in groups if group != whole))
+
+
+def file_is_one_of(
+    candidates: tuple[tuple[tuple[str, str], ...], ...], text: str
+) -> bool:
+    """Whether a returned file is one of those worksheets, whole or one group.
+
+    Any other set of wells is refused: a file holding some of a group's wells
+    is not a worksheet of ours, and a file holding wells from two groups is a
+    worksheet nobody wrote.
+    """
+    return any(file_holds_these_wells(wells, text) for wells in candidates)
 
 
 @dataclass(frozen=True)

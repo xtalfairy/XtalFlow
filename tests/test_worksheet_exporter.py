@@ -1,6 +1,6 @@
 import csv
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -576,3 +576,191 @@ def test_the_window_draws_its_arrows_from_a_folder_of_its_own(tmp_path, monkeypa
     # opens without its arrows rather than borrowing their file.
     monkeypatch.setattr("xtalflow.scratch.os.geteuid", lambda: -1)
     assert theme._chevron("up", theme.TEXT_MUTED) == ""
+
+
+def test_a_condition_test_harvested_at_several_times_sends_one_shifter_file_each(
+    tmp_path: Path,
+) -> None:
+    """The worksheet has no time column, so the file is where the boundary goes.
+
+    A single file of every well says nothing about where one time point ends,
+    and overrunning that boundary is the one mistake a condition test cannot
+    tolerate. One file per harvest time makes finishing the file the same
+    thing as finishing the time point - which is what the operator at BL-5C
+    did by hand before this existed.
+    """
+    from xtalflow.domain import crystal_selection_from_selected_crystals
+    from xtalflow.domain.condition_test import (
+        Additive,
+        ConditionTestDesign,
+        build_condition_test_plan,
+        new_series,
+    )
+    from xtalflow.domain.worksheets import build_shifter_worksheet
+
+    dmso = Additive("dmso", "DMSO", Decimal("100"), "CS(=O)C", "LDV-1", "A1")
+    design = ConditionTestDesign(
+        (dmso,), (new_series(dmso.id, (Decimal("10"),), (0, 90, 960), 1),), Decimal("200")
+    )
+    now = datetime.now(timezone.utc)
+    crystals = tuple(
+        SelectedCrystal(
+            f"image-{index}", "2069", f"A{index + 1:02d}a",
+            (CrystalTarget(f"target-{index}", Decimal("0"), Decimal("0"),
+                           now + timedelta(seconds=index)),),
+            SWISSCI_MIDI_3_LENS.id,
+        )
+        for index in range(3)
+    )
+    plan = build_condition_test_plan(
+        design, crystal_selection_from_selected_crystals("plan", crystals)
+    )
+    assert [minute for minute, _group in plan.harvest_groups] == [0, 90, 960]
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        instruments=standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
+        ),
+        create_missing_instrument_roots=True,
+    )
+
+    result = WorksheetExporter(settings, "scientist").export(plan, "PreTest-202611-BRD4-01")
+
+    # Named for the time since the first dispense, ordered by the index so a
+    # folder listing is in harvest order rather than alphabetical.
+    for station in ("shifter1", "shifter2"):
+        assert [
+            Path(output.path).name for output in result.outputs
+            if output.instrument == station
+        ] == [
+            "PreTest-202611-BRD4-01_H1_0h00m.csv",
+            "PreTest-202611-BRD4-01_H2_1h30m.csv",
+            "PreTest-202611-BRD4-01_H3_16h00m.csv",
+        ]
+    # Dispensed once, so the ECHO keeps one unsuffixed file.
+    assert [
+        Path(output.path).name for output in result.outputs
+        if output.instrument == "echo650"
+    ] == ["PreTest-202611-BRD4-01.csv"]
+
+    folder = tmp_path / "shifter1" / "scientist"
+    written = []
+    for name in sorted(path.name for path in folder.glob("*.csv")):
+        with (folder / name).open(encoding="utf-8") as stream:
+            rows = list(csv.reader(stream))
+        # Each file carries the header and the wells due at that one time.
+        assert rows[0][0] == ";PlateType"
+        written.append([row[:6] for row in rows[1:]])
+    assert [len(rows) for rows in written] == [1, 1, 1]
+    # Together they are the whole worksheet, each well once.
+    assert [row for rows in written for row in rows] == [
+        list(row.values()[:6]) for row in build_shifter_worksheet(plan)
+    ]
+
+
+def test_a_condition_test_harvested_once_keeps_a_single_shifter_file(tmp_path: Path) -> None:
+    """A suffix that never varies is noise, as with the single ECHO round."""
+    from xtalflow.domain import crystal_selection_from_selected_crystals
+    from xtalflow.domain.condition_test import (
+        Additive,
+        ConditionTestDesign,
+        build_condition_test_plan,
+        new_series,
+    )
+
+    dmso = Additive("dmso", "DMSO", Decimal("100"), "CS(=O)C", "LDV-1", "A1")
+    design = ConditionTestDesign(
+        (dmso,), (new_series(dmso.id, (Decimal("10"),), (60,), 1),), Decimal("200")
+    )
+    crystal = SelectedCrystal(
+        "image", "2069", "A01a",
+        (CrystalTarget("target", Decimal("0"), Decimal("0"), datetime.now(timezone.utc)),),
+        SWISSCI_MIDI_3_LENS.id,
+    )
+    plan = build_condition_test_plan(
+        design, crystal_selection_from_selected_crystals("plan", (crystal,))
+    )
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        instruments=standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
+        ),
+        create_missing_instrument_roots=True,
+    )
+
+    result = WorksheetExporter(settings, "scientist").export(plan, "PreTest-202611-BRD4-02")
+    assert [Path(output.path).name for output in result.outputs] == [
+        "PreTest-202611-BRD4-02.csv"
+    ] * 3
+
+
+def test_a_file_saved_earlier_without_suffixes_is_not_overwritten(tmp_path: Path) -> None:
+    """The stem search only looked for names built from this save's suffixes.
+
+    A save whose files all carry a suffix - several ECHO rounds, or a split
+    harvest - never asked whether the bare name was taken, so it could take a
+    stem an earlier save's files already used. Nothing was overwritten, but
+    two saves then shared a stem and only the audit could tell them apart.
+    """
+    from xtalflow.domain import crystal_selection_from_selected_crystals
+    from xtalflow.domain.condition_test import (
+        Additive,
+        ConditionTestDesign,
+        build_condition_test_plan,
+        new_series,
+    )
+
+    from xtalflow.domain.condition_test import Treatment
+
+    # Two dispense times and two harvest times, so every file of this save
+    # carries a suffix and none of them is the bare name.
+    dmso = Additive("dmso", "DMSO", Decimal("100"), "CS(=O)C", "LDV-1", "A1")
+    glycerol = Additive("gly", "Glycerol", Decimal("50"), "OCC(O)CO", "LDV-1", "B1")
+    design = ConditionTestDesign(
+        (dmso, glycerol),
+        (new_series(
+            glycerol.id, (Decimal("20"),), (0, 60), 1,
+            before=(Treatment(dmso.id, Decimal("5"), 60),),
+        ),),
+        Decimal("200"),
+    )
+    now = datetime.now(timezone.utc)
+    crystals = tuple(
+        SelectedCrystal(
+            f"image-{index}", "2069", f"A{index + 1:02d}a",
+            (CrystalTarget(f"target-{index}", Decimal("0"), Decimal("0"),
+                           now + timedelta(seconds=index)),),
+            SWISSCI_MIDI_3_LENS.id,
+        )
+        for index in range(2)
+    )
+    plan = build_condition_test_plan(
+        design, crystal_selection_from_selected_crystals("plan", crystals)
+    )
+    assert [minute for minute, _group in plan.harvest_groups] == [60, 120]
+    assert len(plan.dispense_rounds) == 2
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        instruments=standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
+        ),
+        create_missing_instrument_roots=True,
+    )
+    # An earlier save of the same experiment, before harvests were split.
+    folder = tmp_path / "shifter1" / "scientist"
+    folder.mkdir(parents=True)
+    (folder / "PreTest-202611-BRD4-03.csv").write_text("earlier\n", encoding="utf-8")
+
+    result = WorksheetExporter(settings, "scientist").export(plan, "PreTest-202611-BRD4-03")
+
+    assert [
+        Path(output.path).name for output in result.outputs
+        if output.instrument == "shifter1"
+    ] == [
+        "PreTest-202611-BRD4-03_01_H1_1h00m.csv",
+        "PreTest-202611-BRD4-03_01_H2_2h00m.csv",
+    ]
+    assert (folder / "PreTest-202611-BRD4-03.csv").read_text(encoding="utf-8") == "earlier\n"

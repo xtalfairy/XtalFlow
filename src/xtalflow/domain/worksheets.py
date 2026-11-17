@@ -195,6 +195,52 @@ def build_shifter_worksheet(
     return build_shifter_worksheet_for_selected_wells(selected_wells)
 
 
+def shifter_worksheet_groups(
+    plan: "FragmentScreenPlan | RawCrystalPlan | ConditionTestPlan",
+) -> tuple[tuple[int | None, tuple[ShifterWorksheetRow, ...]], ...]:
+    """The SHIFTER worksheets a plan needs, with the minute each is due at.
+
+    A condition test harvests each condition at its own time, and the worksheet
+    has no column for that time: a single file of 42 rows says nothing about
+    where one time point ends and the next begins, leaving the boundary to the
+    operator's memory. Overrunning it is the one mistake the experiment cannot
+    tolerate, and it leaves no trace. One file per harvest time instead makes
+    "everything in this list is due now" true of the file, and finishing the
+    file finishes the time point.
+
+    A plan with a single harvest time stays one worksheet, as the ECHO rounds
+    do: a suffix that never varies is noise.
+
+    The minute is ``None`` for that single worksheet, and the harvest minute
+    for each of the others.
+    """
+    whole = build_shifter_worksheet(plan)
+    if not isinstance(plan, ConditionTestPlan) or len(plan.harvest_groups) < 2:
+        return ((None, whole),)
+    groups = tuple(
+        (
+            minute,
+            build_shifter_worksheet_for_selected_wells(
+                tuple(assignment.selected_well for assignment in group)
+            ),
+        )
+        for minute, group in plan.harvest_groups
+    )
+    split = [row for _minute, rows in groups for row in rows]
+    # Checked rather than trusted: a well in no file would be left on the
+    # plate, and a well in two would be picked twice, the second pick on an
+    # empty drop. Both are invisible until somebody counts the rows.
+    if sorted(split, key=_shifter_key) != sorted(whole, key=_shifter_key):
+        raise ValueError(
+            "the harvest groups do not hold every well of the plan exactly once"
+        )
+    return groups
+
+
+def _shifter_key(row: ShifterWorksheetRow) -> tuple[str, ...]:
+    return (row.plate_id, row.plate_row, f"{int(row.plate_column):02d}", row.subwell)
+
+
 def build_shifter_worksheet_for_selected_wells(
     selected_wells: tuple[SelectedWell, ...],
 ) -> tuple[ShifterWorksheetRow, ...]:

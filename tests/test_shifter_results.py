@@ -180,7 +180,8 @@ def test_one_well_reported_two_ways_stops_the_whole_recording() -> None:
 
     assert len(report.harvested) == 2
     (conflict,) = report.conflicts
-    assert conflict == (
+    assert conflict.key == ("1070", "A01a")
+    assert str(conflict) == (
         "1070 A01a · PreTest.csv says 2026-11-17 09:12:05.0 5C-0029 position 1 · "
         "PreTest.csv says 2026-11-17 11:40:00.0 5C-0031 position 4"
     )

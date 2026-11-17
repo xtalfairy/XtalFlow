@@ -32,6 +32,7 @@ from .worksheets import (
 
 __all__ = [
     "SHIFTER_HEADER",
+    "HarvestConflict",
     "WRITTEN_COLUMNS",
     "file_is_one_of",
     "worksheets_a_revision_sent",
@@ -95,6 +96,27 @@ class HarvestedCrystal:
 
 
 @dataclass(frozen=True)
+class HarvestConflict:
+    """Two files reporting the same well differently.
+
+    The key is here because every caller needs it - the sentence is for the
+    person, and reading a well address back out of a sentence is the kind of
+    thing that works until somebody rewords the sentence.
+    """
+
+    plate_code: str
+    well_address: str
+    message: str
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return (self.plate_code, self.well_address)
+
+    def __str__(self) -> str:
+        return self.message
+
+
+@dataclass(frozen=True)
 class HarvestReport:
     """What a set of returned worksheets says about one revision's crystals."""
 
@@ -105,7 +127,7 @@ class HarvestReport:
     # Harvest rows for wells this revision never sent. Never acted on.
     unexpected: tuple[str, ...] = ()
     # One well reported twice with different values, so neither can be trusted.
-    conflicts: tuple[str, ...] = ()
+    conflicts: tuple[HarvestConflict, ...] = ()
     notes: tuple[str, ...] = field(default=())
     # Reached and lost: picked, with no puck to record it against.
     attempted: tuple[HarvestedCrystal, ...] = ()
@@ -290,12 +312,13 @@ def collect_harvest(
             if held is None:
                 seen[row.key] = row
             elif not held.same_harvest_as(row):
-                conflicts.append(
+                conflicts.append(HarvestConflict(
+                    row.plate_code, row.well_address,
                     f"{row.plate_code} {row.well_address} · "
                     f"{_name(held.source)} says {held.harvest_time} {held.puck_name}"
                     f"{_position(held)} · {_name(source)} says {row.harvest_time} "
-                    f"{row.puck_name}{_position(row)}"
-                )
+                    f"{row.puck_name}{_position(row)}",
+                ))
     return HarvestReport(
         tuple(seen[key] for key in wanted if key in seen),
         tuple(f"{plate} {well}" for plate, well in wanted if (plate, well) not in seen),

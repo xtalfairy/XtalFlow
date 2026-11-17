@@ -1,0 +1,238 @@
+"""What a harvest read from the SHIFTER would mean for each MxLive record.
+
+This decides nothing about sending. It answers, for one crystal at a time,
+"may this be recorded, and if not, why not" - so a person can look at the whole
+experiment before anything irreversible happens.
+
+Every refusal here is about a property of MxLive's one write endpoint, read
+from its source on 2026-11-17:
+
+- it is an upsert. A call that matches no record **creates** one
+  (``get_or_create``), and MxLive has no delete. So a well the revision never
+  sent must never be sent, and neither must a well whose record has gone.
+- its update filter leaves out ``plate_code`` although its lookup includes it.
+  Two records sharing an experiment, protein and well address are both written
+  by one call, so an experiment that sends one address from two plates is
+  refused whole.
+- it builds its field dict with ``info.get(...)`` per column, so a column that
+  is not sent becomes ``NULL``. Recording a harvest therefore rewrites the
+  whole record, and every field we do not carry forward is destroyed.
+- it validates nothing, and ``update`` bypasses the model's validation, so a
+  value too long for its column is the database's problem. ``puck_name`` is
+  ``CharField(max_length=10)`` and the SHIFTER's destination name is free
+  text, so a long one is refused here rather than silently cut there.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Mapping, Sequence
+
+from .mxlive import MxLiveLabwork
+from .shifter_results import HarvestReport, HarvestedCrystal
+
+__all__ = [
+    "HarvestOutcome",
+    "WRITTEN_BLIND",
+    "HarvestRow",
+    "PUCK_NAME_LIMIT",
+    "plan_harvest_records",
+]
+
+PUCK_NAME_LIMIT = 10
+"""MxLive's ``Labwork.puck_name`` is ``CharField(max_length=10)``."""
+
+WRITTEN_BLIND = (
+    "MxLive never returns a record's status, so recording a harvest sets it "
+    "to Active. A record somebody archived or put in the trash would come "
+    "back as Active, and nothing here can see that it had changed.",
+    "MxLive never returns a record's attachment either, and recording a "
+    "harvest replaces it.",
+)
+"""What a harvest write changes without being able to read it first.
+
+MxLive's write endpoint builds its column dict with ``info.get(...)`` per
+column, so a column that is not sent becomes ``NULL``: every field has to be
+carried forward. But its read serializer (``Labwork.json_dict``) returns 21
+columns and leaves out ``status`` and ``attachment``, and no other endpoint
+returns them. So those two cannot be carried forward - only overwritten with
+what XtalFlow sends on an upload, which is ``5`` (Active) and the text
+``"null"``.
+
+This is the one thing in the harvest write that cannot be made safe by
+checking first, so it is said out loud in the preview instead. The same is
+already true of every upload; a harvest write is just the first time it
+happens after beamline staff have had the record in their hands.
+"""
+
+
+class HarvestOutcome(Enum):
+    """What would happen to one crystal's record, in the person's words."""
+
+    WILL_RECORD = "will be recorded"
+    ALREADY_RECORDED = "already on MxLive"
+    DIFFERS_ON_MXLIVE = "on MxLive with different values; not changed"
+    NOT_PICKED = "not picked yet"
+    PICK_FAILED = "pick failed; not sent"
+    FILES_DISAGREE = "the returned files disagree about this well"
+    NO_RECORD = "no record on MxLive; nothing would be sent"
+    SEVERAL_RECORDS = "more than one record on MxLive"
+    NO_PAYLOAD = "this experiment's upload is not in the local audit"
+    PUCK_NAME_TOO_LONG = "the puck name is too long for MxLive"
+
+    @property
+    def is_sendable(self) -> bool:
+        return self is HarvestOutcome.WILL_RECORD
+
+    @property
+    def needs_attention(self) -> bool:
+        """Whether something is wrong, as opposed to simply not ready.
+
+        A crystal nobody has reached yet, and a pick that failed, are both the
+        normal state of a plate mid-session. The rest are not.
+        """
+        return self not in (
+            HarvestOutcome.WILL_RECORD,
+            HarvestOutcome.ALREADY_RECORDED,
+            HarvestOutcome.NOT_PICKED,
+            HarvestOutcome.PICK_FAILED,
+        )
+
+
+@dataclass(frozen=True)
+class HarvestRow:
+    """One crystal, as the preview shows it."""
+
+    plate_code: str
+    well_address: str
+    outcome: HarvestOutcome
+    # What the files say, when they say anything.
+    harvest: HarvestedCrystal | None = None
+    # What MxLive holds now, when it holds a record.
+    on_mxlive: MxLiveLabwork | None = None
+    detail: str = ""
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return (self.plate_code, self.well_address)
+
+    def describe(self) -> str:
+        line = f"{self.plate_code} {self.well_address}: {self.outcome.value}"
+        return f"{line} ({self.detail})" if self.detail else line
+
+
+def plan_harvest_records(
+    expected: Sequence[tuple[str, str]],
+    report: HarvestReport,
+    records: Sequence[MxLiveLabwork],
+    payloads: Mapping[tuple[str, str], Mapping[str, Any]],
+) -> tuple[HarvestRow, ...]:
+    """One row per well the revision sent, in the order it sent them.
+
+    ``expected`` comes from the uploaded revision rather than from the files,
+    so a well whose row never came back is still listed - "not picked yet" is
+    information, and a plate half harvested is the normal state of a plate
+    mid-session. Wells the files hold that the revision did not send are not
+    rows here at all; they are in ``report.unexpected`` and they refuse the
+    whole read, because sending one would create a record nobody can delete.
+    """
+    harvested = {row.key: row for row in report.harvested}
+    attempted = {row.key: row for row in report.attempted}
+    conflicts = {row.key for row in report.conflicts}
+    rows: list[HarvestRow] = []
+    for key in expected:
+        plate_code, well = key
+        found = [
+            record for record in records
+            if (record.plate_code or "", record.plate_well or "") == key
+        ]
+        harvest = harvested.get(key)
+        rows.append(HarvestRow(
+            plate_code, well,
+            _outcome(key, harvest, attempted, conflicts, found, payloads),
+            harvest,
+            found[0] if len(found) == 1 else None,
+            _detail(key, harvest, attempted, found),
+        ))
+    return tuple(rows)
+
+
+def _outcome(
+    key: tuple[str, str],
+    harvest: HarvestedCrystal | None,
+    attempted: Mapping[tuple[str, str], HarvestedCrystal],
+    conflicts: set[tuple[str, str]],
+    found: Sequence[MxLiveLabwork],
+    payloads: Mapping[tuple[str, str], Mapping[str, Any]],
+) -> HarvestOutcome:
+    # Asked in the order the person would ask it: is there anything to say
+    # about this well, and only then may it be said.
+    if key in conflicts:
+        return HarvestOutcome.FILES_DISAGREE
+    if harvest is None:
+        if key in attempted:
+            return HarvestOutcome.PICK_FAILED
+        return HarvestOutcome.NOT_PICKED
+    if len(found) > 1:
+        return HarvestOutcome.SEVERAL_RECORDS
+    if not found:
+        return HarvestOutcome.NO_RECORD
+    record = found[0]
+    if _has_harvest(record):
+        if _same_harvest(record, harvest):
+            return HarvestOutcome.ALREADY_RECORDED
+        return HarvestOutcome.DIFFERS_ON_MXLIVE
+    if key not in payloads:
+        return HarvestOutcome.NO_PAYLOAD
+    if len(harvest.puck_name) > PUCK_NAME_LIMIT:
+        return HarvestOutcome.PUCK_NAME_TOO_LONG
+    return HarvestOutcome.WILL_RECORD
+
+
+def _has_harvest(record: MxLiveLabwork) -> bool:
+    """Whether MxLive already holds a harvest for this record.
+
+    An unharvested record comes back with these as ``null``, not as empty
+    text, and a record with a time but no puck would be a half-written one
+    somebody needs to look at, so either counts as filled.
+    """
+    return bool(record.harvest_time) or bool(record.puck_name)
+
+
+def _same_harvest(record: MxLiveLabwork, harvest: HarvestedCrystal) -> bool:
+    """Whether what MxLive holds is what this file says.
+
+    ``harvest_time`` is a ``CharField`` that MxLive neither parses nor
+    reformats - a 2025 record reads back as ``2025-04-03 18:00:22.8``, the
+    SHIFTER's own string - so times compare as text. ``puck_nohole`` is an
+    ``IntegerField`` and comes back as a number, so the position compares as
+    text on both sides after the number is made text again.
+    """
+    return (
+        (record.harvest_time or "") == harvest.harvest_time
+        and (record.puck_name or "") == harvest.puck_name
+        and _position_text(record) == harvest.puck_position
+    )
+
+
+def _position_text(record: MxLiveLabwork) -> str:
+    value = record.raw.get("puck_nohole")
+    return "" if value is None else str(value)
+
+
+def _detail(
+    key: tuple[str, str],
+    harvest: HarvestedCrystal | None,
+    attempted: Mapping[tuple[str, str], HarvestedCrystal],
+    found: Sequence[MxLiveLabwork],
+) -> str:
+    if harvest is None:
+        failed = attempted.get(key)
+        # The instrument's own words, shown and never sent.
+        return failed.comment if failed else ""
+    if len(found) > 1:
+        return f"{len(found)} records share this well address"
+    if len(harvest.puck_name) > PUCK_NAME_LIMIT:
+        return f"{harvest.puck_name!r} is {len(harvest.puck_name)} characters"
+    return ""

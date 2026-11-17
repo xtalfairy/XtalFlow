@@ -338,3 +338,45 @@ def test_a_split_worksheet_is_recognised_as_one_this_revision_sent() -> None:
     # Half a group, or wells from two groups and not a whole worksheet, is not
     # a file XtalFlow wrote.
     assert not file_is_one_of(candidates, _file(_row("A01a", plate="2069"), _row("H12a", plate="2069")))
+
+
+# A real pre-harvest row from this beamline's 2022 files: the legacy exporter
+# wrote only the six columns it filled, where XtalFlow writes all fifteen.
+REAL_LEGACY_UNPICKED = "SwissCI-MRC-3d,768,AM,A,1,a"
+REAL_LEGACY_PICKED = (
+    "SwissCI-MRC-3d,768,AM,A,2,c,OK: No comment:No comment,XTal-1,"
+    "2022-03-15 13:00:15.4,2022-03-15 13:02:31.0,00:02:15.5,5C-0006,1,,"
+)
+
+
+def test_a_row_that_stops_after_the_columns_we_write_is_read_as_not_picked() -> None:
+    """A short row says nothing happened to that well, not that the file is bad.
+
+    My first rule was "every line has exactly fifteen fields", and the 2022
+    files on this beamline break it: the legacy exporter stopped after the six
+    columns it filled. Refusing the whole file for that would throw away the
+    harvest in the rows the instrument did fill.
+    """
+    from xtalflow.domain.shifter_results import read_shifter_results
+
+    read = read_shifter_results(
+        f"{REAL_LEGACY_UNPICKED}\r\n{REAL_LEGACY_PICKED}\r\n", "legacy"
+    )
+
+    assert [(row.plate_code, row.well_address, row.puck_name, row.puck_position)
+            for row in read.harvested] == [("768", "A02c", "5C-0006", "1")]
+    assert read.notes == ("legacy: 1 row not picked yet.",)
+
+
+def test_a_row_wider_than_the_header_refuses_the_file() -> None:
+    """A layout nobody here has seen is not guessed at.
+
+    Reading it positionally would put somebody else's column where we expect a
+    puck name or a time, and that would be recorded on MxLive as fact.
+    """
+    from xtalflow.domain.shifter_results import read_shifter_results
+
+    read = read_shifter_results(f"{REAL_LEGACY_PICKED},EXTRA\r\n", "wider")
+
+    assert read.harvested == ()
+    assert read.notes == ("wider: not a worksheet XtalFlow wrote.",)

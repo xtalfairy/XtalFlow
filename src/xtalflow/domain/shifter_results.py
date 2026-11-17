@@ -32,6 +32,7 @@ from .worksheets import (
 
 __all__ = [
     "SHIFTER_HEADER",
+    "WRITTEN_COLUMNS",
     "file_is_one_of",
     "worksheets_a_revision_sent",
     "HarvestedCrystal",
@@ -168,6 +169,13 @@ def file_holds_these_wells(
     copy of what we wrote.
     """
     return sorted(wells_in_file(text)) == sorted(expected)
+
+
+WRITTEN_COLUMNS = (
+    "PlateType", "PlateID", "LocationShifter", "PlateRow", "PlateColumn",
+    "PositionSubWell",
+)
+"""The columns XtalFlow fills; the rest go out empty for the instrument."""
 
 
 def worksheets_a_revision_sent(plan) -> tuple[tuple[tuple[str, str], ...], ...]:
@@ -332,21 +340,36 @@ def _rows(text: str) -> _Read:
 
     The SHIFTER rewrites our file in place and **drops the header line**, so a
     returned file begins with data. The names are then taken from the order
-    XtalFlow wrote, and only from a line that has exactly as many fields: a
-    file with a different shape is not read at all rather than read crookedly,
-    because the fields are a puck name and a time and mistaking one for the
-    other would be recorded as fact.
+    XtalFlow wrote.
+
+    A row is read only if it has at least the columns XtalFlow writes and no
+    more than the header's, because the fields are a puck name and a time and
+    mistaking one for the other would be recorded as fact. A row wider than
+    the header is a layout nobody here has seen, so the file is refused rather
+    than read crookedly.
+
+    A short row is padded, which leaves its harvest columns empty and so
+    reports the well as not picked. Files from 2022 on this beamline hold
+    their unharvested rows that way, six fields and nothing after
+    ``SwissCI-MRC-3d,768,AM,A,1,a``, and a file where the instrument filled
+    only the rows it picked would otherwise be refused whole and its harvest
+    lost.
     """
     names = [name.lstrip(";") for name in SHIFTER_HEADER]
+    authored = len(WRITTEN_COLUMNS)
     reader = csv.reader(StringIO(text))
     rows = [row for row in reader if any(cell.strip() for cell in row)]
     if not rows:
         return _Read([])
     if [cell.strip().lstrip(";") for cell in rows[0]][: len(names)] == names:
-        return _Read([dict(zip(names, row)) for row in rows[1:]], 2)
-    if all(len(row) == len(names) for row in rows):
-        return _Read([dict(zip(names, row)) for row in rows])
+        return _Read([_named(names, row) for row in rows[1:]], 2)
+    if all(authored <= len(row) <= len(names) for row in rows):
+        return _Read([_named(names, row) for row in rows])
     return _Read([])
+
+
+def _named(names: list[str], row: list[str]) -> dict[str, str]:
+    return dict(zip(names, (*row, *[""] * (len(names) - len(row)))))
 
 
 def _cell(row: dict[str, str], column: str) -> str:

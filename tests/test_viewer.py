@@ -4409,8 +4409,9 @@ def test_a_renamed_solvent_reaches_mxlive_under_the_name_that_was_typed(
     editor.add_series_button.click()
     assert editor.design.additives[1].name == "Solvent 2"
     assert editor.finalize_warnings()[0].startswith("Still named Solvent 2.")
+    # Its own plate and the calibration for glycols, so only the name is at issue.
     editor.update_additive(
-        source_plate="SOLVENT-09", source_well="a2", source_plate_type="384PP_DMSO2"
+        source_plate="SOLVENT-10", source_well="a1", source_plate_type="384PP_AQ_CP"
     )
 
     # Typed, not entered: no Enter, and the focus stays in the field.

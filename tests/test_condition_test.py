@@ -7,6 +7,7 @@ import pytest
 from xtalflow.domain import SWISSCI_MIDI_3_LENS, crystal_selection_from_selected_crystals
 from xtalflow.domain.condition_test import (
     Additive,
+    HUNDRED,
     ConditionTestDesign,
     Treatment,
     build_condition_test_plan,
@@ -385,6 +386,71 @@ def test_transfers_continue_in_the_next_source_well_and_shortages_name_the_wells
     plan = build_condition_test_plan(design, _selection(6))
     ((_minute, rows),) = build_condition_echo_rounds(plan)
     assert [row.source_well for row in rows] == ["A1"] * 4 + ["A2"] * 2
+
+
+def test_a_solvent_on_the_dmso_calibration_is_warned_about_without_refusing_the_plan() -> None:
+    """What happened to PreTest-202611-TCTP-01: ethylene glycol set up as DMSO.
+
+    The ECHO dispenses by fluid class, so the volume it actually moves is not
+    the planned one. It is a warning and not a refusal: only the person at the
+    bench knows what is in the well, and a refusal would stop a run.
+    """
+    from xtalflow.domain.condition_test import additive_transfers, source_statuses
+
+    dmso = Additive("d", "DMSO", HUNDRED, "CS(=O)C", "source01", "O24", "384PP_DMSO2")
+    glycol = Additive("e", "Solvent 2", HUNDRED, "OCCO", "source01", "N24", "384PP_DMSO2")
+    design = ConditionTestDesign(
+        (dmso, glycol),
+        (
+            new_series(dmso.id, (Decimal("5"),), (0,), 1),
+            new_series(glycol.id, (Decimal("3"),), (0,), 1),
+        ),
+        Decimal("600"),
+    )
+    statuses = source_statuses(design, additive_transfers(design), require_plate_type=True)
+    assert [status.problem for status in statuses] == [None, None]
+    assert statuses[0].warnings == ()
+    (warning,) = statuses[1].warnings
+    assert warning.startswith(
+        "Solvent 2 is not DMSO, and 384PP · DMSO is calibrated for DMSO, 70–100 %."
+    )
+    assert "384PP · crystallization reagents" in warning
+    # The plan is still built; the volumes were never in doubt.
+    plan = build_condition_test_plan(design, _selection(2))
+    assert len(plan.assignments) == 2
+
+
+def test_one_plate_asked_for_two_calibrations_is_warned_about_on_both_solvents() -> None:
+    """The worksheet names the plate, not the fluid, so the plate gets one calibration."""
+    from xtalflow.domain.condition_test import additive_transfers, source_statuses
+
+    dmso = Additive("d", "DMSO", HUNDRED, "CS(=O)C", "source01", "O24", "384PP_DMSO2")
+    glycol = Additive("e", "Glycerol", HUNDRED, "OCC(O)CO", "source01", "N24", "384PP_AQ_CP")
+    design = ConditionTestDesign(
+        (dmso, glycol),
+        (
+            new_series(dmso.id, (Decimal("5"),), (0,), 1),
+            new_series(glycol.id, (Decimal("3"),), (0,), 1),
+        ),
+        Decimal("600"),
+    )
+    statuses = source_statuses(design, additive_transfers(design), require_plate_type=True)
+    assert [status.problem for status in statuses] == [None, None]
+    for status in statuses:
+        (warning,) = status.warnings
+        assert warning == (
+            "source01 is asked for 2 calibrations (384PP · DMSO, 384PP · crystallization "
+            "reagents). The worksheet names the plate, not the fluid, so the ECHO is set "
+            "to one of them for the whole plate; put the others on their own plate."
+        )
+
+    # On their own plates, neither is warned about: the glycol is on the
+    # calibration for glycols, and DMSO on the DMSO one.
+    apart = replace(design, additives=(dmso, replace(glycol, source_plate="source02")))
+    assert all(
+        not status.warnings
+        for status in source_statuses(apart, additive_transfers(apart), require_plate_type=True)
+    )
 
 
 def test_source_wells_must_be_on_the_plate_and_not_shared() -> None:

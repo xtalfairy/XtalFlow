@@ -1832,20 +1832,26 @@ class ConditionTestEditor(PlanEditorBase):
             status = next((item for item in statuses if item.additive.id == additive.id), None)
         self._source_problem = status.problem if status is not None else None
         self._render_preparation(transfers, statuses)
+        # unfinished: the source still needs input. A warning is about a choice
+        # already made, so it is said without marking the fields as unfilled.
         if self._source_well_error:
-            message, attention = self._source_well_error, True
+            message, attention, unfinished = self._source_well_error, True, True
         elif missing:
             names = ", ".join(missing[:-1]) + (" and " if len(missing) > 1 else "") + missing[-1]
-            message, attention = f"Enter the source {names}; the ECHO worksheet needs them.", True
+            message, attention, unfinished = (
+                f"Enter the source {names}; the ECHO worksheet needs them.", True, True
+            )
             if "plate" in missing and not self._naming_plate:
                 message += self._shared_plate_hint()
         elif status is not None and status.problem:
-            message, attention = status.problem, True
+            message, attention, unfinished = status.problem, True, True
+        elif status is not None and status.warnings:
+            message, attention, unfinished = " ".join(status.warnings), True, False
         else:
             # Ready: which wells to fill, and with how much, is listed under Preparation.
-            message, attention = "", False
+            message, attention, unfinished = "", False, False
         _set_flag(self.source_message_label, "attention", attention)
-        _set_flag(self.source_box, "missing", attention)
+        _set_flag(self.source_box, "missing", unfinished)
         _show_message(self.source_message_label, message)
         rule_ready = bool(
             additive.source_wells and additive.source_plate.strip() and additive.source_plate_type
@@ -2305,16 +2311,31 @@ class ConditionTestEditor(PlanEditorBase):
 
     def finalize_warnings(self) -> tuple[str, ...]:
         """Default names, which say nothing about what was actually soaked."""
+        warnings = []
         unnamed = tuple(
             additive.name for additive in self.design.additives
             if _is_default_name(additive.name, self._noun)
         )
-        if not unnamed:
+        if unnamed:
+            warnings.append(
+                f"Still named {', '.join(unnamed)}. That name goes to MxLive with every "
+                f"crystal, e.g. {self._example_soak_id()}."
+            )
+        warnings.extend(self._source_warnings())
+        return tuple(warnings)
+
+    def _source_warnings(self) -> tuple[str, ...]:
+        """Calibrations that do not suit the fluid, or a plate asked for two of them."""
+        try:
+            transfers = additive_transfers(self.design)
+        except ValueError:
             return ()
-        return (
-            f"Still named {', '.join(unnamed)}. That name goes to MxLive with every "
-            f"crystal, e.g. {self._example_soak_id()}.",
-        )
+        seen: list[str] = []
+        for status in source_statuses(self.design, transfers, True, self._records_for_checks()):
+            for warning in status.warnings:
+                if warning not in seen:
+                    seen.append(warning)
+        return tuple(seen)
 
     def _example_soak_id(self) -> str:
         """What one crystal will be called in MxLive, as the records will have it."""

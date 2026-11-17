@@ -995,3 +995,26 @@ def test_an_addition_spread_unevenly_over_positions_is_named_in_review() -> None
     assert [editor.echo_table.item(row, 3).text() for row in range(editor.echo_table.rowCount())] == [
         "12.5", "10.0", "10.0"
     ]
+
+
+def test_a_solvent_that_is_not_dmso_is_warned_about_on_the_dmso_calibration() -> None:
+    """PreTest-202611-TCTP-01 sent ethylene glycol out on the DMSO calibration.
+
+    The fields are filled in and the plan is valid, so this is said without
+    marking anything as missing - it is a choice to look at again, not a gap.
+    """
+    editor = _editor(percents=("0", "10"), times=(0,), replicates=1)
+    assert editor.source_message_label.text() == ""
+
+    editor.update_additive(name="Ethylene glycol", smiles="OCCO")
+    message = editor.source_message_label.text()
+    assert message.startswith("Ethylene glycol is not DMSO, and 384PP · DMSO is calibrated")
+    assert "384PP · crystallization reagents" in message
+    assert editor.source_message_label.property("attention")
+    assert not editor.source_box.property("missing")
+    assert editor.finalize_warnings() == (message,)
+
+    # The calibration for glycols and other osmotic solutions settles it.
+    editor.update_additive(source_plate_type="384PP_AQ_CP")
+    assert editor.source_message_label.text() == ""
+    assert editor.finalize_warnings() == ()

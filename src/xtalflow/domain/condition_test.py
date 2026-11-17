@@ -24,7 +24,9 @@ from .crystal_selection import (
 )
 from .crystal_workflow import AssignmentOrder
 from .echo_source import (
+    SOURCE_PLATE_TYPES,
     USED,
+    calibration_warning,
     PlateRecordEntry,
     SourceAllocation,
     allocate_source_wells,
@@ -575,6 +577,9 @@ class SourceStatus:
     additive: Additive
     allocation: SourceAllocation | None
     problem: str | None
+    # Worth seeing but not worth refusing a plan for: a fluid on a calibration
+    # meant for another one, or two calibrations asked of a single plate.
+    warnings: tuple[str, ...] = ()
 
 
 def source_statuses(
@@ -592,6 +597,14 @@ def source_statuses(
     """
     statuses = []
     taken: dict[tuple[str, str], str] = {}
+    # The ECHO worksheet names the source plate, not the fluid in it, so the
+    # operator sets one calibration for a whole plate.
+    calibrations: dict[str, set[str]] = {}
+    for item in design.additives:
+        if item.id in transfers and item.source_plate.strip() and item.source_plate_type:
+            calibrations.setdefault(item.source_plate.strip(), set()).add(
+                item.source_plate_type
+            )
     # Every well any additive names, so suggestions never point at one already in use.
     occupied = {
         (item.source_plate.strip(), well.strip().upper())
@@ -654,7 +667,22 @@ def source_statuses(
             )
         else:
             problem = None
-        statuses.append(SourceStatus(additive, allocation, problem))
+        warnings = []
+        mismatch = calibration_warning(name, additive.smiles, plate_type)
+        if mismatch is not None:
+            warnings.append(mismatch)
+        # Named in the order the plate type field offers them.
+        mixed = tuple(
+            item for item in SOURCE_PLATE_TYPES if item.id in calibrations.get(plate, ())
+        )
+        if len(mixed) > 1:
+            labels = ", ".join(item.label for item in mixed)
+            warnings.append(
+                f"{plate} is asked for {len(mixed)} calibrations ({labels}). The "
+                "worksheet names the plate, not the fluid, so the ECHO is set to one "
+                "of them for the whole plate; put the others on their own plate."
+            )
+        statuses.append(SourceStatus(additive, allocation, problem, tuple(warnings)))
     return tuple(statuses)
 
 

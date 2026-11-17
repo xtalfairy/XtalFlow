@@ -75,6 +75,47 @@ SOURCE_PLATE_TYPES = (
 )
 
 
+# The calibrations the SOP lists for one named fluid. The ECHO moves liquid by
+# the fluid class it is calibrated for, so what it actually dispenses from a
+# well of ethylene glycol set up as DMSO is not the volume asked for.
+DMSO_CALIBRATIONS = ("384PP_DMSO2", "1536LDV_DMSO")
+_DMSO_NAME = re.compile(r"dmso|dimethyl\s*sulfox[iy]de", re.IGNORECASE)
+_DMSO_SMILES = {"CS(=O)C", "CS(C)=O", "O=S(C)C", "C[S](=O)C"}
+
+
+def looks_like_dmso(name: str, smiles: str = "") -> bool:
+    """Whether this additive is the DMSO those calibrations are for.
+
+    Either the name or the structure saying so is enough: a DMSO stock is
+    often named for what is dissolved in it, and a name like "90 % DMSO" has
+    no SMILES of its own.
+    """
+    if smiles.replace(" ", "") in _DMSO_SMILES and smiles.strip():
+        return True
+    return bool(_DMSO_NAME.search(name))
+
+
+def calibration_warning(
+    name: str, smiles: str, plate_type: SourcePlateType
+) -> str | None:
+    """Why this calibration does not suit this fluid, if it does not.
+
+    Only the DMSO calibrations are checked. They are the ones named for a
+    single fluid; the aqueous ones each cover a range of solutions wide
+    enough that an additive cannot be ruled out of them from its name.
+    """
+    if plate_type.id not in DMSO_CALIBRATIONS or looks_like_dmso(name, smiles):
+        return None
+    options = ", ".join(
+        item.label for item in SOURCE_PLATE_TYPES if item.id not in DMSO_CALIBRATIONS
+    )
+    return (
+        f"{name} is not DMSO, and {plate_type.label} is calibrated for "
+        f"{plate_type.fluids}. The ECHO dispenses by fluid class, so what it moves "
+        f"can differ from the volume planned. Calibrations for other fluids: {options}."
+    )
+
+
 def source_plate_type(type_id: str) -> SourcePlateType:
     found = next((item for item in SOURCE_PLATE_TYPES if item.id == type_id), None)
     if found is None:

@@ -67,6 +67,7 @@ from xtalflow.application.worksheet_export import (
     SUCCEEDED as WORKSHEETS_SUCCEEDED,
     WorksheetExportService,
 )
+from xtalflow.domain.labwork import mxlive_soak_volume
 from xtalflow.application.labwork_upload import (
     FAILED,
     PARTIAL,
@@ -233,6 +234,31 @@ def _well_address(summary, image_sets) -> str:
         )
     )
 
+
+
+def _rounded_dose_note(records) -> str:
+    """What MxLive will hold for a dose it cannot hold exactly.
+
+    ``soak_vol`` is a whole number of nanolitres there, and ECHO transfers move
+    in 2.5 nL steps, so half nanolitres are ordinary. Nothing else on the
+    record carries the volume, so this is the last place the difference can be
+    seen by the person who knows what was dispensed.
+    """
+    rounded = [
+        record for record in records
+        if getattr(record, "soak_volume_is_rounded", False)
+    ]
+    if not rounded:
+        return ""
+    first = rounded[0]
+    rest = len(rounded) - 1
+    more = f", and {rest} more" if rest else ""
+    return (
+        f"{theme.SYMBOL_ATTENTION} MxLive holds whole nanolitres, so "
+        f"{first.soak_volume_nl} nL is recorded as "
+        f"{mxlive_soak_volume(first.soak_volume_nl)}{more}. "
+        f"The worksheets keep the exact dose.\n\n"
+    )
 
 
 def _soak_id_examples(records, shown: int = 3) -> str:
@@ -1931,6 +1957,7 @@ class ExperimentCoordinator:
             "Upload finalized revision",
             f"Upload {len(records)} records for {revision.experiment_id}?\n\n"
             f"Named in MxLive: {_soak_id_examples(records)}\n\n"
+            f"{_rounded_dose_note(records)}"
             f"Account: {account.username}\n"
             f"API project_id: {account.account_id}\n"
             f"Endpoint: {endpoint}",

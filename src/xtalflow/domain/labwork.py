@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from .condition_test import ConditionTestPlan
@@ -15,6 +15,29 @@ LABWORK_COLUMNS = (
     "plate_well", "plate_x", "plate_y", "plate_imgpath", "soak_id",
     "soak_smile", "project_id",
 )
+
+
+def mxlive_soak_volume(nanolitres: Decimal) -> int:
+    """The dose as MxLive can hold it: whole nanolitres, rounded half up.
+
+    ``Labwork.soak_vol`` is declared ``IntegerField``, and MxLive validates
+    nothing - its write path calls ``update()``, which bypasses the model - so
+    a value the field cannot hold is the database's problem. Django prepares an
+    integer field with ``int(value)``, which truncates towards zero, so 32.5
+    would be stored as 32 and 2.5 as 2: always short, never over, and -20% for
+    one ECHO step.
+
+    ECHO transfers move in 2.5 nL steps, so half nanolitres are the normal
+    case, not an edge one. Sending a whole number chosen here means the stored
+    value is ours and the same on every deployment, rather than depending on
+    whether a column is integer or float on the day. Rounding is half up
+    because Python's ``round`` is half to even, which would send 2.5 down to 2
+    and leave the worst case exactly as it was.
+
+    Nothing else carries the exact dose - ``soak_id`` holds the condition, not
+    the volume - so where it matters the difference is shown before sending.
+    """
+    return int(Decimal(nanolitres).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 def _mxlive_plate_type(plate_format_id: str, plate_format_version: int) -> str:
@@ -46,6 +69,11 @@ class LabworkRecord:
     mxlive_account_id: str
     staff_comments: str
 
+    @property
+    def soak_volume_is_rounded(self) -> bool:
+        """Whether MxLive will hold a different dose from the one dispensed."""
+        return Decimal(self.soak_volume_nl) != mxlive_soak_volume(self.soak_volume_nl)
+
     def to_payload(self) -> dict[str, Any]:
         return {
             "name": self.name,
@@ -63,7 +91,7 @@ class LabworkRecord:
             "crystal_no": self.crystal_number,
             "soak_plate": self.soak_plate,
             "soak_well": self.soak_well,
-            "soak_vol": float(self.soak_volume_nl),
+            "soak_vol": mxlive_soak_volume(self.soak_volume_nl),
             "soak_id": self.soak_id,
             "soak_smile": self.soak_smiles,
             # MxLive's historical API name; this identifies the account owner.

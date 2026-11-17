@@ -73,3 +73,48 @@ def test_fragment_labwork_has_one_record_per_image_drop() -> None:
     assert payload["soak_vol"] == 25.0
     assert payload["plate_type"] == "SwissCI-MRC-3d"
     assert payload["project_id"] == "fbdd"
+
+
+def test_a_dose_mxlive_cannot_hold_is_rounded_by_us_not_by_the_server() -> None:
+    """``soak_vol`` is an IntegerField there, and ECHO moves in 2.5 nL steps.
+
+    MxLive validates nothing - its write path calls ``update()``, which
+    bypasses the model - so a half nanolitre is the database's problem. Django
+    prepares an integer field with ``int(value)``, which truncates towards
+    zero: 32.5 would be stored as 32 and 2.5 as 2, always short and never
+    over, and -20% for one ECHO step.
+
+    Sending a whole number chosen here means the stored value is the same on
+    every deployment instead of depending on whether that column is integer or
+    float on the day.
+    """
+    from decimal import Decimal
+
+    from xtalflow.domain.labwork import mxlive_soak_volume
+
+    # Half up, not Python's half-to-even, which would send 2.5 down to 2 and
+    # leave the worst case exactly as it was.
+    assert mxlive_soak_volume(Decimal("2.5")) == 3
+    assert mxlive_soak_volume(Decimal("32.5")) == 33
+    assert mxlive_soak_volume(Decimal("67.5")) == 68
+    # A whole number is left alone.
+    assert mxlive_soak_volume(Decimal("85.0")) == 85
+
+
+def test_the_payload_carries_a_whole_number_of_nanolitres() -> None:
+    from xtalflow.domain.labwork import LabworkRecord
+
+    def record(nanolitres: str) -> LabworkRecord:
+        return LabworkRecord(
+            "jjh", "PreTest-202611-BRD4-01", "BRD4", "SwissCI-MRC-3d", "2069",
+            "/rmserver/image.jpg", "A04a", Decimal("0"), Decimal("0"), 1,
+            "pretest", "Z00", Decimal(nanolitres), "Solvent_10%-0-r1", "CS(=O)C",
+            "7", "Uploaded by XtalFlow · Condition Test",
+        )
+
+    payload = record("32.5").to_payload()
+    assert payload["soak_vol"] == 33
+    assert isinstance(payload["soak_vol"], int)
+    # And the record knows, so somebody can be told before it is sent.
+    assert record("32.5").soak_volume_is_rounded
+    assert not record("50").soak_volume_is_rounded

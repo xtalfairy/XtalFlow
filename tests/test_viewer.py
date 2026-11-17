@@ -33,6 +33,12 @@ from xtalflow.domain.fragment_screening import (
     SelectedCrystal,
 )
 from xtalflow.application import ReviewPersistenceError
+from xtalflow.infrastructure.source_plate_record import (
+    SourcePlateRecord,
+    record_directory,
+)
+from xtalflow.domain.echo_source import USED, PlateRecordEntry
+from xtalflow.infrastructure import mounts
 from xtalflow.infrastructure import (
     ImageSourceUnavailable,
     RockMakerImageRepository,
@@ -4769,5 +4775,65 @@ def test_a_condition_test_opens_without_asking_the_shared_record(
     # And the user is told, so nobody books wells against a record nobody read.
     assert "cannot be reached" in editor.record_note_label.text()
     assert "fresh source plate" in editor.record_note_label.text()
+    window.close()
+    app.processEvents()
+
+
+def test_a_stale_reading_cannot_tip_held_wells_into_an_empty_mountpoint(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The record's own rule is what holds when the lamps are out of date.
+
+    Catching the record up is gated on the share reading, which is up to a
+    minute old. If the share dropped inside that minute the reading still
+    says mounted, and an unmounted mountpoint is an ordinary empty directory:
+    merge_held would write the held entries into it and delete the only other
+    copy, and both would vanish when the share came back.
+
+    So the record asks for itself before it writes. Dropping the rule from
+    the copy the merge runs through would put the entries in the mountpoint.
+    """
+    app = QApplication.instance() or QApplication([])
+    echo = tmp_path / "echo650"
+    echo.mkdir()
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        pending_worksheet_directory=tmp_path / "pending",
+        source_plate_record_directory=None,
+        instruments=standard_instruments(echo, tmp_path / "s1", tmp_path / "s2"),
+        require_network_instrument_mounts=True,
+        require_network_image_root=False,
+        create_missing_instrument_roots=False,
+    )
+    window = ViewerWindow(
+        RockMakerImageRepository(_share_with_one_plate(tmp_path / "images")),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"), settings=settings,
+    )
+    # Entries taken while the record was away, waiting to go onto it.
+    held = SourcePlateRecord(
+        record_directory(tmp_path / "pending"), create_root=True
+    )
+    held.append("SOLVENT-01", [
+        PlateRecordEntry(
+            USED, "Offline-01", ("B1",), datetime.now(timezone.utc), "jjh"
+        ),
+    ])
+    waiting = sorted(path.name for path in held.directory.glob("*.log"))
+    assert waiting
+
+    # The reading says the ECHO share is mounted. It is not; it is a folder.
+    window._share_states = tuple(
+        replace(state, mounted=True, detail="mounted")
+        if state.key == "echo650" else state
+        for state in mounts.share_states(settings)
+    )
+    assert window.share_is_mounted("echo650")
+
+    window.experiments._catch_up_source_record()
+
+    # Nothing was written into the mountpoint, and the held copies are intact.
+    assert sorted(path.name for path in held.directory.glob("*.log")) == waiting
+    assert list(record_directory(echo).glob("*.log")) == []
     window.close()
     app.processEvents()

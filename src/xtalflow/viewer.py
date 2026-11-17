@@ -90,7 +90,7 @@ from xtalflow.infrastructure import (
     SQLiteReviewStore,
 )
 from xtalflow.infrastructure.instrument_config import load_instrument_destinations
-from xtalflow.infrastructure.mounts import IMAGE_SHARE, ShareState, share_states
+from xtalflow.infrastructure.mounts import IMAGE_SHARE, ShareReader, ShareState
 from xtalflow.infrastructure.examples import load_examples
 from xtalflow.infrastructure.user_preferences import JsonUserPreferencesStore
 from xtalflow.presentation import ProjectImageSetListModel
@@ -225,6 +225,16 @@ class ViewerWindow(QMainWindow):
         self._crystal_failed_set: str | None = None
         self._crystal_scoring_text = ""
         self._share_check_busy = False
+        self._share_reader = ShareReader()
+        self._share_worker: threading.Thread | None = None
+        self._share_found: dict = {}
+        # One poll timer for the life of the window, not one per reading: a
+        # reading a minute all day is a timer and a closure a minute, and a
+        # timer that deletes itself from inside its own slot leaves the
+        # handler holding a wrapper whose object has gone.
+        self._share_poll = QTimer(self)
+        self._share_poll.setInterval(200)
+        self._share_poll.timeout.connect(self._poll_share_reading)
         self._share_check_timer = QTimer(self)
         self._share_check_timer.setInterval(SHARE_CHECK_MILLISECONDS)
         self._share_check_timer.timeout.connect(self._check_shares)
@@ -2200,21 +2210,26 @@ class ViewerWindow(QMainWindow):
         self._check_shares()
 
     def _check_shares(self) -> None:
-        """Read every share on a worker thread and mark the panel's buttons.
+        """Read every share off this thread and mark the panel's buttons.
 
         Never on this thread: asking a dropped SMB mount whether it is a
         folder can take the best part of a minute, and the window would be
-        frozen for all of it. One reading at a time, so a share that never
-        answers cannot pile threads up behind it.
+        frozen for all of it.
+
+        The reading always finishes, because it will not wait for a share
+        that has stopped answering - so this flag cannot be left set by a
+        look that never returns, which would have stopped every later
+        reading and frozen the lamps at values nothing on screen dated.
         """
         if self._share_check_busy:
             return
         settings = self.settings
+        reader = self._share_reader
         found: dict[str, object] = {}
 
         def work() -> None:
             try:
-                found["states"] = share_states(settings)
+                found["states"] = reader.read(settings)
             except OSError as error:  # a mount table that cannot be read
                 found["error"] = error
 
@@ -2222,17 +2237,21 @@ class ViewerWindow(QMainWindow):
         self.workspace_sidebar.show_share_states(
             self._share_states, checking=bool(self._share_states)
         )
-        worker = threading.Thread(target=work, name="xtalflow-shares", daemon=True)
-        poll = QTimer(self)
-        poll.setInterval(200)
-        poll.timeout.connect(
-            lambda: None if worker.is_alive() else self._shares_read(poll, found)
+        self._share_found = found
+        self._share_worker = threading.Thread(
+            target=work, name="xtalflow-shares", daemon=True
         )
-        worker.start()
-        poll.start()
+        self._share_worker.start()
+        self._share_poll.start()
 
-    def _shares_read(self, poll: QTimer, found: dict) -> None:
-        poll.stop()
+    def _poll_share_reading(self) -> None:
+        worker = self._share_worker
+        if worker is not None and worker.is_alive():
+            return
+        self._share_poll.stop()
+        self._shares_read(self._share_found)
+
+    def _shares_read(self, found: dict) -> None:
         self._share_check_busy = False
         states = found.get("states")
         if states is None:

@@ -2487,7 +2487,11 @@ class ExperimentCoordinator:
         # ten seconds of lock polling. The merge is opportunistic: a record
         # someone else holds is merged into on one of the next tries.
         shared = SourcePlateRecord(
-            shared.directory, create_root=shared.create_root, lock_timeout=1.0
+            shared.directory, create_root=shared.create_root,
+            # Carried, not dropped: this is the copy merge_held writes
+            # through, and it deletes the held entries once they are in.
+            require_network_mount=shared.require_network_mount,
+            lock_timeout=1.0,
         )
         self._move_record_off_the_old_share(shared)
         held = SourcePlateRecord(
@@ -2574,6 +2578,13 @@ class ExperimentCoordinator:
         return SourcePlateRecord(
             record_directory(echo.output_directory),
             create_root=self.window.settings.create_missing_instrument_roots,
+            # The ECHO folder is a share at a site that asked for mounted
+            # shares, and an unmounted mountpoint is an ordinary empty
+            # directory: it would read as every well free and swallow what
+            # was written into it.
+            require_network_mount=(
+                self.window.settings.require_network_instrument_mounts
+            ),
         )
 
     def _record_worksheet_export(

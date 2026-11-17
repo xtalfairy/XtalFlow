@@ -1,3 +1,5 @@
+import threading
+import time
 from pathlib import Path
 
 from xtalflow.infrastructure import mounts
@@ -116,3 +118,62 @@ def test_a_mount_table_that_cannot_be_read_is_looked_for_once(monkeypatch) -> No
     assert [state.mounted for state in states] == [False] * len(states)
     # The folders are all there; only the mount answer is missing.
     assert all(state.exists for state in states)
+
+
+def test_a_share_that_never_answers_does_not_stop_the_others(monkeypatch) -> None:
+    """One dead mount must not hold the whole reading, or end the readings.
+
+    A look that is still out is not started again, so a share nothing will
+    ever hear from costs one stranded thread, not one per minute - and the
+    reading still finishes, which is what lets the next one happen at all.
+    """
+    from dataclasses import replace
+
+    from xtalflow.settings import DEFAULT_SETTINGS, standard_instruments
+
+    never = Path("/never-answers")
+    looks = []
+    forever = threading.Event()
+    real_is_dir = Path.is_dir
+
+    def hanging_is_dir(self):
+        if never == self:
+            looks.append(self)
+            # A hard mount: this call may never return. Bounded only so
+            # that a reading which waits for it fails the clock below
+            # instead of hanging the suite.
+            forever.wait(30)
+            return False
+        return real_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", hanging_is_dir)
+    here = Path(__file__).parent
+    settings = replace(
+        DEFAULT_SETTINGS,
+        rmserver_root=here,
+        instruments=standard_instruments(never, here, here),
+    )
+    reader = mounts.ShareReader(deadline_seconds=0.3)
+
+    try:
+        started = time.monotonic()
+        first = reader.read(settings)
+        # The reading finished without the dead share. This is the guarantee
+        # the whole class exists for: a reading that cannot finish stops
+        # every later one, and the lamps freeze at values nothing dates.
+        assert time.monotonic() - started < 2.0
+        # The others answered; the dead one is reported as what it is.
+        assert {state.key: state.detail for state in first}["echo650"] == (
+            mounts.NOT_ANSWERING
+        )
+        assert [state.mounted for state in first].count(False) == len(first)
+        assert any(state.key == "shifter1" and state.exists for state in first)
+
+        # A second reading still happens, and does not start a second look.
+        second = reader.read(settings)
+        assert len(looks) == 1
+        assert {state.key: state.detail for state in second}["echo650"] == (
+            mounts.NOT_ANSWERING
+        )
+    finally:
+        forever.set()

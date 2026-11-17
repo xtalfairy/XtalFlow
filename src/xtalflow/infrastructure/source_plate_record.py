@@ -22,6 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TypeVar
 
+from xtalflow.infrastructure.mounts import is_network_mount
 from xtalflow.domain.echo_source import (
     USED,
     PlateRecordEntry,
@@ -75,12 +76,20 @@ class SourcePlateRecord:
         directory: Path,
         *,
         create_root: bool = False,
+        require_network_mount: bool = False,
         lock_timeout: float = 10.0,
         stale_lock_after: float = 120.0,
     ) -> None:
         self.directory = directory
         # Like instrument folders: only local setups may create a missing ECHO folder.
         self.create_root = create_root
+        # The record usually lives under the ECHO folder, which is a network
+        # share. An unmounted mountpoint is an ordinary empty directory, so
+        # without this the record reads as "this plate has no entries" - every
+        # well free - and writes land in the mountpoint, to vanish behind the
+        # share when it returns. Held entries are worse: they are written
+        # there and the only other copy is then deleted.
+        self.require_network_mount = require_network_mount
         self.lock_timeout = lock_timeout
         self.stale_lock_after = stale_lock_after
 
@@ -92,6 +101,11 @@ class SourcePlateRecord:
         if not self.directory.parent.is_dir() and not self.create_root:
             raise SourcePlateRecordUnavailable(
                 f"the shared source plate record in {self.directory.parent} cannot be reached"
+            )
+        if self.require_network_mount and not is_network_mount(self.directory.parent):
+            raise SourcePlateRecordUnavailable(
+                f"the shared source plate record in {self.directory.parent} is not "
+                f"a mounted share"
             )
 
     def reachable(self) -> bool:

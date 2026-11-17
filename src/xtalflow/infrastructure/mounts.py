@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -144,32 +146,104 @@ def share_state(key: str, label: str, path: Path, mount_table=None) -> ShareStat
     )
 
 
-def share_states(settings) -> tuple[ShareState, ...]:
-    """Every share this installation depends on: the images first, then the instruments.
+NOT_ANSWERING = "not answering"
+LOOK_DEADLINE_SECONDS = 5.0
 
-    The mount table is read at most once for the whole reading, and only when
-    some folder is actually there to place in it. Finding it runs ``mount`` on
-    macOS, and forking from a thread inside a Qt process is not free: doing it
-    once per share aborted the application in CoreFoundation.
-    """
+
+def _shares_wanted(settings):
     wanted = [(IMAGE_SHARE, IMAGE_SHARE_LABEL, settings.rmserver_root)]
     wanted.extend(
         (item.instrument, item.label, item.output_directory)
         for item in settings.instruments
     )
+    return wanted
+
+
+def share_states(settings) -> tuple[ShareState, ...]:
+    """Every share this installation depends on, one after another.
+
+    Kept for callers outside the window, where waiting is what is wanted.
+    The window uses :class:`ShareReader`, which will not wait for a share
+    that has stopped answering.
+    """
     table = _MountTable()
-    return tuple(share_state(key, label, path, table) for key, label, path in wanted)
+    return tuple(
+        share_state(key, label, path, table)
+        for key, label, path in _shares_wanted(settings)
+    )
+
+
+class ShareReader:
+    """Looks at every share at once and never waits longer than a deadline.
+
+    One thread each, because in a row a dropped mount's minute is paid again
+    by every share behind it: one instrument away left the whole panel - the
+    image share included - several minutes out of date.
+
+    The deadline is how long the reading waits, not how long a look runs. A
+    thread stuck inside ``is_dir`` on a hard mount cannot be stopped and may
+    never return, so a share whose look is still out is not looked at again.
+    That, not the deadline, is what keeps one dead share from piling threads
+    up; and it is why a reading can always finish, where waiting for every
+    share meant one that never answered stopped the readings for good.
+
+    A share that has not answered is reported as not answering rather than
+    with the answer it gave last. Not knowing has to read as "away": the
+    screen then holds a worksheet back and the save, which asks the real
+    folder at the moment it writes, has the last word.
+    """
+
+    def __init__(self, deadline_seconds: float = LOOK_DEADLINE_SECONDS) -> None:
+        self._deadline = deadline_seconds
+        self._lock = threading.Lock()
+        self._looking: dict[str, threading.Thread] = {}
+        self._answers: dict[str, ShareState] = {}
+
+    def read(self, settings) -> tuple[ShareState, ...]:
+        """Look at every share, waiting at most the deadline for the lot."""
+        wanted = _shares_wanted(settings)
+        table = _MountTable()
+        started = []
+        for key, label, path in wanted:
+            looking = self._looking.get(key)
+            if looking is not None and looking.is_alive():
+                continue
+            with self._lock:
+                self._answers.pop(key, None)
+            thread = threading.Thread(
+                target=self._look, args=(key, label, path, table),
+                name=f"xtalflow-share-{key}", daemon=True,
+            )
+            self._looking[key] = thread
+            started.append(thread)
+            thread.start()
+        deadline = time.monotonic() + self._deadline
+        for thread in started:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        with self._lock:
+            return tuple(
+                self._answers.get(key)
+                or ShareState(key, label, path, False, NOT_ANSWERING, exists=False)
+                for key, label, path in wanted
+            )
+
+    def _look(self, key: str, label: str, path: Path, table) -> None:
+        state = share_state(key, label, path, table)
+        with self._lock:
+            self._answers[key] = state
 
 
 class _MountTable:
     """The system's mount list, found once and only if something asks for it."""
 
     def __init__(self) -> None:
+        self._lock = threading.Lock()
         self._text: str | None = None
         self._read = False
 
     def text(self) -> str | None:
-        if not self._read:
-            self._text = _system_mount_table()
-            self._read = True
-        return self._text
+        with self._lock:
+            if not self._read:
+                self._text = _system_mount_table()
+                self._read = True
+            return self._text

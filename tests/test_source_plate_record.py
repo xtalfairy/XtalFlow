@@ -248,3 +248,41 @@ def test_a_record_file_is_left_as_writable_as_the_folder_it_is_in(tmp_path) -> N
     os.chmod(directory, 0o777)
     record.append("SOLVENT-02", [_used(["A1"])])
     assert stat.S_IMODE((directory / "solvent-02.log").stat().st_mode) & 0o666 == 0o666
+
+
+def test_an_unmounted_share_is_not_a_record_to_read_or_write(tmp_path) -> None:
+    """An unmounted mountpoint is an ordinary empty directory.
+
+    Read, it answers "this plate has no entries" - every well free - and two
+    experiments book the same wells. Written, it takes the lines and loses
+    them when the share returns. Held entries are worse still: merge_held
+    writes them there and deletes the only other copy.
+    """
+    echo = tmp_path / "echo650"
+    directory = record_directory(echo)
+    directory.mkdir(parents=True)
+    record = SourcePlateRecord(directory, require_network_mount=True)
+
+    # The folder is there. It is simply not a share.
+    assert directory.is_dir()
+    assert not record.reachable()
+    with pytest.raises(SourcePlateRecordUnavailable, match="not a mounted share"):
+        record.entries("SP-2026-01")
+    with pytest.raises(SourcePlateRecordUnavailable, match="not a mounted share"):
+        record.plates()
+
+    # And nothing held is merged into it, so the held copies stay put.
+    from xtalflow.infrastructure.source_plate_record import merge_held
+
+    held = SourcePlateRecord(record_directory(tmp_path / "pending"), create_root=True)
+    held.append("SP-2026-01", [_used(["A1"], experiment="Offline-01")])
+    before = sorted(path.name for path in held.directory.glob("*.log"))
+    assert before
+    with pytest.raises(SourcePlateRecordUnavailable, match="not a mounted share"):
+        merge_held(held, record)
+    assert sorted(path.name for path in held.directory.glob("*.log")) == before
+
+    # The same folder at a site that never asked for mounted shares is fine.
+    local = SourcePlateRecord(directory)
+    assert local.reachable()
+    assert local.entries("SP-2026-01") == ()

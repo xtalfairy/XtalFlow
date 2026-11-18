@@ -401,6 +401,7 @@ class PlanEditorBase(QWidget):
         return ExperimentFacts(
             plan_type=self.plan_type,
             protein=self.protein_input.text(),
+            experiment_id_assigned=bool(self.assigned_experiment_id),
             well_count=self.selected_well_count,
             position_count=self.selected_position_count,
             wells_needing_attention=self.wells_needing_attention,

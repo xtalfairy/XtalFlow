@@ -4779,6 +4779,108 @@ def test_a_condition_test_opens_without_asking_the_shared_record(
     app.processEvents()
 
 
+def test_the_record_asks_about_this_sites_own_echo(tmp_path: Path, monkeypatch) -> None:
+    """Whether the record can be read is asked of the ECHO this site configured.
+
+    The record is found by what the instrument reads, so any id works; asking
+    the lamps by the BL-5C id instead would be asking about a share no
+    reading ever covers, which answers "not mounted" for ever. The record
+    would then be away for the whole session with the share sitting mounted:
+    every plate reading as untouched, and a fresh plate taken each time.
+    """
+    from xtalflow.domain.instruments import SHIFTER_1, SHIFTER_2, WorksheetKind
+    from xtalflow.settings import InstrumentDestination
+
+    app = QApplication.instance() or QApplication([])
+    echo = tmp_path / "echo-by-another-name"
+    (echo / "source-plates").mkdir(parents=True)
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        source_plate_record_directory=None,
+        instruments=(
+            # Same instrument, a name this site chose.
+            InstrumentDestination("echo-01", WorksheetKind.ECHO, echo),
+            InstrumentDestination(SHIFTER_1, WorksheetKind.SHIFTER, tmp_path / "shifter1"),
+            InstrumentDestination(SHIFTER_2, WorksheetKind.SHIFTER, tmp_path / "shifter2"),
+        ),
+        require_network_instrument_mounts=True,
+        require_network_image_root=False,
+        create_missing_instrument_roots=False,
+    )
+    # The ECHO folder is a mounted share, under whatever it is called here.
+    monkeypatch.setattr(
+        mounts, "is_network_mount", lambda path, table=None: echo == path or echo in path.parents
+    )
+    window = ViewerWindow(
+        RockMakerImageRepository(_share_with_one_plate(tmp_path / "images")),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"), settings=settings,
+    )
+    _wait_for_share_reading(app, window)
+
+    assert window.share_is_mounted("echo-01")
+    record = window.experiments._source_plate_record()
+    assert record is not None
+
+    # The question the editor is handed. False here would mean a record that
+    # is there and readable, reported away until the application restarts.
+    assert window.experiments._record_is_reachable(record)
+    window.close()
+    app.processEvents()
+
+
+def test_a_reading_that_cannot_be_started_does_not_end_the_readings(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A thread that will not start must not leave the door shut behind it.
+
+    The busy flag is what stops two readings overlapping. Set and not
+    cleared, it turns one failure to start a thread - out of threads, or an
+    interpreter shutting down - into no share reading for the rest of the
+    session: the lamps stand at whatever they last said, and everything that
+    asks them, the worksheets step and the shared source plate record, is
+    answered from a reading nothing on screen dates.
+    """
+    import threading
+
+    app = QApplication.instance() or QApplication([])
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        instruments=standard_instruments(
+            tmp_path / "echo", tmp_path / "shifter1", tmp_path / "shifter2"
+        ),
+        require_network_image_root=False,
+    )
+    window = ViewerWindow(
+        RockMakerImageRepository(_share_with_one_plate(tmp_path / "images")),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"), settings=settings,
+    )
+    _wait_for_share_reading(app, window)
+    before = window._share_states
+    assert before
+
+    def refuse(self):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", refuse)
+    window._check_shares()
+
+    assert not window._share_check_busy
+    # The lamps keep the last reading rather than going blank over this.
+    assert window._share_states == before
+
+    # And the next reading happens, once threads can be started again.
+    monkeypatch.undo()
+    window._share_states = ()
+    window._check_shares()
+    _wait_for_share_reading(app, window)
+
+    assert window._share_states
+    window.close()
+    app.processEvents()
+
+
 def test_a_stale_reading_cannot_tip_held_wells_into_an_empty_mountpoint(
     tmp_path: Path, monkeypatch
 ) -> None:

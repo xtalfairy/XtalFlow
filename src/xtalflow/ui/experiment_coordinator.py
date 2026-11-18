@@ -40,7 +40,7 @@ from xtalflow.domain.plan_lifecycle import (
     PlanRevision,
     WebDBUploadEvent,
 )
-from xtalflow.domain.instruments import ECHO_650, WorksheetKind
+from xtalflow.domain.instruments import WorksheetKind
 from xtalflow.domain.mxlive import MxLiveReadError
 from xtalflow.application.experiment_workflow import (
     FINISHED_STATES,
@@ -2432,9 +2432,23 @@ class ExperimentCoordinator:
         refresh of the Worksheets step. Anywhere else it is a local folder
         and the question is free.
         """
-        if self._record_is_on_the_echo_share(record):
-            return self.window.share_is_mounted(ECHO_650)
+        echo = self._echo_instrument()
+        if echo is not None and self._record_is_on_the_echo_share(record):
+            # This site's own id for the ECHO, not the BL-5C one: a share the
+            # lamps never read answers "not mounted" for ever, and the record
+            # would be away for the whole session with the share sitting there.
+            return self.window.share_is_mounted(echo.instrument)
         return record.reachable()
+
+    def _echo_instrument(self):
+        """The instrument that reads ECHO worksheets, by what it reads, not its id."""
+        return next(
+            (
+                item for item in self.window.settings.instruments
+                if item.worksheet is WorksheetKind.ECHO
+            ),
+            None,
+        )
 
     def _record_is_on_the_echo_share(self, record: SourcePlateRecord) -> bool:
         if not self.window.settings.require_network_instrument_mounts:
@@ -2538,8 +2552,9 @@ class ExperimentCoordinator:
         old = self._echo_source_plate_record()
         if old is None or old.directory == shared.directory:
             return
+        echo = self._echo_instrument()
         if self.window.settings.require_network_instrument_mounts:
-            if not self.window.share_is_mounted(ECHO_650):
+            if echo is None or not self.window.share_is_mounted(echo.instrument):
                 return
         elif not old.reachable():
             return
@@ -2566,13 +2581,7 @@ class ExperimentCoordinator:
 
     def _echo_source_plate_record(self) -> SourcePlateRecord | None:
         """Where the record used to live: under the ECHO worksheets everyone saves."""
-        echo = next(
-            (
-                item for item in self.window.settings.instruments
-                if item.worksheet is WorksheetKind.ECHO
-            ),
-            None,
-        )
+        echo = self._echo_instrument()
         if echo is None:
             return None
         return SourcePlateRecord(

@@ -1,4 +1,5 @@
 import os
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -1109,3 +1110,103 @@ def test_a_name_that_cannot_be_typed_is_refused_where_it_is_typed() -> None:
     assert editor.design.label(
         editor.design.conditions()[-1], compact=True
     ).startswith("PEG400_")
+
+
+def test_a_refused_name_stops_the_test_being_finalized() -> None:
+    """A refused name leaves the old name in the design. Nothing may go up under it.
+
+    Refusing at the field is only half of it. The design still holds the name
+    before the edit, so a test finalized now would put the ECHO worksheet, the
+    shared source plate record line and the MxLive soak_id up saying DMSO for
+    an isopropanol soak - and MxLive cannot be corrected. Most real chemical
+    names are refused (2-propanol, PEG-400, 1,6-hexanediol), so this is the
+    ordinary path, not an edge.
+    """
+    editor = _editor()
+
+    editor.additive_name_input.setText("2-propanol")
+    editor._name_edited()
+
+    assert editor.design.additives[0].name == "DMSO"
+    # The step the experiment page asks, which is what lets Review finalize.
+    assert editor.conditions_error() is not None
+    assert "DMSO was not renamed" in editor.conditions_error()
+    # Said at the field, so not repeated above the table as well.
+    assert editor.design_error_label.text() == ""
+    assert "DMSO was not renamed" in editor.name_error_label.text()
+
+    # An empty name keeps the old one too, and is refused the same way.
+    editor.additive_name_input.setText("   ")
+    editor._name_edited()
+
+    assert editor.design.additives[0].name == "DMSO"
+    assert "DMSO was not renamed" in editor.conditions_error()
+
+    # A name that can be typed clears it, and the test can go on.
+    editor.additive_name_input.setText("Isopropanol")
+    editor._name_edited()
+
+    assert editor.design.additives[0].name == "Isopropanol"
+    assert editor.conditions_error() is None
+
+
+def test_a_share_that_comes_back_is_read_again(tmp_path) -> None:
+    """An away lamp is about now, not about the plate. It must not be remembered.
+
+    The lamp is false before the first reading and stale for up to a minute
+    after a look slower than five seconds, so "away" is routinely wrong. Kept
+    as this plate's answer, it would outlive the share: the plate would read
+    as untouched - every well free - and the Plate dropdown would stay empty
+    for the rest of the session, with a note saying the record cannot be
+    reached while it sits there mounted.
+    """
+    record = _shared_plate(tmp_path, [_entry("used", ["A1", "B1"], "PreTest-01")])
+    away = [True]
+    editor = _editor()
+    editor.set_source_record(record, "lee", lambda: not away[0])
+
+    # Away: nothing is read, and the editor says so.
+    assert editor._plate_entries("SOLVENT-01") is None
+    assert editor._shared_plates() is None
+    assert "cannot be reached" in editor.record_note_label.text()
+
+    # The share comes back. Nothing about it is pushed at the editor; the next
+    # question it is asked has to be enough.
+    away[0] = False
+
+    entries = editor._plate_entries("SOLVENT-01")
+    assert entries is not None
+    assert [entry.wells for entry in entries] == [("A1", "B1")]
+    editor._read_plate_list()
+    assert [summary.name for summary in editor._plate_list or ()] == ["SOLVENT-01"]
+    assert "cannot be reached" not in editor.record_note_label.text()
+
+
+def test_a_saved_design_whose_name_cannot_be_written_is_not_finalized() -> None:
+    """Refusing at the field only catches a name being typed.
+
+    Names were not checked until now, so a design saved earlier opens with
+    whatever was typed then and nothing is typed again. Left alone it would
+    reach MxLive as whatever compact_name could keep of it - a Korean name as
+    "additive", the solvent gone from the record altogether - and a record
+    there cannot be corrected. So the design says what it would become and
+    will not go on until the name is one that can be written.
+    """
+    editor = _editor()
+    saved = replace(editor.design.additives[0], name="글리세롤")
+    editor.design = replace(editor.design, additives=(saved,))
+    editor.refresh_plan()
+
+    error = editor.conditions_error()
+    assert error is not None
+    # What it would become is the point: a count of refused characters does
+    # not tell anybody their solvent is about to be filed as "additive".
+    assert "would be recorded as additive" in error
+    assert "글리세롤" in error
+
+    editor.additive_name_input.setText("Glycerol")
+    editor._name_edited()
+
+    assert editor.design.additives[0].name == "Glycerol"
+    assert editor.conditions_error() is None
+

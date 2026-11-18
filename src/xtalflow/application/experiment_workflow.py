@@ -292,6 +292,10 @@ class ExperimentFacts:
     # detected outline is often smaller than the well, so only the person
     # looking at the image can say whether the position is where they meant.
     outside_positions_warning: str = ""
+    # Whether this experiment already has its ID. Once it does, the protein
+    # name is a record of what was chosen rather than a choice being made,
+    # and no new identifier is built from it.
+    experiment_id_assigned: bool = False
 
 
 @dataclass(frozen=True)
@@ -316,7 +320,7 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
     notes: list[str] = []
 
     try:
-        normalize_protein_name(facts.protein)
+        normalize_protein_name(facts.protein, already_named=facts.experiment_id_assigned)
         statuses[WorkflowStep.SETUP] = StepStatus(
             WorkflowStep.SETUP, StepState.COMPLETE, f"Protein: {facts.protein.strip()}"
         )

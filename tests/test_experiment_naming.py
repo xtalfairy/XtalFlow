@@ -39,3 +39,18 @@ def test_a_protein_name_keeps_to_letters_digits_hyphen_and_underscore() -> None:
     for refused in ("BRD4.1", "BRD4%", "BRD/4", "BRD(4)"):
         with pytest.raises(ValueError, match="letters, numbers"):
             normalize_protein_name(refused)
+
+
+def test_an_experiment_that_already_has_an_id_is_not_renamed_out_of_the_way() -> None:
+    """Tightening the rule must not stop work that was started under the old one.
+
+    An experiment that has its ID is no longer choosing a name: the ID is
+    fixed and every later revision reuses it. Refusing the dot here would not
+    take it out of the ID already written - it would only stop a draft being
+    finalized, or a finalized experiment being revised, mid-beamtime.
+    """
+    assert normalize_protein_name("HSP90.N", already_named=True) == "HSP90.N"
+    # Everything else is still refused: nothing new is excused, only the dot.
+    for refused in ("HSP90%", "HSP/90", "HSP(90)", ".HSP90"):
+        with pytest.raises(ValueError, match="letters, numbers"):
+            normalize_protein_name(refused, already_named=True)

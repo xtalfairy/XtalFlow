@@ -2241,7 +2241,15 @@ class ViewerWindow(QMainWindow):
         self._share_worker = threading.Thread(
             target=work, name="xtalflow-shares", daemon=True
         )
-        self._share_worker.start()
+        try:
+            self._share_worker.start()
+        except RuntimeError as error:
+            # Out of threads, or the interpreter is shutting down. Left as it
+            # was, the flag would stop every later reading and the lamps would
+            # stand at values nothing on screen dated.
+            self._share_worker = None
+            self._shares_read({"error": error})
+            return
         self._share_poll.start()
 
     def _poll_share_reading(self) -> None:

@@ -47,6 +47,7 @@ from xtalflow.domain.condition_test import (
     Treatment,
     build_condition_test_plan,
     characters_not_allowed_in_a_name,
+    compact_name,
     compute_doses,
     fit_to_wells,
     format_minutes,
@@ -234,6 +235,10 @@ class ConditionTestEditor(PlanEditorBase):
         self.design = design
         self.design_error: str | None = None
         self.selection_error: str | None = None
+        # A name typed and refused. The design still holds the old name, so
+        # this has to stop the test being finalized: otherwise the worksheet,
+        # the shared record and the soak_id all say the old solvent.
+        self._refused_name: str | None = None
         self._series_index = 0
         self._selected_cell_id: str | None = None
         self._rendering = False
@@ -893,6 +898,7 @@ class ConditionTestEditor(PlanEditorBase):
             _set_flag(widget, "invalid", False)
         for label in (self.before_error_label, self.name_error_label):
             _show_message(label, "")
+        self._refused_name = None
         self._source_well_error = None
         _set_flag(self.source_well_input, "invalid", False)
         self._close_axis_editor()
@@ -965,25 +971,36 @@ class ConditionTestEditor(PlanEditorBase):
 
     def _name_edited(self) -> None:
         name = self.additive_name_input.text().strip()
+        current = self.design.additive(self._series.additive_id).name
         if not name:
-            _set_flag(self.additive_name_input, "invalid", True)
-            _show_message(self.name_error_label, f"Enter the {self._noun} name.")
+            self._refuse_name(f"{current} was not renamed: enter a {self._noun} name.")
             return
         # Said here rather than quietly dropped. The name goes into the
         # soak_id, which is in MxLive for good and cannot be corrected, so a
         # name that silently becomes another name is worse than being asked.
         refused = characters_not_allowed_in_a_name(name)
         if refused:
-            _set_flag(self.additive_name_input, "invalid", True)
-            _show_message(
-                self.name_error_label,
-                f"A {self._noun} name can have letters, numbers and spaces. "
-                f"Not: {' '.join(refused)}",
+            self._refuse_name(
+                f"{current} was not renamed: a {self._noun} name can have letters, "
+                f"numbers and spaces. Not: {' '.join(refused)}"
             )
             return
         _set_flag(self.additive_name_input, "invalid", False)
         _show_message(self.name_error_label, "")
+        self._refused_name = None
         self.update_additive(name=name)
+
+    def _refuse_name(self, message: str) -> None:
+        """Keep the typed name in the field, and stop the test going anywhere.
+
+        The name becomes the soak_id, which is in MxLive for good and cannot be
+        corrected. A refused name leaves the design holding the name before it,
+        so without this the record would go up under the wrong solvent.
+        """
+        _set_flag(self.additive_name_input, "invalid", True)
+        _show_message(self.name_error_label, message)
+        self._refused_name = message
+        self.refresh_plan()
 
     # -- Shared source plates ----------------------------------------------------------
 
@@ -1022,7 +1039,12 @@ class ConditionTestEditor(PlanEditorBase):
         if self._source_record is None or not plate:
             return None
         if self._record_is_away():
-            self._plate_records[plate] = None
+            # Not remembered as this plate's answer. The lamp is false before
+            # the first reading and stale for up to a minute after a slow
+            # look, so "away" here is a guess about now, not a fact about the
+            # plate - kept, it would outlive the share coming back and the
+            # plate would read as untouched for the rest of the session.
+            self._plate_records.pop(plate, None)
             self._needs_fresh_plate = True
             _show_message(
                 self.record_note_label,
@@ -1094,7 +1116,11 @@ class ConditionTestEditor(PlanEditorBase):
     def _read_plate_list(self, fresh: bool = False) -> None:
         if fresh or not self._plate_list_read:
             self._plate_list = self._shared_plates()
-            self._plate_list_read = True
+            # An away lamp is not an answer about the plates: it is false
+            # before the first reading and stale for up to a minute after a
+            # slow look. Held as read, the dropdown would stay empty for the
+            # rest of the session once the share came back.
+            self._plate_list_read = not self._record_is_away()
             if self._plate_list is not None:
                 self._known_plate_names = {
                     summary.name.casefold() for summary in self._plate_list
@@ -2144,6 +2170,21 @@ class ConditionTestEditor(PlanEditorBase):
             self.harvest_label.setText(f"T+{format_minutes(harvest)} after dispensing")
 
     def _check_design(self) -> str | None:
+        if self._refused_name:
+            return self._refused_name
+        # Refusing at the field only catches a name being typed. A design
+        # saved before names were checked opens with its old name, and
+        # nothing is typed, so the name would go to MxLive as whatever
+        # compact_name could keep of it - a Korean name as "additive", with
+        # the solvent gone from the record altogether.
+        for additive in self.design.additives:
+            refused = characters_not_allowed_in_a_name(additive.name)
+            if refused:
+                return (
+                    f"Rename {additive.name}: it would be recorded as "
+                    f"{compact_name(additive.name)}. A {self._noun} name can have "
+                    f"letters, numbers and spaces. Not: {' '.join(refused)}"
+                )
         conditions = self.design.conditions()
         if not conditions:
             return "Include at least one condition."
@@ -2249,7 +2290,9 @@ class ConditionTestEditor(PlanEditorBase):
         self._render_condition_panel()
         self.design_error = self._check_design()
         # Problems already marked at their field are not repeated above the table.
-        shown_in_place = (self._source_problem, "Enter the initial drop volume.")
+        shown_in_place = (
+            self._source_problem, self._refused_name, "Enter the initial drop volume."
+        )
         self._show_design_error(
             "" if self.design_error in shown_in_place else self.design_error or ""
         )

@@ -8,13 +8,20 @@ from datetime import datetime
 # becomes a file name on the instruments and an identifier in MxLive, and a
 # dot in either is the kind of thing that gets read as an extension.
 _SAFE_PROTEIN = re.compile(r"^[A-Z0-9][A-Z0-9_-]*$")
+# An experiment that already has an ID is not choosing a name any more; its
+# ID is fixed and reused for every later revision. A dot was allowed when
+# that name was taken, so refusing it now would not take the dot out of the
+# ID already written - it would only stop the work, mid-beamtime, over a
+# name nothing new is built from.
+_NAMED_PROTEIN = re.compile(r"^[A-Z0-9][A-Z0-9._-]*$")
 
 
-def normalize_protein_name(value: str) -> str:
+def normalize_protein_name(value: str, *, already_named: bool = False) -> str:
     normalized = re.sub(r"\s+", "-", value.strip().upper())
     if not normalized:
         raise ValueError("protein name is required")
-    if not _SAFE_PROTEIN.fullmatch(normalized):
+    allowed = _NAMED_PROTEIN if already_named else _SAFE_PROTEIN
+    if not allowed.fullmatch(normalized):
         raise ValueError(
             "protein name may contain letters, numbers, underscore, and hyphen"
         )

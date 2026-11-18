@@ -361,3 +361,33 @@ def test_wells_that_still_need_attention_are_counted_apart_from_the_ones_left_ou
     wells = both.status_of(WorkflowStep.SELECT_WELLS)
     assert wells.state is StepState.ATTENTION
     assert wells.message == "3 wells need attention · 3 to confirm"
+
+
+def test_a_dotted_protein_name_blocks_a_new_experiment_but_not_one_underway() -> None:
+    """The rule tightened after experiments had been named under the old one.
+
+    A dot is refused where a name is chosen, because the name becomes the
+    experiment ID and the ID becomes a file name. But an experiment that has
+    its ID reuses it for every revision: judging the name again there would
+    not take the dot out of anything, it would only strand the work - a draft
+    that cannot be finalized, or a finalized experiment that cannot be
+    revised - in the middle of beamtime, with no way forward but a rename
+    that changes nothing already written.
+    """
+    dotted = replace(READY_FRAGMENT, protein="HSP90.N")
+
+    new = evaluate_experiment(dotted)
+    assert not new.ready_to_finalize
+    assert new.status_of(WorkflowStep.SETUP).message == "Fix the protein name to continue."
+
+    underway = evaluate_experiment(replace(dotted, experiment_id_assigned=True))
+    assert underway.ready_to_finalize
+    assert underway.status_of(WorkflowStep.SETUP).state is StepState.COMPLETE
+
+    # Still refused once named: only the dot is excused, nothing else.
+    for refused in ("HSP90%", "HSP/90"):
+        status = evaluate_experiment(
+            replace(dotted, protein=refused, experiment_id_assigned=True)
+        )
+        assert not status.ready_to_finalize
+

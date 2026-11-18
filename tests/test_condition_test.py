@@ -7,6 +7,7 @@ import pytest
 
 from xtalflow.domain import SWISSCI_MIDI_3_LENS, crystal_selection_from_selected_crystals
 from xtalflow.domain.condition_test import (
+    a_name_with_nothing_to_write,
     compact_name,
     characters_not_allowed_in_a_name,
     Additive,
@@ -664,8 +665,23 @@ def test_a_name_with_characters_that_cannot_be_typed_is_named_back() -> None:
     # Letters, digits and spaces are a name somebody can read.
     assert characters_not_allowed_in_a_name("PEG 400") == ()
     assert characters_not_allowed_in_a_name("DMSO") == ()
+    # A hyphen is in most real names - 2-propanol, PEG-400 - and the first _
+    # of a label still says where the name ends, so it is kept as typed.
+    assert characters_not_allowed_in_a_name("2-propanol") == ()
+    # An underscore is that boundary itself; a name holding one would put it
+    # in two places and nothing could say where the name ended.
+    assert characters_not_allowed_in_a_name("PEG_400") == ("_",)
+
+    # Hyphens and spaces are allowed but carry nothing: a name made only of
+    # them would be filed as "additive", the solvent gone from the record.
+    assert a_name_with_nothing_to_write("- -")
+    assert not a_name_with_nothing_to_write("2-propanol")
 
     # A design saved before names were checked still opens and still names
     # its conditions; only the typing is refused.
     assert compact_name("PEG 400 (v/v)") == "PEG400vv"
+    assert compact_name("2-propanol") == "2-propanol"
     assert compact_name("((((") == "additive"
+    # Nothing is left to hang a hyphen on, at either end or at all.
+    assert compact_name("-DMSO-") == "DMSO"
+    assert compact_name("- -") == "additive"

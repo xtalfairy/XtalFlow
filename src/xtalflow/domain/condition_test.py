@@ -114,12 +114,15 @@ def parse_minutes_list(text: str) -> tuple[int, ...]:
 #
 # The structure a label carries: _ closes a name before the percent, - joins
 # percent to time, __ joins the steps of one condition. So a name may not
-# contain those, and may not end where the percent begins - "Solvent 2" at
-# 3 % ran together as "Solvent 23%" in MxLive, a concentration nobody
-# dispensed.
-COMPACT_ALLOWED = ascii_letters + digits
-# What a person may type. Spaces are allowed and simply close up, so "PEG 400"
-# is a name somebody can read; everything else is refused where it is typed,
+# end where the percent begins - "Solvent 2" at 3 % ran together as
+# "Solvent 23%" in MxLive, a concentration nobody dispensed.
+COMPACT_ALLOWED = ascii_letters + digits + "-"
+# What a person may type. A hyphen is in most real names - 2-propanol,
+# PEG-400 - and the first _ still says where the name ends, so it is kept
+# rather than made somebody's problem at the bench. An underscore is not:
+# it is the boundary itself, and a name holding one would put the boundary
+# in two places. Spaces are allowed and simply close up, so "PEG 400" is a
+# name somebody can read. Everything else is refused where it is typed,
 # because a name silently becoming another name is worse than being asked.
 NAME_ALLOWED = COMPACT_ALLOWED + " "
 
@@ -133,6 +136,16 @@ def characters_not_allowed_in_a_name(name: str) -> tuple[str, ...]:
     return tuple(seen)
 
 
+def a_name_with_nothing_to_write(name: str) -> bool:
+    """Whether every character would be dropped, leaving no name at all.
+
+    Hyphens and spaces are allowed but carry nothing: "- -" is typeable and
+    would be filed as "additive", the solvent gone from the record. One
+    letter or digit is the least a name can be.
+    """
+    return not any(character in ascii_letters + digits for character in name)
+
+
 def compact_name(name: str) -> str:
     """An additive's name with nothing in it that could be read as structure.
 
@@ -141,8 +154,8 @@ def compact_name(name: str) -> str:
     """
     cleaned = "".join(
         character for character in name if character in COMPACT_ALLOWED
-    )
-    return cleaned or "additive"
+    ).strip("-")
+    return cleaned if not a_name_with_nothing_to_write(cleaned) else "additive"
 
 
 def _percent_text(value: Decimal) -> str:

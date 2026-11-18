@@ -46,6 +46,7 @@ from xtalflow.domain.condition_test import (
     ConditionTestPlan,
     Treatment,
     build_condition_test_plan,
+    a_name_with_nothing_to_write,
     characters_not_allowed_in_a_name,
     compact_name,
     compute_doses,
@@ -982,7 +983,13 @@ class ConditionTestEditor(PlanEditorBase):
         if refused:
             self._refuse_name(
                 f"{current} was not renamed: a {self._noun} name can have letters, "
-                f"numbers and spaces. Not: {' '.join(refused)}"
+                f"numbers, spaces and hyphens. Not: {' '.join(refused)}"
+            )
+            return
+        if a_name_with_nothing_to_write(name):
+            self._refuse_name(
+                f"{current} was not renamed: a {self._noun} name needs a letter "
+                f"or a number."
             )
             return
         _set_flag(self.additive_name_input, "invalid", False)
@@ -2179,11 +2186,13 @@ class ConditionTestEditor(PlanEditorBase):
         # the solvent gone from the record altogether.
         for additive in self.design.additives:
             refused = characters_not_allowed_in_a_name(additive.name)
-            if refused:
+            if refused or a_name_with_nothing_to_write(additive.name):
                 return (
                     f"Rename {additive.name}: it would be recorded as "
                     f"{compact_name(additive.name)}. A {self._noun} name can have "
-                    f"letters, numbers and spaces. Not: {' '.join(refused)}"
+                    f"letters, numbers, spaces and hyphens"
+                    + (f". Not: {' '.join(refused)}" if refused
+                       else f", and needs a letter or a number.")
                 )
         conditions = self.design.conditions()
         if not conditions:

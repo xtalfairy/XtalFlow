@@ -1096,7 +1096,7 @@ def test_a_name_that_cannot_be_typed_is_refused_where_it_is_typed() -> None:
     editor._name_edited()
 
     error = editor.name_error_label.text()
-    assert "letters, numbers and spaces" in error
+    assert "letters, numbers, spaces and hyphens" in error
     assert "( / )" in error
     # The design still holds what it held: nothing was taken in and changed.
     assert name_of() == "DMSO"
@@ -1111,6 +1111,32 @@ def test_a_name_that_cannot_be_typed_is_refused_where_it_is_typed() -> None:
         editor.design.conditions()[-1], compact=True
     ).startswith("PEG400_")
 
+    # A hyphen is in most real names and is kept as typed: the first _ still
+    # says where the name ends, so 2-propanol_10p-0min reads without guessing.
+    editor.additive_name_input.setText("2-propanol")
+    editor._name_edited()
+
+    assert editor.name_error_label.text() == ""
+    assert name_of() == "2-propanol"
+    assert editor.design.label(
+        editor.design.conditions()[-1], compact=True
+    ).startswith("2-propanol_")
+
+    # An underscore is the boundary itself: a name holding one would put the
+    # boundary in two places, and nothing could say where the name ended.
+    editor.additive_name_input.setText("PEG_400")
+    editor._name_edited()
+
+    assert "_" in editor.name_error_label.text()
+    assert name_of() == "2-propanol"
+
+    # Hyphens and spaces alone carry nothing. "additive" is not a name.
+    editor.additive_name_input.setText("- -")
+    editor._name_edited()
+
+    assert "needs a letter or a number" in editor.name_error_label.text()
+    assert name_of() == "2-propanol"
+
 
 def test_a_refused_name_stops_the_test_being_finalized() -> None:
     """A refused name leaves the old name in the design. Nothing may go up under it.
@@ -1118,13 +1144,14 @@ def test_a_refused_name_stops_the_test_being_finalized() -> None:
     Refusing at the field is only half of it. The design still holds the name
     before the edit, so a test finalized now would put the ECHO worksheet, the
     shared source plate record line and the MxLive soak_id up saying DMSO for
-    an isopropanol soak - and MxLive cannot be corrected. Most real chemical
-    names are refused (2-propanol, PEG-400, 1,6-hexanediol), so this is the
-    ordinary path, not an edge.
+    an isopropanol soak - and MxLive cannot be corrected. Plenty of real
+    chemical names hold a character that cannot be written - the comma in
+    1,6-hexanediol, the brackets in PEG 400 (v/v) - so this is an ordinary
+    path, not an edge.
     """
     editor = _editor()
 
-    editor.additive_name_input.setText("2-propanol")
+    editor.additive_name_input.setText("1,6-hexanediol")
     editor._name_edited()
 
     assert editor.design.additives[0].name == "DMSO"

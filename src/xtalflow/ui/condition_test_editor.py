@@ -46,6 +46,7 @@ from xtalflow.domain.condition_test import (
     ConditionTestPlan,
     Treatment,
     build_condition_test_plan,
+    characters_not_allowed_in_a_name,
     compute_doses,
     fit_to_wells,
     format_minutes,
@@ -964,11 +965,25 @@ class ConditionTestEditor(PlanEditorBase):
 
     def _name_edited(self) -> None:
         name = self.additive_name_input.text().strip()
-        invalid = not name
-        _set_flag(self.additive_name_input, "invalid", invalid)
-        _show_message(self.name_error_label, f"Enter the {self._noun} name." if invalid else "")
-        if not invalid:
-            self.update_additive(name=name)
+        if not name:
+            _set_flag(self.additive_name_input, "invalid", True)
+            _show_message(self.name_error_label, f"Enter the {self._noun} name.")
+            return
+        # Said here rather than quietly dropped. The name goes into the
+        # soak_id, which is in MxLive for good and cannot be corrected, so a
+        # name that silently becomes another name is worse than being asked.
+        refused = characters_not_allowed_in_a_name(name)
+        if refused:
+            _set_flag(self.additive_name_input, "invalid", True)
+            _show_message(
+                self.name_error_label,
+                f"A {self._noun} name can have letters, numbers and spaces. "
+                f"Not: {' '.join(refused)}",
+            )
+            return
+        _set_flag(self.additive_name_input, "invalid", False)
+        _show_message(self.name_error_label, "")
+        self.update_additive(name=name)
 
     # -- Shared source plates ----------------------------------------------------------
 

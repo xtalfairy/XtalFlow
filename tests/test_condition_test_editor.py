@@ -1046,7 +1046,7 @@ def test_two_conditions_that_are_the_same_block_the_step() -> None:
 
     assert error is not None
     assert "2 conditions are the same: DMSO 10% · 0 min" in error
-    assert "named DMSO_10%-0min" in error
+    assert "named DMSO_10p-0min" in error
     # Close concentrations are not a problem any more: both keep their figure.
     assert _editor(percents=("10.2", "10.4"), times=(0,)).conditions_error() is None
 
@@ -1079,3 +1079,33 @@ def test_a_whole_percent_reached_exactly_says_nothing_extra() -> None:
 
     assert "Dispensed" not in rows
     assert "Named in MxLive" not in rows
+
+
+def test_a_name_that_cannot_be_typed_is_refused_where_it_is_typed() -> None:
+    """Not swept up on the way to MxLive, where it could not be corrected.
+
+    The name becomes part of the soak_id. Quietly turning "PEG 400 (v/v)"
+    into PEG400vv is a name becoming another name with nobody told, and the
+    record carrying it is in MxLive for good.
+    """
+    editor = _editor()
+    name_of = lambda: editor.design.additives[0].name
+
+    editor.additive_name_input.setText("PEG 400 (v/v)")
+    editor._name_edited()
+
+    error = editor.name_error_label.text()
+    assert "letters, numbers and spaces" in error
+    assert "( / )" in error
+    # The design still holds what it held: nothing was taken in and changed.
+    assert name_of() == "DMSO"
+
+    # A space is a name somebody can read, and simply closes up in the label.
+    editor.additive_name_input.setText("PEG 400")
+    editor._name_edited()
+
+    assert editor.name_error_label.text() == ""
+    assert name_of() == "PEG 400"
+    assert editor.design.label(
+        editor.design.conditions()[-1], compact=True
+    ).startswith("PEG400_")

@@ -1,11 +1,14 @@
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+import re
 from decimal import Decimal
 
 import pytest
 
 from xtalflow.domain import SWISSCI_MIDI_3_LENS, crystal_selection_from_selected_crystals
 from xtalflow.domain.condition_test import (
+    compact_name,
+    characters_not_allowed_in_a_name,
     Additive,
     HUNDRED,
     ConditionTestDesign,
@@ -94,7 +97,7 @@ def test_combined_treatment_uses_the_enlarged_drop_and_schedules_later_additions
     first, second = compute_doses(design, condition)
 
     assert design.label(condition) == "DMSO 5% · 1 h → Glycerol 20% · 0 min"
-    assert design.label(condition, compact=True) == "DMSO_5%-1h+Glycerol_20%-0min"
+    assert design.label(condition, compact=True) == "DMSO_5p-1h__Glycerol_20p-0min"
     assert (first.volume_nl, first.start_minutes) == (Decimal("10.0"), 0)
     # Drop is 210 nL after DMSO; 20% glycerol from a 50% stock needs 140 nL.
     assert (second.volume_nl, second.start_minutes) == (Decimal("140.0"), 60)
@@ -228,7 +231,7 @@ def test_a_name_that_ends_in_a_digit_cannot_be_read_as_a_concentration() -> None
     design = ConditionTestDesign((solvent,), (series,), Decimal("600"))
 
     compact = [design.label(condition, compact=True) for condition in design.conditions()]
-    assert compact == ["Solvent2_3%-1h", "Solvent2_10%-1h"]
+    assert compact == ["Solvent2_3p-1h", "Solvent2_10p-1h"]
     assert [design.label(condition) for condition in design.conditions()] == [
         "Solvent 2 3% · 1 h", "Solvent 2 10% · 1 h"
     ]
@@ -239,7 +242,7 @@ def test_a_name_that_ends_in_a_digit_cannot_be_read_as_a_concentration() -> None
         username="jjh", account_id="jjh",
     )
     assert [record.soak_id for record in records] == [
-        "Solvent2_3%-1h-r1", "Solvent2_10%-1h-r1"
+        "Solvent2_3p-1h-r1", "Solvent2_10p-1h-r1"
     ]
     # The volumes were right all along; only the name was unreadable.
     assert [str(record.soak_volume_nl) for record in records] == ["17.5", "67.5"]
@@ -285,7 +288,7 @@ def test_condition_worksheets_and_labworks_follow_dispense_and_harvest_times() -
     )
     payload = records[1].to_payload()
     assert (payload["soak_plate"], payload["soak_well"]) == ("pretest", "Z00")
-    assert payload["soak_id"] == "DMSO_10%-0min-r1"
+    assert payload["soak_id"] == "DMSO_10p-0min-r1"
     assert payload["soak_smile"] == "CS(=O)C"
     assert records[0].to_payload()["soak_smile"] == "none"
     assert records[0].to_payload()["soak_id"] == "NoDMSO-0min-r1"
@@ -524,7 +527,7 @@ def test_a_name_carries_a_whole_percent_and_the_long_label_keeps_the_figure() ->
 
     design = _design(percents=("12.5",), times=(0,))
     (condition,) = design.conditions()
-    assert design.label(condition, compact=True) == "DMSO_13%-0min"
+    assert design.label(condition, compact=True) == "DMSO_13p-0min"
     assert design.label(condition) == "DMSO 12.5% · 0 min"
 
 
@@ -559,17 +562,17 @@ def test_a_whole_percent_is_kept_only_where_it_is_unambiguous() -> None:
     where the science asks for it.
     """
     alone = _design(percents=("12.5",), times=(0,))
-    assert [alone.label(c, compact=True) for c in alone.conditions()] == ["DMSO_13%-0min"]
+    assert [alone.label(c, compact=True) for c in alone.conditions()] == ["DMSO_13p-0min"]
 
     close = _design(percents=("10.2", "10.4"), times=(0,))
     assert [close.label(c, compact=True) for c in close.conditions()] == [
-        "DMSO_10.2%-0min", "DMSO_10.4%-0min",
+        "DMSO_10p2p-0min", "DMSO_10p4p-0min",
     ]
     assert close.labels_that_collide() == ()
     # A whole percent next to a close one keeps its own shape.
     mixed = _design(percents=("10", "10.4", "25"), times=(0,))
     assert [mixed.label(c, compact=True) for c in mixed.conditions()] == [
-        "DMSO_10%-0min", "DMSO_10.4%-0min", "DMSO_25%-0min",
+        "DMSO_10p-0min", "DMSO_10p4p-0min", "DMSO_25p-0min",
     ]
 
 
@@ -594,5 +597,75 @@ def test_two_conditions_that_are_genuinely_the_same_are_named() -> None:
 
     assert len(collisions) == 1
     compact, full = collisions[0]
-    assert compact == "DMSO_10%-0min"
+    assert compact == "DMSO_10p-0min"
     assert full == ("DMSO 10% · 0 min", "DMSO 10% · 0 min")
+
+
+def test_a_compact_name_is_letters_digits_hyphen_and_underscore_only() -> None:
+    """The soak_id ends up in MxLive, in file names and in URLs.
+
+    % is an escape in a URL and a format in a shell; a dot inside an
+    identifier reads as an extension; a slash is a path. None of them can be
+    in a name that is written once and read for years, so the label is built
+    from an allowed list rather than swept for a forbidden one.
+    """
+    allowed = re.compile(r"^[A-Za-z0-9_-]+$")
+    dmso = Additive("dmso", "DMSO", Decimal("100"), "C", "LDV-1", "A1")
+    glycerol = Additive("gly", "Glycerol", Decimal("100"), "C", "LDV-1", "B1")
+
+    design = ConditionTestDesign(
+        (dmso,),
+        (new_series("dmso", (Decimal("10"),), (0, 90), 1),),
+        Decimal("200"),
+    )
+    assert [design.label(c, compact=True) for c in design.conditions()] == [
+        "DMSO_10p-0min", "DMSO_10p-1h30min",
+    ]
+
+    # Where a design had to keep the figure, the point is written p as well.
+    kept = ConditionTestDesign(
+        (dmso,),
+        (new_series("dmso", (Decimal("10.2"), Decimal("10.4")), (0,), 1),),
+        Decimal("200"),
+    )
+    assert [kept.label(c, compact=True) for c in kept.conditions()] == [
+        "DMSO_10p2p-0min", "DMSO_10p4p-0min",
+    ]
+
+    # Two steps of one condition, and nothing dispensed at a step.
+    combined = ConditionTestDesign(
+        (dmso, glycerol),
+        (new_series("dmso", (Decimal("5"),), (60,), 1, (Treatment("gly", Decimal("20"), 0),)),),
+        Decimal("200"),
+    )
+    none_added = ConditionTestDesign(
+        (dmso,), (new_series("dmso", (Decimal("0"),), (0,), 1),), Decimal("200")
+    )
+    labels = (
+        [design.label(c, compact=True) for c in design.conditions()]
+        + [kept.label(c, compact=True) for c in kept.conditions()]
+        + [combined.label(c, compact=True) for c in combined.conditions()]
+        + [none_added.label(c, compact=True) for c in none_added.conditions()]
+    )
+    assert all(allowed.fullmatch(label) for label in labels), labels
+
+
+def test_a_name_with_characters_that_cannot_be_typed_is_named_back() -> None:
+    """Said where it is typed, not dropped on the way to MxLive.
+
+    A forbidden list let "PEG 400 (v/v)" through as PEG400(v/v); an allowed
+    list would quietly make it PEG400vv instead. Both are a name becoming
+    another name without anybody being told, and the soak_id cannot be
+    corrected afterwards.
+    """
+    assert characters_not_allowed_in_a_name("PEG 400 (v/v)") == ("(", "/", ")")
+    assert characters_not_allowed_in_a_name("MgCl2·6H2O") == ("·",)
+    assert characters_not_allowed_in_a_name("50% DMSO") == ("%",)
+    # Letters, digits and spaces are a name somebody can read.
+    assert characters_not_allowed_in_a_name("PEG 400") == ()
+    assert characters_not_allowed_in_a_name("DMSO") == ()
+
+    # A design saved before names were checked still opens and still names
+    # its conditions; only the typing is refused.
+    assert compact_name("PEG 400 (v/v)") == "PEG400vv"
+    assert compact_name("((((") == "additive"

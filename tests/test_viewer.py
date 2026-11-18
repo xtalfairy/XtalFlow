@@ -4490,11 +4490,11 @@ def test_a_renamed_solvent_reaches_mxlive_under_the_name_that_was_typed(
 
     # The names are shown before the upload, and they are what is sent.
     assert (
-        "Named in MxLive: NoDMSO-0min-r1, DMSO_3%-0min-r1, NoEG2-0min-r1, and 1 more"
+        "Named in MxLive: NoDMSO-0min-r1, DMSO_3p-0min-r1, NoEG2-0min-r1, and 1 more"
         in asked[-1]
     )
     names = {record["soak_id"] for record in FakeWriter.sent}
-    assert "EG2_10%-0min-r1" in names
+    assert "EG2_10p-0min-r1" in names
     assert not any("EG210%" in name for name in names)
     assert unexpected_dialogs == []
     window.close()

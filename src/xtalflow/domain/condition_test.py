@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from string import ascii_letters, digits
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -106,24 +107,57 @@ def parse_minutes_list(text: str) -> tuple[int, ...]:
     return tuple(values)
 
 
-# A compact label joins its parts with - and +, and closes a name with _
-# before the percent. None of those may appear inside a name, and a name may
-# not end where the percent begins: "Solvent 2" at 3 % ran together as
-# "Solvent 23%" in MxLive, which read as a concentration nobody dispensed.
-COMPACT_RESERVED = "-+_%·,;\"'"
+# A compact label becomes a soak_id in MxLive and ends up in file names and
+# folders, so it is built from letters, digits, - and _ and nothing else. An
+# allowed list, not a forbidden one: a forbidden list let "PEG 400 (v/v)"
+# through as PEG400(v/v), and a name with a slash in it is a path.
+#
+# The structure a label carries: _ closes a name before the percent, - joins
+# percent to time, __ joins the steps of one condition. So a name may not
+# contain those, and may not end where the percent begins - "Solvent 2" at
+# 3 % ran together as "Solvent 23%" in MxLive, a concentration nobody
+# dispensed.
+COMPACT_ALLOWED = ascii_letters + digits
+# What a person may type. Spaces are allowed and simply close up, so "PEG 400"
+# is a name somebody can read; everything else is refused where it is typed,
+# because a name silently becoming another name is worse than being asked.
+NAME_ALLOWED = COMPACT_ALLOWED + " "
+
+
+def characters_not_allowed_in_a_name(name: str) -> tuple[str, ...]:
+    """The characters in ``name`` that cannot be typed, in the order they appear."""
+    seen: list[str] = []
+    for character in name:
+        if character not in NAME_ALLOWED and character not in seen:
+            seen.append(character)
+    return tuple(seen)
 
 
 def compact_name(name: str) -> str:
-    """An additive's name with nothing in it that could be read as structure."""
+    """An additive's name with nothing in it that could be read as structure.
+
+    Still trims rather than refusing, because a design saved before names
+    were checked has to go on opening and naming its conditions.
+    """
     cleaned = "".join(
-        character for character in name
-        if not character.isspace() and character not in COMPACT_RESERVED
+        character for character in name if character in COMPACT_ALLOWED
     )
     return cleaned or "additive"
 
 
 def _percent_text(value: Decimal) -> str:
     return f"{value.normalize():f}"
+
+
+def compact_figure(percent_text: str) -> str:
+    """A percent, written for a name: 10 -> 10p, 10.2 -> 10p2.
+
+    ``p`` for the sign because % is read as an escape in a URL and as a
+    format in a shell, and ``p`` for the point as well because a decimal
+    point inside an identifier is trouble in a file name. The two meet only
+    where a design had to keep a figure, which is rare: 10p2p.
+    """
+    return f"{percent_text.replace('.', 'p')}p"
 
 
 def compact_percent(value: Decimal) -> str:
@@ -419,11 +453,12 @@ class ConditionTestDesign:
                 parts.append(f"{text}-{time}" if compact else f"{text} · {time}")
                 continue
             parts.append(
-                f"{compact_name(name)}_{percents[treatment.final_percent]}%-{time}"
+                f"{compact_name(name)}_"
+                f"{compact_figure(percents[treatment.final_percent])}-{time}"
                 if compact
                 else f"{name} {_percent_text(treatment.final_percent)}% · {time}"
             )
-        return ("+" if compact else " → ").join(parts)
+        return ("__" if compact else " → ").join(parts)
 
     def to_json(self) -> str:
         # Fields added after the first finalized tests are written only when not

@@ -4,7 +4,10 @@ import re
 from datetime import datetime
 
 
-_SAFE_PROTEIN = re.compile(r"^[A-Z0-9][A-Z0-9._-]*$")
+# Letters, digits, - and _ only. The name goes into the experiment ID, which
+# becomes a file name on the instruments and an identifier in MxLive, and a
+# dot in either is the kind of thing that gets read as an extension.
+_SAFE_PROTEIN = re.compile(r"^[A-Z0-9][A-Z0-9_-]*$")
 
 
 def normalize_protein_name(value: str) -> str:
@@ -13,7 +16,7 @@ def normalize_protein_name(value: str) -> str:
         raise ValueError("protein name is required")
     if not _SAFE_PROTEIN.fullmatch(normalized):
         raise ValueError(
-            "protein name may contain letters, numbers, dot, underscore, and hyphen"
+            "protein name may contain letters, numbers, underscore, and hyphen"
         )
     return normalized
 

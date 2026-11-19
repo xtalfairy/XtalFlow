@@ -46,6 +46,7 @@ from xtalflow.domain import (
     crystal_selection_from_selected_crystals,
 )
 from xtalflow.domain.crystal_selection import order_selected_wells
+from xtalflow.domain.experiment_naming import protein_name_for_record
 from xtalflow.domain.fragment_screening import (
     TRANSFER_INCREMENT_NL,
     AssignmentOrder,
@@ -1270,7 +1271,7 @@ def _refresh_labwork_preview(
     records = record_builder(
         plan,
         experiment_id=experiment_id or "Pending finalization",
-        protein_name=protein_name.strip(),
+        protein_name=protein_name_for_record(protein_name),
         username=username,
         account_id=account_id,
     )

@@ -583,8 +583,14 @@ def test_main_window_starts_on_home_and_guides_an_experiment(
     assert editor.setup_step.experiment_id_label.text().startswith(
         "ID when finalized: RawCrystal-"
     )
-    editor.protein_input.setText("BRD4 !!")
+    editor.protein_input.setText("BRD4!!")
     assert editor.setup_step.protein_error_label.text().startswith("Protein name may contain")
+    # A space has its own message, because it is the one the ID used to turn
+    # into a hyphen while the record kept it, and the one nobody can see.
+    editor.protein_input.setText("BRD4 1")
+    assert editor.setup_step.protein_error_label.text() == (
+        "Protein name may not contain spaces; use - instead"
+    )
     assert not page.primary_button.isEnabled()
     editor.protein_input.setText("BRD4")
     # Its line stays, empty, so fixing the name moves nothing.
@@ -648,6 +654,19 @@ def test_conditions_list_libraries_from_designated_directory(
         "Pending finalization"
     )
     assert editor.webdb_table.item(0, webdb_columns["protein_name"]).text() == ""
+
+    # The name as it will be recorded, which is as the experiment ID has it.
+    # The ID has always turned a space into a hyphen while the record kept
+    # the space, and the spelling with the space is the one that breaks data
+    # processing at the beamline, where the name becomes part of a path. The
+    # preview has to show what will actually be sent, or it is not a preview.
+    editor.protein_input.setText("brd4 domain 1")
+    editor.protein_input.editingFinished.emit()
+    app.processEvents()
+
+    assert editor.webdb_table.item(0, webdb_columns["protein_name"]).text() == (
+        "BRD4-DOMAIN-1"
+    )
     window.close()
     app.processEvents()
 
@@ -4433,8 +4452,10 @@ def test_a_renamed_solvent_reaches_mxlive_under_the_name_that_was_typed(
         source_plate="SOLVENT-09", source_well="a1", source_plate_type="384PP_DMSO2"
     )
     editor.add_series_button.click()
-    assert editor.design.additives[1].name == "Solvent 2"
-    assert editor.finalize_warnings()[0].startswith("Still named Solvent 2.")
+    # Hyphenated: the name a person still has to fix cannot be one the field
+    # refuses, and this one reaches MxLive if nobody changes it.
+    assert editor.design.additives[1].name == "Solvent-2"
+    assert editor.finalize_warnings()[0].startswith("Still named Solvent-2.")
     # Its own plate and the calibration for glycols, so only the name is at issue.
     editor.update_additive(
         source_plate="SOLVENT-10", source_well="a1", source_plate_type="384PP_AQ_CP"
@@ -4442,11 +4463,11 @@ def test_a_renamed_solvent_reaches_mxlive_under_the_name_that_was_typed(
 
     # Typed, not entered: no Enter, and the focus stays in the field.
     editor.additive_name_input.selectAll()
-    QTest.keyClicks(editor.additive_name_input, "EG 2")
-    assert editor.design.additives[1].name == "Solvent 2"
+    QTest.keyClicks(editor.additive_name_input, "EG-2")
+    assert editor.design.additives[1].name == "Solvent-2"
 
     window.experiments.go_to_step(WorkflowStep.REVIEW)
-    assert editor.design.additives[1].name == "EG 2"
+    assert editor.design.additives[1].name == "EG-2"
     assert editor.finalize_warnings() == ()
 
     required = editor.design.required_crystals
@@ -4490,12 +4511,15 @@ def test_a_renamed_solvent_reaches_mxlive_under_the_name_that_was_typed(
 
     # The names are shown before the upload, and they are what is sent.
     assert (
-        "Named in MxLive: NoDMSO-0min-r1, DMSO_3p-0min-r1, NoEG2-0min-r1, and 1 more"
+        "Named in MxLive: NoDMSO-0min-r1, DMSO_3p-0min-r1, NoEG-2-0min-r1, and 1 more"
         in asked[-1]
     )
     names = {record["soak_id"] for record in FakeWriter.sent}
-    assert "EG2_10p-0min-r1" in names
+    assert "EG-2_10p-0min-r1" in names
     assert not any("EG210%" in name for name in names)
+    # And no space anywhere in what was sent: that is what broke processing.
+    assert not any(" " in name for name in names)
+    assert all(" " not in record["protein_name"] for record in FakeWriter.sent)
     assert unexpected_dialogs == []
     window.close()
     app.processEvents()

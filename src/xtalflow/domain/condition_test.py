@@ -117,14 +117,17 @@ def parse_minutes_list(text: str) -> tuple[int, ...]:
 # end where the percent begins - "Solvent 2" at 3 % ran together as
 # "Solvent 23%" in MxLive, a concentration nobody dispensed.
 COMPACT_ALLOWED = ascii_letters + digits + "-"
-# What a person may type. A hyphen is in most real names - 2-propanol,
-# PEG-400 - and the first _ still says where the name ends, so it is kept
-# rather than made somebody's problem at the bench. An underscore is not:
-# it is the boundary itself, and a name holding one would put the boundary
-# in two places. Spaces are allowed and simply close up, so "PEG 400" is a
-# name somebody can read. Everything else is refused where it is typed,
-# because a name silently becoming another name is worse than being asked.
-NAME_ALLOWED = COMPACT_ALLOWED + " "
+# What a person may type, and it is the same list: one rule for a name, not
+# one per field. A hyphen is in most real names - 2-propanol, PEG-400 - and
+# the first _ still says where the name ends, so it is kept. An underscore
+# is not: it is the boundary itself, and a name holding one would put the
+# boundary in two places.
+#
+# A space is refused too, though it used to close up quietly. It is the
+# character that actually broke data processing at the beamline, where a
+# name becomes part of a path, and a rule that allows it in one field and
+# drops it in another is how it gets back in. "PEG 400" is typed PEG-400.
+NAME_ALLOWED = COMPACT_ALLOWED
 
 
 def characters_not_allowed_in_a_name(name: str) -> tuple[str, ...]:

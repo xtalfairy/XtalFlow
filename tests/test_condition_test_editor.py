@@ -404,7 +404,7 @@ def test_each_solvent_chip_removes_that_solvent_after_asking(monkeypatch) -> Non
     editor.add_series_button.click()
     editor.add_series_button.click()
     names = [editor.design.additive(item.additive_id).name for item in editor.design.series]
-    assert names == ["DMSO", "Solvent 2", "Solvent 3"]
+    assert names == ["DMSO", "Solvent-2", "Solvent-3"]
     chips = editor.series_group.buttons()
     assert [chip.text() for chip in chips] == names
     assert editor._series_index == 2
@@ -424,17 +424,17 @@ def test_each_solvent_chip_removes_that_solvent_after_asking(monkeypatch) -> Non
     editor.series_group.buttons()[0].findChild(QToolButton, "ChipClose").click()
     assert [
         editor.design.additive(item.additive_id).name for item in editor.design.series
-    ] == ["Solvent 2", "Solvent 3"]
-    assert [item.name for item in editor.design.additives] == ["Solvent 2", "Solvent 3"]
+    ] == ["Solvent-2", "Solvent-3"]
+    assert [item.name for item in editor.design.additives] == ["Solvent-2", "Solvent-3"]
     # The solvent that was open stays open.
     assert editor._series_index == 1
-    assert editor.additive_name_input.text() == "Solvent 3"
+    assert editor.additive_name_input.text() == "Solvent-3"
 
     editor.series_group.buttons()[1].findChild(QToolButton, "ChipClose").click()
-    assert [item.name for item in editor.design.additives] == ["Solvent 2"]
+    assert [item.name for item in editor.design.additives] == ["Solvent-2"]
     # The last solvent keeps its chip, but cannot be removed.
     (chip,) = editor.series_group.buttons()
-    assert chip.text() == "Solvent 2"
+    assert chip.text() == "Solvent-2"
     assert not chip.findChild(QToolButton, "ChipClose").isEnabled()
 
 
@@ -1096,20 +1096,18 @@ def test_a_name_that_cannot_be_typed_is_refused_where_it_is_typed() -> None:
     editor._name_edited()
 
     error = editor.name_error_label.text()
-    assert "letters, numbers, spaces and hyphens" in error
+    assert "letters, numbers and hyphens" in error
     assert "( / )" in error
     # The design still holds what it held: nothing was taken in and changed.
     assert name_of() == "DMSO"
 
-    # A space is a name somebody can read, and simply closes up in the label.
+    # A space is refused too, and said so it can be read: the character the
+    # message is about is the one character a message cannot show.
     editor.additive_name_input.setText("PEG 400")
     editor._name_edited()
 
-    assert editor.name_error_label.text() == ""
-    assert name_of() == "PEG 400"
-    assert editor.design.label(
-        editor.design.conditions()[-1], compact=True
-    ).startswith("PEG400_")
+    assert "a space (use -)" in editor.name_error_label.text()
+    assert name_of() == "DMSO"
 
     # A hyphen is in most real names and is kept as typed: the first _ still
     # says where the name ends, so 2-propanol_10p-0min reads without guessing.
@@ -1130,8 +1128,8 @@ def test_a_name_that_cannot_be_typed_is_refused_where_it_is_typed() -> None:
     assert "_" in editor.name_error_label.text()
     assert name_of() == "2-propanol"
 
-    # Hyphens and spaces alone carry nothing. "additive" is not a name.
-    editor.additive_name_input.setText("- -")
+    # Hyphens alone carry nothing. "additive" is not a name.
+    editor.additive_name_input.setText("--")
     editor._name_edited()
 
     assert "needs a letter or a number" in editor.name_error_label.text()
@@ -1236,4 +1234,31 @@ def test_a_saved_design_whose_name_cannot_be_written_is_not_finalized() -> None:
 
     assert editor.design.additives[0].name == "Glycerol"
     assert editor.conditions_error() is None
+
+
+def test_a_plate_name_that_cannot_be_written_is_refused(tmp_path) -> None:
+    """The plate's name travels further than any other name here.
+
+    It goes into the ECHO worksheet and onto the instrument's screen, into
+    the file name of the plate's shared record, and into soak_plate in
+    MxLive, where it cannot be corrected. Nothing checked it at all, so a
+    space reached all four - and a space in a name is what breaks data
+    processing at the beamline, where the name becomes part of a path.
+    """
+    record = _shared_plate(tmp_path)
+    editor = _editor()
+    editor.set_source_record(record, "lee")
+    plate_of = lambda: editor.design.additives[0].source_plate
+
+    editor.enter_new_plate("SOLVENT 02")
+
+    assert "a space (use -)" in editor.record_note_label.text()
+    # Not taken: the plate is still to be named, so nothing carries it.
+    assert plate_of() != "SOLVENT 02"
+    assert editor._naming_plate
+
+    editor.enter_new_plate("SOLVENT-02")
+
+    assert plate_of() == "SOLVENT-02"
+    assert "a space" not in editor.record_note_label.text()
 

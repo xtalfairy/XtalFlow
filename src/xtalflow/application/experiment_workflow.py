@@ -324,10 +324,14 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
         statuses[WorkflowStep.SETUP] = StepStatus(
             WorkflowStep.SETUP, StepState.COMPLETE, f"Protein: {facts.protein.strip()}"
         )
-    except ValueError:
+    except ValueError as error:
+        # The reason, not just that there is one. "Fix the protein name"
+        # leaves somebody who typed a space with nothing to act on: the
+        # character is invisible and the rule is new.
         message = (
             "Enter a protein name to continue."
-            if not facts.protein.strip() else "Fix the protein name to continue."
+            if not facts.protein.strip()
+            else f"Fix the protein name to continue: {error}."
         )
         statuses[WorkflowStep.SETUP] = StepStatus(
             WorkflowStep.SETUP, StepState.INCOMPLETE, message

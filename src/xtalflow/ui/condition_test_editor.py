@@ -103,8 +103,15 @@ def _dose_text(design: ConditionTestDesign, item, dose) -> str:
 
 
 def _is_default_name(name: str, noun: str) -> bool:
-    """True for the "Solvent 2" a new series is given until somebody names it."""
-    return bool(re.fullmatch(rf"{re.escape(noun.capitalize())} \d+", name.strip()))
+    """True for the "Solvent-2" a new series is given until somebody names it.
+
+    The space in it is matched as well: names given before a space was
+    refused are still out there in saved designs, and they are still the
+    name nobody chose.
+    """
+    return bool(
+        re.fullmatch(rf"{re.escape(noun.capitalize())}[ -]\d+", name.strip())
+    )
 
 
 CELL_WIDTH = 98
@@ -223,6 +230,16 @@ def _sentence(error: ValueError) -> str:
 def _show_message(label: QLabel, text: str) -> None:
     label.setText(text)
     label.setVisible(bool(text))
+
+
+def _refused_text(refused: tuple[str, ...]) -> str:
+    """The refused characters, named so they can be read on screen.
+
+    A space is the one that matters here and the one that cannot be shown:
+    "Not:  " says nothing, and the character it is about is the character
+    nobody can see. So it is spelled, and what to type instead is said.
+    """
+    return " ".join("a space (use -)" if item == " " else item for item in refused)
 
 
 class ConditionTestEditor(PlanEditorBase):
@@ -914,7 +931,9 @@ class ConditionTestEditor(PlanEditorBase):
 
     def _add_series(self) -> None:
         number = len(self.design.additives) + 1
-        additive = Additive(str(uuid4()), f"{self._noun.capitalize()} {number}")
+        # Hyphenated, not spaced: this name reaches MxLive if nobody changes
+        # it, and a name a person has to fix cannot be one the field refuses.
+        additive = Additive(str(uuid4()), f"{self._noun.capitalize()}-{number}")
         series = new_series(
             additive.id, (Decimal("0"), Decimal("10")), (0,), self.design.default_replicates
         )
@@ -983,7 +1002,7 @@ class ConditionTestEditor(PlanEditorBase):
         if refused:
             self._refuse_name(
                 f"{current} was not renamed: a {self._noun} name can have letters, "
-                f"numbers, spaces and hyphens. Not: {' '.join(refused)}"
+                f"numbers and hyphens. Not: {_refused_text(refused)}"
             )
             return
         if a_name_with_nothing_to_write(name):
@@ -1276,6 +1295,20 @@ class ConditionTestEditor(PlanEditorBase):
         name = self.source_plate_input.currentText().strip()
         if not name:
             return  # Still to be typed; Cancel or Escape goes back to the list.
+        # The plate's name travels in the ECHO worksheet, onto the
+        # instrument's screen, into the file name of its shared record, and
+        # into soak_plate in MxLive, where it cannot be corrected. Nothing
+        # checked it before, so a space went to all four.
+        refused = characters_not_allowed_in_a_name(name)
+        if refused or a_name_with_nothing_to_write(name):
+            _show_message(
+                self.record_note_label,
+                f"A plate name can have letters, numbers and hyphens"
+                + (f". Not: {_refused_text(refused)}" if refused
+                   else ", and needs a letter or a number.")
+                + " Still to be named; Cancel goes back to the list.",
+            )
+            return
         self._end_new_plate()
         self._read_plate_list(fresh=True)
         known = {summary.name.casefold(): summary for summary in self._plate_list or ()}
@@ -2190,8 +2223,8 @@ class ConditionTestEditor(PlanEditorBase):
                 return (
                     f"Rename {additive.name}: it would be recorded as "
                     f"{compact_name(additive.name)}. A {self._noun} name can have "
-                    f"letters, numbers, spaces and hyphens"
-                    + (f". Not: {' '.join(refused)}" if refused
+                    f"letters, numbers and hyphens"
+                    + (f". Not: {_refused_text(refused)}" if refused
                        else f", and needs a letter or a number.")
                 )
         conditions = self.design.conditions()

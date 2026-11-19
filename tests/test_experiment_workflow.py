@@ -378,7 +378,12 @@ def test_a_dotted_protein_name_blocks_a_new_experiment_but_not_one_underway() ->
 
     new = evaluate_experiment(dotted)
     assert not new.ready_to_finalize
-    assert new.status_of(WorkflowStep.SETUP).message == "Fix the protein name to continue."
+    # The reason, not just that there is one: the rule is new and the
+    # character it refuses can be invisible.
+    assert new.status_of(WorkflowStep.SETUP).message == (
+        "Fix the protein name to continue: protein name may contain letters, "
+        "numbers, underscore, and hyphen."
+    )
 
     underway = evaluate_experiment(replace(dotted, experiment_id_assigned=True))
     assert underway.ready_to_finalize
@@ -390,4 +395,29 @@ def test_a_dotted_protein_name_blocks_a_new_experiment_but_not_one_underway() ->
             replace(dotted, protein=refused, experiment_id_assigned=True)
         )
         assert not status.ready_to_finalize
+
+
+def test_a_space_in_a_protein_name_says_what_to_type_instead() -> None:
+    """A space passed the old check, because the check normalized first.
+
+    `normalize_protein_name` replaced whitespace with a hyphen and then
+    matched, so "brd4 domain 1" was accepted - and the name stored and sent
+    to MxLive kept the space while the experiment ID had the hyphen. That
+    space is what broke data processing at the beamline, where the name
+    becomes part of a path, and an invisible character needs the message to
+    name it.
+    """
+    status = evaluate_experiment(replace(READY_FRAGMENT, protein="brd4 domain 1"))
+
+    assert not status.ready_to_finalize
+    assert status.status_of(WorkflowStep.SETUP).message == (
+        "Fix the protein name to continue: protein name may not contain "
+        "spaces; use - instead."
+    )
+
+    # One already underway keeps working; its ID is fixed and reused.
+    underway = evaluate_experiment(
+        replace(READY_FRAGMENT, protein="brd4 domain 1", experiment_id_assigned=True)
+    )
+    assert underway.ready_to_finalize
 

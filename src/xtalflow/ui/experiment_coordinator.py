@@ -32,7 +32,10 @@ from xtalflow.domain import (
     crystal_selection_from_selected_crystals,
 )
 from xtalflow.domain.fragment_screening import FragmentLibrary
-from xtalflow.domain.experiment_naming import suggest_experiment_id
+from xtalflow.domain.experiment_naming import (
+    protein_name_for_record,
+    suggest_experiment_id,
+)
 from xtalflow.domain.condition_test import TEMPLATES as CONDITION_TEMPLATES
 from xtalflow.domain.condition_test import ConditionTestPlan, format_minutes
 from xtalflow.domain.plan_lifecycle import (
@@ -2033,7 +2036,9 @@ class ExperimentCoordinator:
             build_labworks(
                 plan_from_snapshot(editor.plan_id, revision.snapshot_json),
                 experiment_id=revision.experiment_id,
-                protein_name=str(snapshot.get("protein", "")).strip(),
+                protein_name=protein_name_for_record(
+                    str(snapshot.get("protein", ""))
+                ),
                 username=self.mxlive_account.username if self.mxlive_account else "",
                 account_id=self.mxlive_account.account_id if self.mxlive_account else "",
             ),

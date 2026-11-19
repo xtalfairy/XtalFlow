@@ -102,6 +102,11 @@ class HarvestReviewPort(Protocol):
     ) -> Sequence[WorksheetExportEvent]: ...
 
 
+# Said of a file that belongs to the other half of a plate uploaded under
+# two experiment IDs. Not a problem, so the screen leaves it out.
+ANOTHER_PART = "a worksheet of this plate's other half"
+
+
 @dataclass(frozen=True)
 class HarvestSources:
     """What the local database says to read, and what to compare it against.
@@ -121,6 +126,11 @@ class HarvestSources:
     candidates: tuple[tuple[tuple[str, str], ...], ...]
     paths: tuple[str, ...]
     payloads: Mapping[tuple[str, str], Mapping[str, Any]]
+    # The wells of every worksheet of the whole plate, when this experiment
+    # is one part of one uploaded under two IDs. A file of the other part is
+    # a correct file in the right place, so it is named as that and not as
+    # something to look into.
+    plate_candidates: tuple[tuple[tuple[str, str], ...], ...] = ()
 
 
 def prepare_harvest_review(
@@ -129,12 +139,21 @@ def prepare_harvest_review(
     plan_for_revision: Callable[[str], Any],
     *,
     username: str,
+    worksheets_also_from: Sequence[str] = (),
+    plate_plan: Any = None,
 ) -> HarvestSources:
     """Everything the local database knows: which revision, and which files.
 
     ``plan_for_revision`` rebuilds the plan from the finalized revision's
     snapshot, so the wells compared against are the ones that were sent, not
     whatever the plan says now.
+
+    ``worksheets_also_from`` names further revisions whose exports hold this
+    one's worksheets. An upload split across two experiment IDs sits on a
+    part of a revision, while the worksheets were saved from the whole one,
+    so without this the files would never be found and every crystal would
+    read as not picked yet. Which file belongs to which part is answered by
+    its contents either way.
     """
     upload = _succeeded_upload(experiment_id, store)
     if upload.username != username:
@@ -147,8 +166,9 @@ def prepare_harvest_review(
         experiment_id, upload.revision_id, upload.username,
         expected_wells(_whole_worksheet(plan)),
         worksheets_a_revision_sent(plan),
-        _shifter_paths(upload.revision_id, store),
+        _shifter_paths((upload.revision_id, *worksheets_also_from), store),
         _payloads_by_well(upload),
+        worksheets_a_revision_sent(plate_plan) if plate_plan is not None else (),
     )
 
 
@@ -173,6 +193,15 @@ def read_harvest(
             warnings.append(f"{path} cannot be read ({error.strerror or error}).")
             continue
         if not file_is_one_of(sources.candidates, text):
+            if sources.plate_candidates and file_is_one_of(
+                sources.plate_candidates, text
+            ):
+                # The other half of a plate split across two experiment IDs.
+                # Nothing is wrong with it and nobody has to look at it, so
+                # it must not be reported as a problem: a correct split
+                # would otherwise raise an attention note every time.
+                read_states.append((path, ANOTHER_PART))
+                continue
             # Not refused outright: a worksheet saved twice, or one the
             # instrument has not touched yet, both land here.
             read_states.append((path, "not a worksheet of this revision"))
@@ -207,8 +236,10 @@ def _succeeded_upload(
     return max(events, key=lambda event: event.attempted_at)
 
 
-def _shifter_paths(revision_id: str, store: HarvestReviewPort) -> tuple[str, ...]:
-    """Every SHIFTER file this revision was saved to, newest save first.
+def _shifter_paths(
+    revision_ids: Sequence[str], store: HarvestReviewPort
+) -> tuple[str, ...]:
+    """Every SHIFTER file these revisions were saved to, newest save first.
 
     Both stations are listed, and every save of them, because the operator
     loads whichever one is in front of them and a second save is a legitimate
@@ -216,9 +247,12 @@ def _shifter_paths(revision_id: str, store: HarvestReviewPort) -> tuple[str, ...
     contents, not by its name or its age.
     """
     paths: list[str] = []
+    events = [
+        event for revision_id in revision_ids
+        for event in store.list_worksheet_exports(revision_id)
+    ]
     for event in sorted(
-        store.list_worksheet_exports(revision_id),
-        key=lambda event: event.exported_at, reverse=True,
+        events, key=lambda event: event.exported_at, reverse=True,
     ):
         if event.status != EXPORT_SUCCEEDED:
             continue

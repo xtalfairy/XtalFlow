@@ -2537,9 +2537,9 @@ class ConditionTestEditor(PlanEditorBase):
             f"shipment per experiment ID, and a shipment goes with its last "
             f"crystal, so uploaded together the soonest crystals cannot be "
             f"shot until the last late one is picked. Nothing on the plate "
-            f"or in the worksheets has to change for them to go separately, "
-            f"but XtalFlow cannot yet upload one plate under two experiment "
-            f"IDs, so decide before you upload: afterwards the records "
+            f"or in the worksheets has to change for them to go separately: "
+            f"when you upload, you can send the late ones under their own "
+            f"experiment ID. Decide then, because afterwards the records "
             f"cannot be moved.",
         )
     def _source_warnings(self) -> tuple[str, ...]:

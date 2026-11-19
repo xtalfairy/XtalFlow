@@ -1281,9 +1281,10 @@ def test_a_late_harvest_holding_the_other_crystals_back_is_said() -> None:
     # physical is divided, only the ID the records go out under.
     assert "source well" not in said
     assert "its own wells" not in said
-    # And it must not promise a choice that is not built yet.
-    assert "cannot yet upload" in said
-    assert "decide before you upload" in said
+    # The choice exists now, so this says where it is made.
+    assert "when you upload" in said
+    assert "cannot yet" not in said
+    assert "afterwards the records cannot be moved" in said
 
 
 def test_the_warning_names_the_threshold_not_the_latest_harvest() -> None:

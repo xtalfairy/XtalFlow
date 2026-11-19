@@ -27,7 +27,7 @@ from xtalflow.domain.condition_test import (
     Dose,
 )
 from xtalflow.domain.crystal_workflow import AssignmentOrder
-from xtalflow.domain.experiment_naming import suggest_experiment_id
+from xtalflow.domain.experiment_naming import next_id_beside, suggest_experiment_id
 from xtalflow.domain.experiment_project import ExperimentPlan, ExperimentProject, PlanType
 from xtalflow.domain.fragment_screening import (
     Fragment,
@@ -358,6 +358,64 @@ def plans_match(one: str | None, other: str | None) -> bool:
     return left == right
 
 
+# A part revision records that some of a finalized revision's crystals went
+# to MxLive under an experiment ID of their own. It lives in the snapshot
+# and not in a column of its own, because plan_revision's schema is shared
+# with XtalFlow 0.9 and widening it is a one-way door.
+PART_OF_KEY = "part_of"
+# Which half a part is. The late half's ID belongs to the plan rather than
+# to one split, so a plan finalized again can find the name its late
+# crystals already went to MxLive under instead of minting a second one.
+PART_ROLE_KEY = "part_role"
+AHEAD_PART = "harvested_soonest"
+LATE_PART = "harvested_late"
+
+
+def is_part_revision(revision) -> bool:
+    """Whether this revision is a part of another, rather than a plan of its own.
+
+    A part is not the plan: it holds some of a whole revision's assignments
+    so that they can be uploaded under their own experiment ID, and the
+    whole revision is still what the worksheets and the source wells came
+    from. Anything asking "what is this plan now" has to skip parts.
+
+    Unreadable snapshots answer False, because the alternative is hiding a
+    revision somebody finalized.
+    """
+    try:
+        return bool(json.loads(revision.snapshot_json).get(PART_OF_KEY))
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def snapshot_for_part(
+    snapshot_json: str, condition_ids: frozenset[str], part_of: str, role: str
+) -> str:
+    """A whole revision's snapshot holding only these conditions' crystals.
+
+    The design is left whole on both sides. Only the assignments are
+    narrowed, because that is what plan_from_snapshot builds the selection
+    and the labwork records from, and because a design with conditions
+    removed would no longer describe the plate that was actually dispensed.
+
+    Narrowed by condition and not by well: a harvest time is a property of
+    the condition, so this is the same cut the SHIFTER worksheets were
+    already written on.
+    """
+    payload = json.loads(snapshot_json)
+    whole = payload.get("assignments", ())
+    kept = [
+        item for item in whole
+        if str(item.get("condition_id", "")) in condition_ids
+    ]
+    if not kept:
+        raise ValueError("a part with no crystals is not a part of anything")
+    payload["assignments"] = kept
+    payload[PART_OF_KEY] = part_of
+    payload[PART_ROLE_KEY] = role
+    return _canonical_json(payload)
+
+
 def compound_ids_in_snapshot(snapshot_json: str | None) -> tuple[str, ...]:
     """The compound IDs a finalized fragment screen actually used.
 
@@ -406,8 +464,123 @@ class PlanningService:
         self.store.save_planning_draft(draft)
 
     def latest_revision(self, plan_id: str) -> PlanRevision | None:
-        revisions = self.store.list_plan_revisions(plan_id)
-        return revisions[-1] if revisions else None
+        """The plan as it now stands, which is never a part of it.
+
+        A part revision holds some of a whole revision's crystals so they
+        could be uploaded under their own experiment ID. It is not the
+        plan: the worksheets, the source wells and the draft comparison all
+        belong to the whole revision it was taken from, so a part must
+        never become what this returns.
+        """
+        whole = tuple(
+            revision for revision in self.store.list_plan_revisions(plan_id)
+            if not is_part_revision(revision)
+        )
+        return whole[-1] if whole else None
+
+    def parts_of(self, revision: PlanRevision) -> tuple[PlanRevision, ...]:
+        """The parts this revision was uploaded in, oldest first; empty if whole."""
+        return tuple(
+            part for part in self.store.list_plan_revisions(revision.plan_id)
+            if is_part_revision(part)
+            and json.loads(part.snapshot_json).get(PART_OF_KEY) == revision.id
+        )
+
+    def all_parts(self, plan_id: str) -> tuple[PlanRevision, ...]:
+        """Every part of this plan, of whichever revision, oldest first.
+
+        A plan can be finalized again after a split - to retry an upload, or
+        because something was wrong - and the records already on MxLive
+        belong to the parts of the revision they were taken from. Anything
+        asking what this plan sent has to look at all of them; asking only
+        about the newest revision's parts dropped a whole half of a plate
+        out of the harvest check, where every crystal then read as not
+        picked yet.
+        """
+        return tuple(
+            part for part in self.store.list_plan_revisions(plan_id)
+            if is_part_revision(part)
+        )
+
+    def whole_revision_id_of(self, part: PlanRevision) -> str | None:
+        """Which revision this part was taken from; None if it is not a part."""
+        try:
+            return json.loads(part.snapshot_json).get(PART_OF_KEY)
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    def late_part_id(self, plan_id: str) -> str | None:
+        """The ID the late half of this plan already has, if it has one.
+
+        The late ID belongs to the plan and not to one split. A plan can be
+        finalized again - to retry an upload, or because something was
+        wrong - and a later split must put the late crystals under the name
+        they already went out under, or be refused by its lock. Minting a
+        fresh one would put the same crystals on MxLive twice, under two
+        names, which cannot be taken back.
+        """
+        for revision in self.store.list_plan_revisions(plan_id):
+            if not is_part_revision(revision):
+                continue
+            if json.loads(revision.snapshot_json).get(PART_ROLE_KEY) == LATE_PART:
+                return revision.experiment_id
+        return None
+
+    def split_for_upload(
+        self,
+        revision: PlanRevision,
+        held_back: frozenset[str],
+        goes_ahead: frozenset[str],
+        finalized_by: str,
+        also_taken: set[str] = frozenset(),
+    ) -> tuple[PlanRevision, PlanRevision]:
+        """Two parts of one finalized revision, so each uploads under its own ID.
+
+        Nothing physical is divided: one plate, one dispense, one set of
+        source wells, and worksheets that were already written one per
+        harvest time. All that differs is the experiment ID the records go
+        out under, which is what MxLive makes a shipment per - so the
+        crystals that are picked today can be shot today instead of waiting
+        for the ones picked tomorrow.
+
+        The part that goes ahead keeps the revision's own ID, so an upload
+        of it is the upload this experiment was always going to have. The
+        part held back takes the ID beside it, or the one the plan's late
+        half already has.
+
+        Both rows are written together. One of them alone would read as a
+        finished split and the crystals left out would never be offered
+        again, so this is all or nothing - including the naming, which is
+        done before anything is written.
+
+        Returned in upload order, soonest first.
+        """
+        if not held_back or not goes_ahead:
+            raise ValueError("a split needs crystals on both sides")
+        late_id = self.late_part_id(revision.plan_id) or next_id_beside(
+            revision.experiment_id,
+            self.store.reserved_experiment_ids() | set(also_taken),
+        )
+        now = datetime.now(timezone.utc)
+        ahead, later = self.store.finalize_plan_revisions(
+            (
+                PlanRevision(
+                    str(uuid4()), revision.plan_id, 0, revision.experiment_id,
+                    snapshot_for_part(
+                        revision.snapshot_json, goes_ahead, revision.id, AHEAD_PART
+                    ),
+                    finalized_by, now,
+                ),
+                PlanRevision(
+                    str(uuid4()), revision.plan_id, 0, late_id,
+                    snapshot_for_part(
+                        revision.snapshot_json, held_back, revision.id, LATE_PART
+                    ),
+                    finalized_by, now,
+                ),
+            )
+        )
+        return ahead, later
 
     def save_selection_snapshot(
         self,

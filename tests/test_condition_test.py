@@ -806,3 +806,55 @@ def test_a_test_finished_in_one_session_is_not_split() -> None:
 
     assert late == ()
     assert soon == plan.assignments
+
+
+def test_a_split_snapshot_rebuilds_a_plan_holding_only_its_own_crystals() -> None:
+    """The whole way through: a real snapshot, split, and rebuilt as a plan.
+
+    This is what the upload sends. Each part has to come back as a plan
+    whose crystals are its own and whose design is the whole plate's - the
+    plate was dispensed once, and a design with conditions taken out would
+    no longer describe it.
+    """
+    from xtalflow.application.planning_service import (
+        condition_test_plan_snapshot,
+        plan_from_snapshot,
+        snapshot_for_part,
+    )
+    from xtalflow.domain.condition_test import assignments_by_harvest_time
+
+    plan = build_condition_test_plan(_soak_design((60, 720)), _selection(8))
+    snapshot = condition_test_plan_snapshot(plan, "BRD4")
+    soon, late = assignments_by_harvest_time(plan)
+
+    ahead = plan_from_snapshot(
+        "plan",
+        snapshot_for_part(
+            snapshot,
+            frozenset(item.condition.id for item in soon),
+            "whole-revision",
+            "harvested_soonest",
+        ),
+    )
+    behind = plan_from_snapshot(
+        "plan",
+        snapshot_for_part(
+            snapshot,
+            frozenset(item.condition.id for item in late),
+            "whole-revision",
+            "harvested_late",
+        ),
+    )
+
+    assert [item.harvest_minutes for item in ahead.assignments] == [60] * len(soon)
+    assert [item.harvest_minutes for item in behind.assignments] == [720] * len(late)
+    # Neither part claims a crystal of the other, so no well is uploaded twice.
+    assert not {item.selected_well.image_key for item in ahead.assignments} & {
+        item.selected_well.image_key for item in behind.assignments
+    }
+    # The design is the plate's, on both sides.
+    assert ahead.design == plan.design
+    assert behind.design == plan.design
+    # And each part's SHIFTER worksheets are whole files of the original.
+    assert len(ahead.harvest_groups) == 1
+    assert len(behind.harvest_groups) == 1

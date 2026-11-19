@@ -296,3 +296,117 @@ def test_one_disagreement_stops_the_wells_that_are_fine_too() -> None:
     # The second well is perfectly good, and it still waits.
     assert review.sendable
     assert not review.can_record
+
+
+class _StoreByRevision:
+    """A store that answers for the revision it is asked about, as the real one does."""
+
+    def __init__(self, uploads, exports_by_revision) -> None:
+        self._uploads = uploads
+        self._exports = exports_by_revision
+
+    def list_webdb_uploads_for_experiment(self, experiment_id: str):
+        return [item for item in self._uploads if item[0] == experiment_id][0][1]
+
+    def list_worksheet_exports(self, revision_id: str):
+        return self._exports.get(revision_id, ())
+
+
+def test_a_split_upload_finds_the_worksheets_of_the_whole_revision() -> None:
+    """The upload sits on a part; the worksheets were saved from the whole plate.
+
+    A plate whose late harvest went to MxLive under its own experiment ID
+    uploads a part of its finalized revision, while the ECHO and SHIFTER
+    files were exported once, from the whole revision. Looking for the files
+    under the part's own id finds none, and then every crystal reads as not
+    picked yet - for ever, however many times the file is returned.
+    """
+    plan = _plan()
+    groups = shifter_worksheet_groups(plan)
+    files = {
+        "/s1/h1.csv": _returned(groups[0][1]),
+        "/s1/h2.csv": _returned(groups[1][1]),
+    }
+    upload = WebDBUploadEvent(
+        "u1", "part-1", "jjh", "7", "https://mxlive/upload_labworks/BL-5C/",
+        NOW, SUCCEEDED, len(plan.assignments), _payload(plan),
+    )
+    exported_from_the_whole_plate = WorksheetExportEvent(
+        "e1", "rev-1", "jjh", NOW, EXPORT_SUCCEEDED,
+        tuple(InstrumentOutput("shifter1", path) for path in files)
+        + (InstrumentOutput("echo650", "/echo/f.csv"),),
+    )
+    store = _StoreByRevision(
+        [(EXPID, [upload])], {"rev-1": (exported_from_the_whole_plate,)}
+    )
+
+    # Asked for the part alone, nothing is found and nobody is picked.
+    alone = read_harvest(
+        prepare_harvest_review(
+            EXPID, store, lambda _revision: plan, username="jjh"
+        ),
+        lambda path: files[path],
+        lambda _expid: _records(plan),
+    )
+
+    assert [row.outcome for row in alone.rows] == [HarvestOutcome.NOT_PICKED] * 2
+
+    # Told where the plate's worksheets are, every crystal is placed.
+    whole = read_harvest(
+        prepare_harvest_review(
+            EXPID, store, lambda _revision: plan, username="jjh",
+            worksheets_also_from=("rev-1",),
+        ),
+        lambda path: files[path],
+        lambda _expid: _records(plan),
+    )
+
+    assert [row.outcome for row in whole.rows] == [HarvestOutcome.WILL_RECORD] * 2
+    assert whole.can_record
+
+
+def test_the_other_halfs_file_is_named_as_that_and_not_as_a_problem() -> None:
+    """A correct split must not raise an attention note every time it is read.
+
+    Each part reads all of the plate's SHIFTER files, so the other half's
+    file always turns up. It is a correct file, in the right place, that
+    nobody has to look into - and calling it "not a worksheet of this
+    revision" sent somebody to check a file that was never wrong.
+    """
+    from xtalflow.application.harvest_review import ANOTHER_PART
+    from xtalflow.application.planning_service import snapshot_for_part
+
+    whole = _plan(harvest_times=(60, 720))
+    groups = shifter_worksheet_groups(whole)
+    files = {
+        "/s1/soon.csv": _returned(groups[0][1]),
+        "/s1/late.csv": _returned(groups[1][1]),
+    }
+    # This part is the early half; the late file belongs to the other one.
+    early = [item for item in whole.assignments if item.harvest_minutes == 60]
+    part = _plan(harvest_times=(60,))
+    store = _store(part, paths=tuple(files))
+
+    sources = prepare_harvest_review(
+        EXPID, store, lambda _revision: part, username="jjh", plate_plan=whole
+    )
+    review = read_harvest(
+        sources, lambda path: files[path], lambda _expid: _records(part)
+    )
+    states = dict(review.sources)
+
+    assert states["/s1/late.csv"] == ANOTHER_PART
+    assert states["/s1/soon.csv"] == "read"
+    assert len(early) == 1
+    # And without the plate it is the old answer, which is what reached the
+    # screen as something to look into.
+    plain = read_harvest(
+        prepare_harvest_review(
+            EXPID, store, lambda _revision: part, username="jjh"
+        ),
+        lambda path: files[path],
+        lambda _expid: _records(part),
+    )
+
+    assert dict(plain.sources)["/s1/late.csv"] == "not a worksheet of this revision"
+    assert snapshot_for_part is not None  # the split that makes this happen

@@ -41,6 +41,40 @@ def normalize_protein_name(value: str, *, already_named: bool = False) -> str:
 _OUR_ID = re.compile(r"[A-Za-z0-9]+-\d{6}-.+-\d{2,}")
 
 
+def next_id_beside(experiment_id: str, taken: set[str]) -> str:
+    """The next free ID beside this one, differing only in its sequence number.
+
+    For a second experiment that belongs with one that already exists - the
+    late half of a plate going to MxLive under its own name. Built from the
+    ID itself rather than from the protein and today's date, because both
+    move: a plate finalized on the last of the month and uploaded the next
+    morning would otherwise be given next month's stamp and a sequence of
+    01, which is a stranger to the experiment it belongs beside. An
+    overnight soak makes that the ordinary case, not an edge.
+
+    Taking the name apart also takes nothing back: a protein name that was
+    allowed when the experiment was named stays allowed here, where asking
+    again could only strand work already underway.
+
+    Raises ValueError for an ID this cannot read, because inventing a name
+    for a record that goes to MxLive under it is worse than refusing.
+    """
+    match = re.fullmatch(r"(.*-)(\d{2,})", experiment_id.strip())
+    if not match:
+        raise ValueError(
+            f"{experiment_id!r} does not end in a sequence number, so there is "
+            f"no next one beside it"
+        )
+    base, digits = match.group(1), match.group(2)
+    width = len(digits)
+    sequence = int(digits)
+    while True:
+        sequence += 1
+        candidate = f"{base}{sequence:0{width}d}"
+        if candidate not in taken:
+            return candidate
+
+
 def experiment_id_holds_protein(experiment_id: str, protein: str) -> bool:
     """Whether this ID was built from this protein name.
 

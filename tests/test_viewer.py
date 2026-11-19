@@ -4643,6 +4643,10 @@ def test_the_harvest_of_an_uploaded_experiment_is_read_and_shown(
     step.harvest_check_button.click()
 
     assert step.harvest_status_label.text() == "1 to record · 1 picks failed"
+    # Not named: a plate sent under one experiment ID has nothing to
+    # distinguish, and the name would only be in the way. It is named when
+    # there are two of them - see the late-harvest split.
+    assert ":" not in step.harvest_status_label.text()
     table = step.harvest_table
     assert table.rowCount() == 2
     assert [table.item(0, column).text() for column in (0, 1, 3, 4, 5, 7)] == [
@@ -5956,4 +5960,315 @@ def test_a_library_that_cannot_be_read_is_not_reported_as_gone(
     assert "is not in" not in error
     assert "Put it back" not in error
     reopened.close()
+    app.processEvents()
+
+
+def _condition_revision(window, editor, times=(60, 720)):
+    """A finalized condition-test revision whose harvests fall at these minutes."""
+    from decimal import Decimal as D
+
+    from xtalflow.application.planning_service import condition_test_plan_snapshot
+    from xtalflow.domain import crystal_selection_from_selected_crystals
+    from xtalflow.domain.condition_test import (
+        Additive, ConditionTestDesign, build_condition_test_plan, new_series,
+    )
+
+    dmso = Additive("dmso", "DMSO", D(100), "CS(=O)C", "LDV-1", "A1", "384PP_DMSO2")
+    design = ConditionTestDesign(
+        (dmso,), (new_series(dmso.id, (D(10),), times, 1),), D(200)
+    )
+    crystals = tuple(
+        SelectedCrystal(
+            f"image-{index}", "2069", f"A{index + 1:02d}a",
+            (CrystalTarget(f"t{index}", Decimal(0), Decimal(0),
+                           datetime.now(timezone.utc)),),
+            SWISSCI_MIDI_3_LENS.id, "/rmserver/a.jpg",
+        )
+        for index in range(len(times))
+    )
+    plan = build_condition_test_plan(
+        design,
+        crystal_selection_from_selected_crystals(editor.plan_id, crystals),
+    )
+    # The revision references the draft row, so the draft has to exist first.
+    editor.persisted = True
+    window.experiments._persist_draft(editor)
+    snapshot = condition_test_plan_snapshot(plan, "BRD4")
+    revision = window.experiments.planning_service.finalize(
+        editor.plan_id, PlanType.CONDITION_TEST, "BRD4", snapshot, None, "jjh",
+    )
+    # What finalizing through the steps leaves behind, so the editor knows
+    # which revision is its own.
+    editor.last_revision = revision
+    editor.last_revision_snapshot = snapshot
+    editor.assigned_experiment_id = revision.experiment_id
+    return revision
+
+
+def test_a_late_harvest_can_be_sent_under_its_own_experiment_id(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Asked at upload, because that is the only point of no return.
+
+    MxLive makes one shipment per experiment ID and a shipment goes with its
+    last crystal, so the crystals picked today wait for the overnight ones
+    unless their records go up under a different name. Nothing on the plate
+    changes: one dispense, one set of source wells, and the SHIFTER files
+    were already written one per harvest time.
+    """
+    app = QApplication.instance() or QApplication([])
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store)
+    editor = window.experiments.start_experiment(PlanType.CONDITION_TEST)
+    revision = _condition_revision(window, editor)
+    asked: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        lambda *args, **kwargs: (asked.append(args[2]), QMessageBox.Yes)[1],
+    )
+
+    parts = window.experiments._revisions_to_upload(editor, revision)
+
+    assert asked and "one shipment per experiment ID" in asked[0]
+    assert "10 h" in asked[0]
+    # Nothing is said about preparing another plate or other wells.
+    assert "source well" not in asked[0]
+    assert parts is not None and len(parts) == 2
+    assert parts[0].experiment_id == revision.experiment_id
+    assert parts[1].experiment_id.endswith("-02")
+    # And the plan is still the whole plate, not either part.
+    assert window.experiments.planning_service.latest_revision(editor.plan_id) == (
+        revision
+    )
+    window.close()
+    app.processEvents()
+
+
+def test_a_plate_already_split_is_not_split_again(tmp_path: Path, monkeypatch) -> None:
+    """An upload that failed halfway has to be finishable.
+
+    The records of one part may be on MxLive while the other never went, and
+    asking again would make a third experiment ID for crystals that already
+    have one.
+    """
+    app = QApplication.instance() or QApplication([])
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store)
+    editor = window.experiments.start_experiment(PlanType.CONDITION_TEST)
+    revision = _condition_revision(window, editor)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    first = window.experiments._revisions_to_upload(editor, revision)
+    asked: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        lambda *args, **kwargs: (asked.append(args[2]), QMessageBox.Yes)[1],
+    )
+
+    again = window.experiments._revisions_to_upload(editor, revision)
+
+    assert not asked
+    assert [part.experiment_id for part in again] == [
+        part.experiment_id for part in first
+    ]
+    window.close()
+    app.processEvents()
+
+
+def test_backing_out_of_the_split_question_uploads_nothing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Cancel is not "send it all": an upload cannot be taken back."""
+    app = QApplication.instance() or QApplication([])
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store)
+    editor = window.experiments.start_experiment(PlanType.CONDITION_TEST)
+    revision = _condition_revision(window, editor)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Cancel)
+
+    assert window.experiments._revisions_to_upload(editor, revision) is None
+
+    # No, on the other hand, is "send it as one", which is what it always was.
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.No)
+
+    assert window.experiments._revisions_to_upload(editor, revision) == (revision,)
+    assert window.experiments.planning_service.parts_of(revision) == ()
+    window.close()
+    app.processEvents()
+
+
+def test_a_plate_harvested_in_one_session_is_never_asked_about(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Nobody is held back, so there is nothing to offer and nothing to ask."""
+    app = QApplication.instance() or QApplication([])
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store)
+    editor = window.experiments.start_experiment(PlanType.CONDITION_TEST)
+    revision = _condition_revision(window, editor, times=(0, 60))
+    asked: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        lambda *args, **kwargs: (asked.append(args[2]), QMessageBox.Yes)[1],
+    )
+
+    assert window.experiments._revisions_to_upload(editor, revision) == (revision,)
+    assert not asked
+    window.close()
+    app.processEvents()
+
+
+def test_a_late_half_left_unsent_can_still_be_sent(tmp_path: Path, monkeypatch) -> None:
+    """Pressing Enter past the second confirmation must not strand the crystals.
+
+    Each part gets its own confirmation, and both default to No. So the
+    ordinary way to leave the late half unsent is not a network failure but
+    an Enter after the first success box - and the only way back in is the
+    upload button, which reading the first part's lock alone had already
+    disabled. The late crystals would have been on the bench with nowhere
+    to go.
+    """
+    app = QApplication.instance() or QApplication([])
+    key = tmp_path / "keys.dsa"
+    key.write_bytes(b"test-key-presence")
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(
+        RockMakerImageRepository(tmp_path), store,
+        settings=replace(
+            DEFAULT_SETTINGS, mxlive_base_url="https://mxlive.example",
+            mxlive_key_path=key, mxlive_ca_bundle=None, mxlive_config_path=None,
+        ),
+    )
+    monkeypatch.setattr(
+        "xtalflow.ui.experiment_coordinator.LegacyMxLiveReadClient", _FakeMxLiveReader
+    )
+    editor = window.experiments.start_experiment(PlanType.CONDITION_TEST)
+    revision = _condition_revision(window, editor)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    parts = window.experiments._revisions_to_upload(editor, revision)
+
+    assert parts is not None and len(parts) == 2
+    from xtalflow.application.labwork_upload import send_labworks
+
+    # The early half went; the late one never was offered an upload.
+    window.experiments.upload_service.complete(
+        window.experiments.upload_service.begin(
+            parts[0], "jjh", "7", "https://mxlive/upload_labworks/BL-5C/",
+            tuple(
+                record.to_payload()
+                for record in window.experiments._records_of(editor, parts[0])
+            ),
+        ),
+        send_labworks(lambda: {"created": 2}),
+    )
+    # Composing the plan is not what is under test here, and this editor was
+    # handed a revision rather than built up through the steps.
+    monkeypatch.setattr(
+        type(window.experiments), "_revision_is_still_the_plan",
+        lambda self, editor: True,
+    )
+    window.experiments._update_webdb_upload_controls(editor)
+
+    assert editor.webdb_upload_button.isEnabled()
+    assert parts[1].experiment_id in editor.webdb_upload_state
+    assert "still to send" in editor.webdb_upload_state
+    # And asking again hands back the same two parts, not a third ID.
+    assert [part.experiment_id for part in
+            window.experiments._revisions_to_upload(editor, revision)] == [
+        part.experiment_id for part in parts
+    ]
+    window.close()
+    app.processEvents()
+
+
+def test_two_halves_of_a_plate_say_which_is_which(tmp_path: Path, monkeypatch) -> None:
+    """Two unlabelled summaries side by side say nothing about which is which.
+
+    A plate sent under two experiment IDs is read as two, so each line has
+    to carry the name the records went out under - that is where a harvest
+    would be recorded, and the crystals picked overnight are not the ones
+    picked in the afternoon.
+    """
+    app = QApplication.instance() or QApplication([])
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store)
+    editor = window.experiments.start_experiment(PlanType.CONDITION_TEST)
+    revision = _condition_revision(window, editor)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    parts = window.experiments._revisions_to_upload(editor, revision)
+    # Neither has been uploaded, so each reads as the same refusal - which is
+    # exactly the case where two unlabelled lines would be unreadable.
+    monkeypatch.setattr(
+        type(window.experiments), "_harvest_review_of",
+        lambda self, editor, revision, experiment_id: "no successful upload",
+    )
+    window.experiments._check_harvest(editor)
+    said = editor.worksheets_step.harvest_status_label.text()
+
+    assert said.count("\n") == 1
+    for part in parts:
+        assert f"{part.experiment_id}: no successful upload" in said
+    window.close()
+    app.processEvents()
+
+
+def test_an_unreadable_upload_history_does_not_read_as_sent(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A plate is not sent because the half we could read was.
+
+    Upload history that cannot be read is what blocks an upload, so it has
+    to count as outstanding. Taking the last part's state instead said
+    "Uploaded" about a plate whose early half nobody could account for, and
+    the button that is the only way back in was disabled with it.
+    """
+    from xtalflow.application.labwork_upload import (
+        UploadAvailability, UploadLockState,
+    )
+    from xtalflow.domain.plan_lifecycle import WebDBUploadEvent
+
+    app = QApplication.instance() or QApplication([])
+    key = tmp_path / "keys.dsa"
+    key.write_bytes(b"test-key-presence")
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(
+        RockMakerImageRepository(tmp_path), store,
+        settings=replace(
+            DEFAULT_SETTINGS, mxlive_base_url="https://mxlive.example",
+            mxlive_key_path=key, mxlive_ca_bundle=None, mxlive_config_path=None,
+        ),
+    )
+    monkeypatch.setattr(
+        "xtalflow.ui.experiment_coordinator.LegacyMxLiveReadClient", _FakeMxLiveReader
+    )
+    editor = window.experiments.start_experiment(PlanType.CONDITION_TEST)
+    revision = _condition_revision(window, editor)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    parts = window.experiments._revisions_to_upload(editor, revision)
+    early, late = parts
+    # The early half's history cannot be read; the late half is on MxLive.
+    uploaded = UploadLockState(
+        UploadAvailability.UPLOADED,
+        WebDBUploadEvent(
+            "u", late.id, "jjh", "7", "https://mxlive/upload_labworks/BL-5C/",
+            datetime.now(timezone.utc), "succeeded", 1, "[]",
+        ),
+    )
+    monkeypatch.setattr(
+        type(window.experiments), "_webdb_upload_lock",
+        lambda self, experiment_id: (
+            None if experiment_id == early.experiment_id else uploaded
+        ),
+    )
+    monkeypatch.setattr(
+        type(window.experiments), "_revision_is_still_the_plan",
+        lambda self, editor: True,
+    )
+
+    outstanding, lock = window.experiments._outstanding_part(
+        parts, window.experiments._webdb_upload_lock
+    )
+
+    assert outstanding.experiment_id == early.experiment_id
+    assert lock is None
+    window.close()
     app.processEvents()

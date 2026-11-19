@@ -18,6 +18,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
+from typing import Sequence
 from uuid import uuid4
 
 from PyQt5.QtCore import QTimer, Qt
@@ -38,7 +39,12 @@ from xtalflow.domain.experiment_naming import (
     suggest_experiment_id,
 )
 from xtalflow.domain.condition_test import TEMPLATES as CONDITION_TEMPLATES
-from xtalflow.domain.condition_test import ConditionTestPlan, format_minutes
+from xtalflow.domain.condition_test import (
+    LATE_HARVEST_MINUTES,
+    ConditionTestPlan,
+    assignments_by_harvest_time,
+    format_minutes,
+)
 from xtalflow.domain.plan_lifecycle import (
     PlanningDraft,
     PlanRevision,
@@ -73,6 +79,7 @@ from xtalflow.application.worksheet_export import (
     WorksheetExportService,
 )
 from xtalflow.application.harvest_review import (
+    ANOTHER_PART,
     HarvestReviewError,
     prepare_harvest_review,
     read_harvest,
@@ -300,7 +307,10 @@ def _harvest_notes(review) -> str:
     """
     notes = list(review.warnings)
     for path, state in review.sources:
-        if state != "read":
+        if state not in ("read", ANOTHER_PART):
+            # ANOTHER_PART is the other half of a plate sent under two
+            # experiment IDs: a correct file in the right place, which would
+            # otherwise raise an attention note on every correct split.
             notes.append(f"{_file_name(path)}: {state}.")
     if review.sendable:
         notes.extend(WRITTEN_BLIND)
@@ -718,6 +728,28 @@ class ExperimentCoordinator:
         except ReviewPersistenceError:
             return {}
 
+    def _outstanding_part(
+        self, parts: Sequence[PlanRevision], lock_of
+    ) -> tuple[PlanRevision | None, UploadLockState | None]:
+        """The part with work left on it, and its lock; the last part if none.
+
+        A plate uploaded under two experiment IDs is not sent until both are
+        sent, and the one still to go is what anybody looking at this wants
+        named. Taking the first part's lock said "Uploaded" while the late
+        crystals had never been offered, and the only way back into the
+        upload was a button that state had already disabled.
+
+        Unreadable history counts as outstanding: it is what blocks an
+        upload, and it must not read as done.
+        """
+        resting: tuple[PlanRevision | None, UploadLockState | None] = (None, None)
+        for part in parts:
+            lock = lock_of(part.experiment_id)
+            if lock is None or lock.can_upload or lock.can_verify:
+                return part, lock
+            resting = (part, lock)
+        return resting
+
     def _recent_status(
         self,
         draft: PlanningDraft,
@@ -750,10 +782,31 @@ class ExperimentCoordinator:
         older = delivered[0] if delivered is not None and not saved else None
         last = attempts[-1] if attempts else None
         expected, missing = self._instrument_coverage(delivered[1] if saved else None)
-        lock = locks.get(revision.experiment_id or "")
+        parts = ()
+        if self.planning_service is not None:
+            try:
+                parts = self.planning_service.parts_of(revision)
+            except ReviewPersistenceError:
+                parts = ()
+        _, lock = (
+            self._outstanding_part(parts, locks.get)
+            if parts
+            else (None, locks.get(revision.experiment_id or ""))
+        )
+        # A part's own revision number is not the plan's. Uploaded under two
+        # experiment IDs, the records still belong to the revision the parts
+        # were taken from, and comparing a part's number against it said
+        # "MxLive has r2, nothing was sent for r1" about a plate that had
+        # just been sent correctly.
+        of_this_revision = {part.id for part in parts} | {revision.id}
         uploaded_revision = (
             revisions.get(lock.event.revision_id)
-            if lock is not None and lock.event is not None else None
+            if lock is not None
+            and lock.event is not None
+            and lock.event.revision_id not in of_this_revision
+            else revision.revision
+            if lock is not None and lock.event is not None
+            else None
         )
         progress = experiment_progress(
             step,
@@ -2036,7 +2089,25 @@ class ExperimentCoordinator:
         revision = editor.last_revision
         if account is None or revision is None or not account.upload_ready:
             return
-        lock = self._webdb_upload_lock(revision.experiment_id)
+        parts = ()
+        try:
+            parts = (
+                self.planning_service.parts_of(revision)
+                if self.planning_service is not None else ()
+            )
+        except ReviewPersistenceError:
+            parts = ()
+        if parts:
+            # A plate uploaded under two experiment IDs is not sent until both
+            # are. Reading only the first part's lock disabled the button the
+            # moment it succeeded, and the late crystals could never be sent.
+            outstanding, lock = self._outstanding_part(parts, self._webdb_upload_lock)
+            if lock is not None and (lock.can_upload or lock.can_verify):
+                self._set_webdb_upload_state(
+                    editor, f"{outstanding.experiment_id} still to send"
+                )
+        else:
+            lock = self._webdb_upload_lock(revision.experiment_id)
         if lock is None:
             return
         if not lock.can_upload:
@@ -2046,7 +2117,12 @@ class ExperimentCoordinator:
                 UploadAvailability.NEEDS_VERIFICATION:
                     "Upload result unknown · verify on MxLive",
             }[lock.availability]
-            if lock.event is not None and lock.event.revision_id != revision.id:
+            if (
+                lock.event is not None
+                and lock.event.revision_id != revision.id
+                and lock.event.revision_id not in {part.id for part in parts}
+            ):
+                # A part of this revision is not an earlier revision of it.
                 state += " (earlier revision)"
             self._set_webdb_upload_state(editor, state)
             if lock.can_verify:
@@ -2067,8 +2143,8 @@ class ExperimentCoordinator:
         editor.webdb_upload_button.setToolTip(
             "Upload this exact finalized revision to MxLive labworks."
         )
-    @staticmethod
 
+    @staticmethod
     def _set_webdb_upload_state(editor, state: str) -> None:
         # Stored on the editor so preview refreshes keep showing the upload state.
         if editor.webdb_upload_state != state:
@@ -2094,24 +2170,133 @@ class ExperimentCoordinator:
         elif self.mxlive_account is None or not self.mxlive_account.upload_ready:
             reason = "MxLive access is not configured"
         else:
-            lock = self._webdb_upload_lock(revision.experiment_id)
-            if lock is None or lock.availability is not UploadAvailability.UPLOADED:
+            # Any one of this plate's experiment IDs being up is enough to
+            # read: a plate whose late harvest went separately has the
+            # soonest crystals on MxLive while the late ones are still
+            # soaking, and that morning is exactly when somebody wants to
+            # see what was picked.
+            locks = tuple(
+                self._webdb_upload_lock(experiment_id)
+                for experiment_id in self._uploaded_experiment_ids(editor, revision)
+            )
+            if not any(
+                lock is not None
+                and lock.availability is UploadAvailability.UPLOADED
+                for lock in locks
+            ):
                 reason = "Upload this experiment to MxLive first"
         step.harvest_check_button.setEnabled(not reason)
         if reason:
             step.show_harvest(reason)
+
+    def _uploaded_experiment_ids(
+        self, editor: PlanEditorBase, revision: PlanRevision
+    ) -> tuple[str, ...]:
+        """The experiment IDs this plan's records went to MxLive under.
+
+        One, unless a late harvest was sent separately, in which case the
+        records are under the parts' IDs and this revision's own ID names
+        only the part that went ahead.
+
+        Every part of the plan, not only this revision's: a plan finalized
+        again after a split still has its records under the parts of the
+        revision they were taken from, and asking about the newest
+        revision's parts alone dropped a whole half of the plate out of the
+        harvest check.
+        """
+        if self.planning_service is None:
+            return (revision.experiment_id,)
+        try:
+            parts = self.planning_service.all_parts(revision.plan_id)
+        except ReviewPersistenceError:
+            return (revision.experiment_id,)
+        seen: list[str] = []
+        for part in parts:
+            if part.experiment_id not in seen:
+                seen.append(part.experiment_id)
+        return tuple(seen) or (revision.experiment_id,)
 
     def _check_harvest(self, editor: PlanEditorBase) -> None:
         """Read the returned worksheets and say where the harvest stands.
 
         Reading only. Nothing here sends anything to MxLive, and the files are
         opened read-only - the SHIFTER owns them.
+
+        Every experiment ID of this plate is read, because a plate whose late
+        harvest went up separately has its crystals under two of them and
+        somebody looking at this step wants the plate, not one shipment. Which
+        side a row is on is said by its harvest time, which is what the two
+        were divided on.
         """
         revision = editor.last_revision
         account = self.mxlive_account
         store = self.window.review_store
         if revision is None or account is None or store is None:
             return
+        said: list[tuple[str, str]] = []
+        rows: tuple[tuple[str, ...], ...] = ()
+        notes: list[str] = []
+        for experiment_id in self._uploaded_experiment_ids(editor, revision):
+            review = self._harvest_review_of(editor, revision, experiment_id)
+            if isinstance(review, str):
+                said.append((experiment_id, review))
+                continue
+            said.append((experiment_id, review.summary()))
+            rows = rows + _harvest_rows(review)
+            note = _harvest_notes(review)
+            if note:
+                notes.append(note)
+        # Named only when there is more than one, because two unlabelled
+        # summaries side by side say nothing about which half of the plate
+        # each is for - while a plate sent under one ID has nothing to
+        # distinguish and the name would only be in the way.
+        status = (
+            "\n".join(f"{name}: {text}" for name, text in said)
+            if len(said) > 1
+            else said[0][1] if said else ""
+        )
+        editor.worksheets_step.show_harvest(status, rows, "\n".join(notes))
+
+    def _revisions_holding_worksheets(
+        self, editor: PlanEditorBase, revision: PlanRevision, experiment_id: str
+    ) -> tuple[str, ...]:
+        """Which revisions' exports hold the worksheets of this experiment ID.
+
+        A part's upload sits on the part while the worksheets were saved
+        from the whole revision it was taken from - and that is not always
+        the revision the editor is showing, because a plan can be finalized
+        again after a split. Following the part's own part_of keeps a plate
+        readable afterwards; using the current revision made every crystal
+        read as not picked yet.
+        """
+        also: list[str] = [revision.id]
+        if self.planning_service is None:
+            return tuple(also)
+        try:
+            parts = self.planning_service.all_parts(revision.plan_id)
+        except ReviewPersistenceError:
+            return tuple(also)
+        for part in parts:
+            if part.experiment_id != experiment_id:
+                continue
+            whole = self.planning_service.whole_revision_id_of(part)
+            if whole is not None and whole not in also:
+                also.append(whole)
+        return tuple(also)
+
+    def _harvest_review_of(
+        self, editor: PlanEditorBase, revision: PlanRevision, experiment_id: str
+    ):
+        """One experiment ID's harvest, or the sentence saying why not.
+
+        Returned rather than shown, so that a plate whose two halves went up
+        under two IDs is not reported as a failure because one of them has
+        not been uploaded yet.
+        """
+        account = self.mxlive_account
+        store = self.window.review_store
+        if account is None or store is None:
+            return "The review database is not open."
         reader = self._mxlive_reader()
         try:
             # The review database belongs to this thread - SQLite connections
@@ -2119,15 +2304,27 @@ class ExperimentCoordinator:
             # and MxLive go to the worker, where an unreachable share or
             # server cannot freeze the window.
             sources = prepare_harvest_review(
-                revision.experiment_id,
+                experiment_id,
                 store.audit,
                 lambda revision_id: plan_from_snapshot(
                     editor.plan_id, self._snapshot_of(editor, revision_id)
                 ),
                 username=account.username,
+                # An upload split across two experiment IDs sits on a part of
+                # this revision, while the worksheets were saved from the
+                # whole one. Without the whole revision here no file would be
+                # found and every crystal would read as not picked yet.
+                worksheets_also_from=self._revisions_holding_worksheets(
+                    editor, revision, experiment_id
+                ),
+                # The whole plate, so a file of the other half is named as
+                # that instead of as something to look into.
+                plate_plan=plan_from_snapshot(
+                    editor.plan_id, revision.snapshot_json
+                ),
             )
-            review = self.window._run_in_background(
-                f"Reading the harvest of {revision.experiment_id}…",
+            return self.window._run_in_background(
+                f"Reading the harvest of {experiment_id}…",
                 lambda: read_harvest(
                     sources,
                     _read_text_file,
@@ -2138,16 +2335,9 @@ class ExperimentCoordinator:
                 ),
             )
         except HarvestReviewError as error:
-            editor.worksheets_step.show_harvest(str(error))
-            return
+            return str(error)
         except (MxLiveReadError, ReviewPersistenceError, ValueError, OSError) as error:
-            editor.worksheets_step.show_harvest(
-                f"The harvest could not be read: {error}"
-            )
-            return
-        editor.worksheets_step.show_harvest(
-            review.summary(), _harvest_rows(review), _harvest_notes(review)
-        )
+            return f"The harvest could not be read: {error}"
 
     def _snapshot_of(self, editor: PlanEditorBase, revision_id: str) -> str:
         """The finalized snapshot of the revision that was uploaded.
@@ -2188,24 +2378,154 @@ class ExperimentCoordinator:
                 self.window, "Cannot upload", "Finalize the current plan revision first."
             )
             return
+        to_upload = self._revisions_to_upload(editor, revision)
+        if to_upload is None:
+            return
+        for each in to_upload:
+            self._upload_labworks(editor, self._records_of(editor, each), each)
+            lock = self._webdb_upload_lock(each.experiment_id)
+            if lock is None or lock.can_upload or lock.can_verify:
+                # This one did not go, so the next is not asked about. The
+                # upload history now says which is outstanding, and the
+                # button comes back for it; asking about the next one here
+                # would stack a second confirmation on top of a failure.
+                return
+
+    def _revisions_to_upload(
+        self, editor: PlanEditorBase, revision: PlanRevision
+    ) -> tuple[PlanRevision, ...] | None:
+        """Which revisions to upload, after asking whether to send them apart.
+
+        MxLive makes one shipment per experiment ID and a shipment goes with
+        its last crystal, so a harvest ten hours in keeps every crystal
+        uploaded beside it waiting. Sent under its own ID it holds nobody
+        back, and the crystals picked today can be shot today.
+
+        Nothing physical is divided by saying yes: one plate, one dispense,
+        one set of source wells, and the SHIFTER worksheets were already
+        written one per harvest time. Only the ID on the records differs.
+
+        ``None`` when the researcher backed out, so nothing is uploaded.
+        Asked only once: if this revision was already split, its parts are
+        returned as they stand, so an upload that failed halfway can be
+        finished without being asked again or split twice.
+        """
+        if self.planning_service is None:
+            return (revision,)
+        try:
+            already = self.planning_service.parts_of(revision)
+        except ReviewPersistenceError as error:
+            QMessageBox.warning(
+                self.window, "Cannot upload",
+                f"The finalized revisions could not be read:\n{error}",
+            )
+            return None
+        if already:
+            return already
+        split = self._late_harvest_split(editor, revision)
+        if split is None:
+            return (revision,)
+        soon, late = split
+        answer = QMessageBox.question(
+            self.window,
+            "Send the late harvest separately?",
+            f"{counted(len(late), 'crystal')} of this plate are harvested "
+            f"{format_minutes(LATE_HARVEST_MINUTES)} or later, and "
+            f"{counted(len(soon), 'crystal')} sooner.\n\n"
+            f"MxLive makes one shipment per experiment ID, and a shipment goes "
+            f"with its last crystal. Uploaded together, the "
+            f"{len(soon)} picked sooner cannot be shot until the last late one "
+            f"is picked.\n\n"
+            f"Send them as two experiment IDs? Nothing on the plate or in the "
+            f"worksheets changes either way - this is only the name the "
+            f"records go to MxLive under, and it cannot be changed once they "
+            f"are there.",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if answer == QMessageBox.Cancel:
+            return None
+        if answer != QMessageBox.Yes:
+            return (revision,)
+        if self.planning_service.late_part_id(
+            revision.plan_id
+        ) is None and not self._check_new_experiment_id_against_mxlive():
+            # The same check finalization makes, for the same reason: the new
+            # ID becomes a shipment name, and one that another researcher's
+            # computer already used cannot be uploaded at all. Skipped when
+            # the plan's late half already has its name.
+            return None
+        try:
+            return self.planning_service.split_for_upload(
+                revision,
+                held_back=frozenset(
+                    assignment.condition.id for assignment in late
+                ),
+                goes_ahead=frozenset(
+                    assignment.condition.id for assignment in soon
+                ),
+                finalized_by=getpass.getuser(),
+                also_taken=self._mxlive_experiment_ids,
+            )
+        except (ReviewPersistenceError, ValueError) as error:
+            # Nothing was written: the two rows go in one transaction and the
+            # name is chosen before either. So this is an upload that did not
+            # happen, not a half-split to be puzzled over.
+            QMessageBox.critical(
+                self.window, "Not split",
+                f"The plate could not be split, so nothing was uploaded:"
+                f"\n{error}",
+            )
+            return None
+
+    def _late_harvest_split(self, editor: PlanEditorBase, revision: PlanRevision):
+        """The plan's crystals as sooner and later, or None if there is no split.
+
+        None for anything but a condition test, and for a condition test
+        whose crystals are all picked in one session or all picked late:
+        there is nobody to send ahead, or nobody held back.
+        """
+        if editor.plan_type is not PlanType.CONDITION_TEST:
+            return None
+        try:
+            plan = plan_from_snapshot(editor.plan_id, revision.snapshot_json)
+            soon, late = assignments_by_harvest_time(plan)
+        except (KeyError, TypeError, ValueError):
+            # A snapshot this cannot read is one to upload whole; refusing
+            # the upload over an offer nobody asked for would be worse.
+            return None
+        if not soon or not late:
+            return None
+        return soon, late
+
+    def _records_of(
+        self, editor: PlanEditorBase, revision: PlanRevision
+    ) -> tuple:
         build_labworks = editor.record_builder()
         snapshot = json.loads(revision.snapshot_json)
-        self._upload_labworks(
-            editor,
-            build_labworks(
-                plan_from_snapshot(editor.plan_id, revision.snapshot_json),
-                experiment_id=revision.experiment_id,
-                protein_name=protein_name_for_record(
-                    str(snapshot.get("protein", ""))
-                ),
-                username=self.mxlive_account.username if self.mxlive_account else "",
-                account_id=self.mxlive_account.account_id if self.mxlive_account else "",
-            ),
+        return build_labworks(
+            plan_from_snapshot(editor.plan_id, revision.snapshot_json),
+            experiment_id=revision.experiment_id,
+            protein_name=protein_name_for_record(str(snapshot.get("protein", ""))),
+            username=self.mxlive_account.username if self.mxlive_account else "",
+            account_id=self.mxlive_account.account_id if self.mxlive_account else "",
         )
 
-    def _upload_labworks(self, editor: PlanEditorBase, records: tuple) -> None:
+    def _upload_labworks(
+        self,
+        editor: PlanEditorBase,
+        records: tuple,
+        revision: PlanRevision | None = None,
+    ) -> None:
+        """Upload one revision's records. Which revision is passed, not assumed.
+
+        A plan whose crystals go to MxLive under two experiment IDs uploads a
+        part of its finalized revision at a time, and a part is never what
+        the editor calls its last revision - the whole one is, because that
+        is what the worksheets and the source wells came from.
+        """
         account = self.mxlive_account
-        revision = editor.last_revision
+        revision = revision if revision is not None else editor.last_revision
         if account is None or revision is None:
             QMessageBox.warning(
                 self.window, "Cannot upload", "Finalize the current plan revision first."

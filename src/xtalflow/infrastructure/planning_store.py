@@ -7,6 +7,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from typing import Sequence
 from uuid import NAMESPACE_URL, uuid5
 
 from xtalflow.application import ReviewPersistenceError
@@ -460,6 +461,44 @@ class SQLitePlanningStore:
                 return saved
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not finalize plan revision") from error
+
+    def finalize_plan_revisions(
+        self, revisions: Sequence[PlanRevision]
+    ) -> tuple[PlanRevision, ...]:
+        """Several revisions of one plan, all of them or none.
+
+        For a plan uploaded under two experiment IDs: one part written and
+        the other not would read as a finished split, and the crystals left
+        out would never be offered again.
+        """
+        try:
+            with self._connection:
+                saved: list[PlanRevision] = []
+                for revision in revisions:
+                    next_number = self._connection.execute(
+                        "SELECT COALESCE(MAX(revision_number), 0) + 1 "
+                        "FROM plan_revision WHERE plan_id = ?",
+                        (revision.plan_id,),
+                    ).fetchone()[0]
+                    row = PlanRevision(
+                        revision.id, revision.plan_id, next_number,
+                        revision.experiment_id, revision.snapshot_json,
+                        revision.finalized_by, revision.finalized_at,
+                    )
+                    self._connection.execute(
+                        "INSERT INTO plan_revision VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            row.id, row.plan_id, row.revision, row.experiment_id,
+                            row.snapshot_json, row.finalized_by,
+                            row.finalized_at.isoformat(),
+                        ),
+                    )
+                    saved.append(row)
+                return tuple(saved)
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError(
+                "could not finalize the plan revisions"
+            ) from error
 
     def list_plan_revisions(self, plan_id: str) -> tuple[PlanRevision, ...]:
         rows = self._connection.execute(

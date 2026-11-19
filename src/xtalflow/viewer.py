@@ -2127,7 +2127,15 @@ class ViewerWindow(QMainWindow):
             else self._crystal_scored(poll, found, len(images))
         )
         self._crystal_scoring_timer = poll
-        worker.start()
+        try:
+            worker.start()
+        except RuntimeError as error:
+            # Same as above: the flag is what says scoring is underway, so
+            # leaving it raised means no plate is ever scored again.
+            poll.deleteLater()
+            found["error"] = error
+            self._crystal_scored(poll, found, len(images))
+            return
         poll.start()
 
     def _crystal_progress(self, step) -> None:

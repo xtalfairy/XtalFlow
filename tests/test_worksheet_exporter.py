@@ -764,3 +764,65 @@ def test_a_file_saved_earlier_without_suffixes_is_not_overwritten(tmp_path: Path
         "PreTest-202611-BRD4-03_01_H2_2h00m.csv",
     ]
     assert (folder / "PreTest-202611-BRD4-03.csv").read_text(encoding="utf-8") == "earlier\n"
+
+
+def test_a_held_worksheet_does_not_take_a_name_an_earlier_save_used(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """With every share down, the held files took r1's names exactly.
+
+    A stem is chosen by looking in the folders being written to, and when
+    an instrument cannot be reached the folder being written to is one of
+    ours - which knows nothing of the file r1 left on the instrument. A
+    held worksheet is delivered by somebody carrying it across by hand, so
+    all three of r2's files landed on top of r1's without a word.
+
+    It does not show when one share is up, because the stem is shared
+    across the destinations and the reachable one still holds r1's file.
+    Every share down is the case, and that is an ordinary morning.
+    """
+    echo, first, second = (
+        tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
+    )
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        pending_worksheet_directory=tmp_path / "pending",
+        instruments=standard_instruments(echo, first, second),
+        create_missing_instrument_roots=True,
+    )
+    experiment_id = "FragSC-202611-BRD4-01"
+    saved = WorksheetExporter(settings, "scientist").export(
+        fragment_plan(), experiment_id
+    )
+    on_the_instruments = frozenset(Path(item.path).name for item in saved.outputs)
+
+    assert on_the_instruments == {f"{experiment_id}.csv"}
+
+    real_is_dir = Path.is_dir
+    monkeypatch.setattr(
+        Path, "is_dir",
+        lambda self: False
+        if any(self in (share, share / "scientist") for share in (echo, first, second))
+        else real_is_dir(self),
+    )
+    held = WorksheetExporter(
+        replace(settings, create_missing_instrument_roots=False), "scientist"
+    ).export(
+        fragment_plan(), experiment_id, hold_unreachable=True,
+        names_already_used=on_the_instruments,
+    )
+
+    assert {Path(item.path).name for item in held.outputs} == {
+        f"{experiment_id}_01.csv"
+    }
+    # Each one waits under the instrument it is for, and none of them is
+    # named what that instrument already holds.
+    assert {
+        (Path(item.path).parent.name, Path(item.path).name) for item in held.outputs
+    } == {
+        ("echo650", f"{experiment_id}_01.csv"),
+        ("shifter1", f"{experiment_id}_01.csv"),
+        ("shifter2", f"{experiment_id}_01.csv"),
+    }
+

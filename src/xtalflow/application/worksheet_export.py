@@ -100,6 +100,7 @@ class WorksheetExportService:
         alternate_root: Path | None = None,
         instruments: tuple[str, ...] | None = None,
         hold_unreachable: bool = False,
+        names_already_used: frozenset[str] = frozenset(),
     ):
         """Save the worksheets; a condition test also records the source wells it takes.
 
@@ -108,7 +109,8 @@ class WorksheetExportService:
         what the ECHO runs, so it records nothing.
         """
         publish = lambda: self.exporter.export(  # noqa: E731
-            plan, experiment_id, alternate_root, instruments, hold_unreachable
+            plan, experiment_id, alternate_root, instruments, hold_unreachable,
+            names_already_used,
         )
         if (
             not isinstance(plan, ConditionTestPlan) or alternate_root is not None

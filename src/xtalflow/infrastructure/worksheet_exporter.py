@@ -158,6 +158,7 @@ class WorksheetExporter:
         alternate_root: Path | None = None,
         instruments: tuple[str, ...] | None = None,
         hold_unreachable: bool = False,
+        names_already_used: frozenset[str] = frozenset(),
     ) -> WorksheetExportResult:
         """Write to the instruments' folders, or below ``alternate_root/<instrument>``.
 
@@ -211,7 +212,7 @@ class WorksheetExporter:
         except OSError as error:
             raise InstrumentLocationUnavailable(f"{failure}: {error}") from error
         return self._export_to_directories(
-            experiment_id, worksheets, destinations, directories
+            experiment_id, worksheets, destinations, directories, names_already_used
         )
 
     def unreachable_instruments(self) -> dict[str, str]:
@@ -271,6 +272,7 @@ class WorksheetExporter:
         worksheets: dict[WorksheetKind, tuple[WorksheetFile, ...]],
         destinations: tuple[InstrumentDestination, ...],
         directories: tuple[Path, ...],
+        names_already_used: frozenset[str] = frozenset(),
     ) -> WorksheetExportResult:
         try:
             # "" is always among them: a file saved earlier without suffixes
@@ -279,7 +281,9 @@ class WorksheetExporter:
             suffixes = tuple(
                 {""} | {item.suffix for files in worksheets.values() for item in files}
             )
-            file_stem = self._available_file_stem(experiment_id, directories, suffixes)
+            file_stem = self._available_file_stem(
+                experiment_id, directories, suffixes, names_already_used
+            )
             with self._staging_directory(file_stem) as staging_path:
                 staged: dict[tuple[WorksheetKind, str], Path] = {}
                 for kind, files in worksheets.items():
@@ -363,16 +367,30 @@ class WorksheetExporter:
 
     @staticmethod
     def _available_file_stem(
-        experiment_id: str, directories: tuple[Path, ...], suffixes: tuple[str, ...] = ("",)
+        experiment_id: str,
+        directories: tuple[Path, ...],
+        suffixes: tuple[str, ...] = ("",),
+        names_already_used: frozenset[str] = frozenset(),
     ) -> str:
+        """A stem no file in these folders, or any earlier save, has taken.
+
+        ``names_already_used`` is what this plan's earlier saves wrote, from
+        our own audit log. Looking in the folders is not enough when the
+        instrument cannot be reached: the worksheet then waits in a folder
+        of ours, which knows nothing of the file r1 left on the instrument,
+        so r2 took that same name and overwrote it when somebody carried it
+        across by hand. The log is local, and readable with every share
+        down - which is exactly when this happens.
+        """
         sequence = 0
         while True:
             stem = experiment_id if sequence == 0 else f"{experiment_id}_{sequence:02d}"
+            names = tuple(f"{stem}{suffix}.csv" for suffix in suffixes)
             if not any(
-                (directory / f"{stem}{suffix}.csv").exists()
+                (directory / name).exists()
                 for directory in directories
-                for suffix in suffixes
-            ):
+                for name in names
+            ) and not any(name in names_already_used for name in names):
                 return stem
             sequence += 1
 

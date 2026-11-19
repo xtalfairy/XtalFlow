@@ -534,7 +534,18 @@ class ExperimentCoordinator:
         poll.timeout.connect(
             lambda: None if worker.is_alive() else self._beamline_read(poll, outcome)
         )
-        worker.start()
+        try:
+            worker.start()
+        except RuntimeError as error:
+            # A thread that cannot be started left the flag raised, and the
+            # flag is what says a reading is underway: MxLive history was
+            # never read again for the rest of the session, with the
+            # "Reading…" line still on the page. Third time this shape has
+            # turned up, after the shares reading and crystal scoring.
+            poll.deleteLater()
+            outcome["error"] = error
+            self._beamline_read(poll, outcome)
+            return
         poll.start()
 
     def _beamline_read(self, poll: QTimer, outcome: dict) -> None:
@@ -635,6 +646,26 @@ class ExperimentCoordinator:
                 f"Worksheet history unavailable: {error}"
             )
             return {}
+
+    def _worksheet_names_already_used(self, plan_id: str) -> frozenset[str]:
+        """Every file name this plan's earlier saves wrote, from our own log.
+
+        A file name is chosen by looking in the folders being written to,
+        and when an instrument cannot be reached the folder being written
+        to is one of ours, which knows nothing of the file an earlier
+        revision left on the instrument. So r2's held worksheet took r1's
+        name, and carrying it across by hand - which is how a held
+        worksheet is delivered - overwrote r1 without a word.
+
+        The log is in our own database, so it answers with every share
+        down, which is when this happens.
+        """
+        events = self._worksheet_exports().get(plan_id, ())
+        return frozenset(
+            Path(output.path).name
+            for _, event in events
+            for output in getattr(event, "outputs", ())
+        )
 
     def _revision_numbers(self) -> dict[str, int]:
         """Which revision each stored id is, so an older upload can be named."""
@@ -2402,12 +2433,18 @@ class ExperimentCoordinator:
             else "SHIFTER folders" if editor.plan_type is PlanType.RAW_CRYSTAL
             else "instrument folders"
         )
+        # Read here, not inside the lambda: that runs on another thread, and
+        # the review database belongs to this one. Asked there it raised,
+        # was swallowed as "history unavailable", and the save went ahead
+        # with no names to avoid - which is the bug this is here to stop.
+        names_already_used = self._worksheet_names_already_used(editor.plan_id)
         try:
             result = self.window._run_in_background(
                 f"Saving worksheets to {destination}…",
                 lambda: service.deliver(
                     plan, revision.experiment_id, alternate_root, instruments,
                     hold_unreachable=alternate_root is None,
+                    names_already_used=names_already_used,
                 ),
             )
         except WorksheetDestinationUnavailable as error:

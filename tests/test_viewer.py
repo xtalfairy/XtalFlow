@@ -1,3 +1,4 @@
+import getpass
 import os
 import socket
 import sqlite3
@@ -5226,5 +5227,128 @@ def test_a_library_that_is_really_gone_says_so_not_that_none_was_chosen(
     assert "would replace the fragments" in message
     assert "Choose a fragment library." not in message
     reopened.close()
+    app.processEvents()
+
+
+def test_held_worksheets_keep_clear_of_the_names_already_on_the_instruments(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The names an earlier save used come from our own log, not the shares.
+
+    r1 is saved with the shares up. The shares go away, the plan changes,
+    r2 is finalized, and r2's worksheets wait in a folder of ours - which
+    knows nothing of what r1 left on the instruments, so all three of
+    r2's files were named exactly what r1's are. A held worksheet is
+    delivered by hand, so r1's files were overwritten without a word.
+
+    The log is in our own database and answers with every share down,
+    which is the only case where this happens.
+    """
+    app = QApplication.instance() or QApplication([])
+    echo, first, second = (
+        tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
+    )
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        pending_worksheet_directory=tmp_path / "pending",
+        instruments=standard_instruments(echo, first, second),
+        # As at the beamline: the folders are the shares' own, and nothing
+        # of ours creates them.
+        create_missing_instrument_roots=False,
+    )
+    for share in (echo, first, second):
+        (share / getpass.getuser()).mkdir(parents=True)
+    window, store, editor = _fragment_plan_window(tmp_path, settings)
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    window.experiments.go_to_step(WorkflowStep.REVIEW)
+    window.experiment_page.primary_button.click()
+    window.experiment_page.primary_button.click()
+
+    first_revision = editor.last_revision
+    saved = store.audit.list_worksheet_exports(first_revision.id)
+    on_the_instruments = {
+        Path(output.path).name for output in saved[0].outputs
+    }
+
+    assert on_the_instruments == {f"{first_revision.experiment_id}.csv"}
+    assert window.experiments._worksheet_names_already_used(editor.plan_id) == (
+        on_the_instruments
+    )
+
+    # The shares go away, and the plan is finalized again.
+    editor.volume_input.setValue(30.0)
+    window.experiments.go_to_step(WorkflowStep.REVIEW)
+    real_is_dir = Path.is_dir
+    monkeypatch.setattr(
+        Path, "is_dir",
+        lambda self: False
+        if any(self in (share, share / getpass.getuser()) for share in (echo, first, second))
+        else real_is_dir(self),
+    )
+    window.experiment_page.primary_button.click()
+    window.experiments._save_plan_worksheets(editor)
+
+    second_revision = editor.last_revision
+
+    assert second_revision.revision == 2
+    held = store.audit.list_worksheet_exports(second_revision.id)
+    names = {Path(output.path).name for output in held[-1].outputs}
+
+    assert names == {f"{second_revision.experiment_id}_01.csv"}
+    assert not names & on_the_instruments
+    window.close()
+    app.processEvents()
+
+
+def test_mxlive_history_is_not_shut_by_a_thread_that_will_not_start(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The same shape as the share reading, which was fixed first.
+
+    A busy flag raised before the thread starts, and cleared only by the
+    reading finishing, turns one failure to start a thread into no MxLive
+    history for the rest of the session - with "Reading 2026 from MxLive…"
+    still on the page saying one is underway.
+
+    Crystal scoring has the same two lines, and no test: it needs the ONNX
+    model and the image fixture, and neither is in a clone.
+    """
+    import threading
+
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(
+        RockMakerImageRepository(tmp_path),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        settings=replace(DEFAULT_SETTINGS, require_network_image_root=False),
+    )
+    coordinator = window.experiments
+    from xtalflow.infrastructure.mxlive_config import resolve_mxlive_account
+
+    coordinator.mxlive_account = resolve_mxlive_account(
+        None, os_username="tester", base_url="https://mxlive.example",
+        key_path=tmp_path / "keys.dsa",
+    )
+
+    # Standing in for the client so nothing here asks MxLive anything: the
+    # reading never starts, which is the case under test.
+    monkeypatch.setattr(coordinator, "_mxlive_reader", lambda: object())
+
+    def refuse(self):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", refuse)
+    coordinator._read_labworks([2026])
+
+    # Said, not swallowed: the page stops claiming a reading is underway.
+    assert coordinator.window.status_message_label.text().startswith(
+        "Beamline progress unavailable"
+    )
+
+    # The door is open again, which is the whole point: the flag is what
+    # refuses the next reading. Not started here, because starting one asks
+    # MxLive over the network.
+    assert not coordinator._beamline_busy
+    window.close()
     app.processEvents()
 

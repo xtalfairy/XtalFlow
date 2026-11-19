@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from xtalflow.infrastructure import mxlive_config
 from xtalflow.infrastructure.mxlive_config import resolve_mxlive_account
 
 
@@ -82,15 +83,28 @@ def test_the_key_file_is_looked_at_once_and_again_when_it_matters(
 
     assert len(looks) == 1
 
-    # The key file is put in place while the application is running. The
-    # kept answer is stale, and somebody refused over a file that is now
-    # there, until they restart, is its own kind of broken.
+    # The key file is put in place while the application is running - or
+    # /data/users is mounted, which is the same thing. A refusal kept for
+    # the session was worse than the freeze it replaced: the upload button
+    # is disabled from this answer and the button is the only caller of
+    # rechecked(), so the key file could never be believed.
     key.write_bytes(b"a key")
-    assert not account.upload_ready
 
-    rechecked = account.rechecked()
+    assert not account.upload_ready  # still inside the recheck window
 
-    assert rechecked.upload_ready
-    assert rechecked.upload_blockers == ()
-    assert len(looks) == 2
+    monkeypatch.setattr(mxlive_config, "RECHECK_BLOCKERS_SECONDS", 0.0)
+
+    assert account.upload_ready
+    assert account.upload_blockers == ()
+
+    # A clear answer is kept for good: a key file nobody took away is still
+    # there, and one that goes away under an upload is caught by the
+    # recheck at the upload itself.
+    looked = len(looks)
+    for _ in range(40):
+        assert account.upload_ready
+
+    assert len(looks) == looked
+    assert account.rechecked().upload_ready
+    assert len(looks) == looked + 1
 

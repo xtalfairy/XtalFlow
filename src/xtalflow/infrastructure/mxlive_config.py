@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from functools import cached_property
 import getpass
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -16,6 +16,13 @@ class MxLiveConfigurationError(ValueError):
     """The external MxLive account configuration is invalid."""
 
 
+# How long a "you cannot upload" answer is kept before the filesystem is
+# asked again. Long enough that typing never reaches the network storage
+# twice, short enough that somebody mounting /data/users or copying their
+# key in does not have to restart to be believed.
+RECHECK_BLOCKERS_SECONDS = 30.0
+
+
 @dataclass(frozen=True)
 class MxLiveAccount:
     os_username: str
@@ -27,7 +34,7 @@ class MxLiveAccount:
     ca_bundle: Path | None
     explicitly_mapped: bool
 
-    @cached_property
+    @property
     def upload_blockers(self) -> tuple[str, ...]:
         """What stands between this account and an upload.
 
@@ -38,11 +45,31 @@ class MxLiveAccount:
         which is network storage: on a dropped mount each look takes the
         best part of a minute, on the thread the window is drawn on.
 
-        So the answer is kept. It is a fact about a file somebody put there
-        before starting work, not about anything this app does, and
-        ``rechecked`` asks again where it matters - before an upload, where
-        a key file added since has to count.
+        So the answer is kept - but a refusal is only kept for
+        ``RECHECK_BLOCKERS_SECONDS``. Kept forever it was worse than the
+        freeze it fixed: the upload button is disabled from this answer, and
+        the button is the only thing that calls ``rechecked``, so an account
+        that started without its key file could never get its key file
+        believed. Somebody whose /data/users was not mounted when the
+        application started was locked out of MxLive for the session.
+
+        A clear answer is kept as long as the account lives: a key file
+        nobody has taken away is still there, and the one that matters - it
+        going away under an upload - is caught by ``rechecked`` at the
+        upload itself.
         """
+        kept = self.__dict__.get("_upload_blockers")
+        if kept is not None:
+            blockers, asked_at = kept
+            if not blockers or time.monotonic() - asked_at < RECHECK_BLOCKERS_SECONDS:
+                return blockers
+        blockers = self._blockers_now()
+        # Frozen blocks __setattr__, not the instance dictionary, which is
+        # where cached_property kept this too.
+        self.__dict__["_upload_blockers"] = (blockers, time.monotonic())
+        return blockers
+
+    def _blockers_now(self) -> tuple[str, ...]:
         blockers: list[str] = []
         if self.os_username == "root" and not self.explicitly_mapped:
             blockers.append("root requires an explicit account mapping")
@@ -59,11 +86,11 @@ class MxLiveAccount:
         return not self.upload_blockers
 
     def rechecked(self) -> MxLiveAccount:
-        """The same account, asking the filesystem again.
+        """The same account, asking the filesystem again, now.
 
-        For the moment somebody is told they cannot upload: the key file may
-        have been put there since, and being refused over a file that is now
-        in place, until the application is restarted, is its own problem.
+        For the upload itself, where neither a kept refusal nor a kept
+        clearance will do: the key file may have arrived since, and it may
+        equally have gone away with the share it sits on.
         """
         return replace(self)
 

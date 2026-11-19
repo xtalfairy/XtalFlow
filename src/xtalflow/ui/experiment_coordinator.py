@@ -62,6 +62,7 @@ from xtalflow.application.planning_service import (
     PlanningService,
     PlanStatus,
     plan_from_snapshot,
+    plans_match,
     saved_plan_status,
 )
 from xtalflow.application.worksheet_export import (
@@ -1836,6 +1837,21 @@ class ExperimentCoordinator:
 
     def _plan_snapshot(editor: PlanEditorBase) -> str | None:
         return editor.plan_snapshot()
+
+    def _revision_is_still_the_plan(self, editor: PlanEditorBase) -> bool:
+        """Whether the finalized revision is still the plan on the screen.
+
+        A plan the editor cannot compose at all is not a different plan: the
+        library it was finalized from may be missing, or a rule may have
+        tightened since. There is nothing competing with the revision then,
+        and the revision is exactly what must stay deliverable - its
+        worksheets may be half delivered and its liquid already in the
+        wells. Refusing there stranded a finalized experiment: no
+        worksheets, no upload, and a message on the step saying its
+        worksheets were unaffected while both were refused.
+        """
+        composed = self._plan_snapshot(editor)
+        return composed is None or plans_match(composed, editor.last_revision_snapshot)
     @staticmethod
 
     def _draft_from_editor(editor: PlanEditorBase) -> PlanningDraft:
@@ -1968,7 +1984,7 @@ class ExperimentCoordinator:
                     "or delete labworks."
                 )
             return
-        if self._plan_snapshot(editor) != editor.last_revision_snapshot:
+        if not self._revision_is_still_the_plan(editor):
             return
         editor.webdb_upload_button.setEnabled(True)
         editor.webdb_upload_button.setToolTip(
@@ -2154,7 +2170,7 @@ class ExperimentCoordinator:
             )
             self._sync_webdb_upload_state(editor)
             return
-        if self._plan_snapshot(editor) != editor.last_revision_snapshot:
+        if not self._revision_is_still_the_plan(editor):
             QMessageBox.warning(
                 self.window, "Cannot upload", "Finalize the current plan revision first."
             )
@@ -2414,7 +2430,7 @@ class ExperimentCoordinator:
         is waiting, and where, is on the page afterwards.
         """
         revision = editor.last_revision
-        if revision is None or self._plan_snapshot(editor) != editor.last_revision_snapshot:
+        if revision is None or not self._revision_is_still_the_plan(editor):
             QMessageBox.warning(
                 self.window, "Cannot save worksheets",
                 "Finalize the experiment in Review first. Worksheets are made from "

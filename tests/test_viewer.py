@@ -5337,8 +5337,15 @@ def test_mxlive_history_is_not_shut_by_a_thread_that_will_not_start(
     def refuse(self):
         raise RuntimeError("can't start new thread")
 
+    # The window reads the shares on a thread that starts threads of its
+    # own. Let that finish first, and undo immediately after, so refusing
+    # every thread in the process does not leave it raising into pytest.
+    _wait_for_share_reading(app, window)
     monkeypatch.setattr(threading.Thread, "start", refuse)
-    coordinator._read_labworks([2026])
+    try:
+        coordinator._read_labworks([2026])
+    finally:
+        monkeypatch.undo()
 
     # Said, not swallowed: the page stops claiming a reading is underway.
     assert coordinator.window.status_message_label.text().startswith(
@@ -5350,5 +5357,166 @@ def test_mxlive_history_is_not_shut_by_a_thread_that_will_not_start(
     # MxLive over the network.
     assert not coordinator._beamline_busy
     window.close()
+    app.processEvents()
+
+
+def test_a_finalized_revision_is_delivered_even_when_the_editor_cannot_compose(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A plan that cannot be composed is not a different plan.
+
+    Worksheets and upload both sat behind "the editor composes exactly the
+    finalized snapshot". A library that moved, or a rule tightened since,
+    leaves the editor composing nothing - and nothing was read as a
+    difference, so a finalized experiment could not have its worksheets
+    saved or its records uploaded, while the step said in so many words
+    that its worksheets were unaffected. Its liquid may already be in the
+    wells by then.
+
+    A plan the editor *can* compose and that differs must still be
+    refused, which is the second half of this test.
+    """
+    app = QApplication.instance() or QApplication([])
+    libs = tmp_path / "libs"
+    libs.mkdir()
+    _fragment_library_file(libs / "set.csv")
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        instruments=standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
+        ),
+        create_missing_instrument_roots=True,
+        fragment_library_directory=libs,
+    )
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(
+        RockMakerImageRepository(tmp_path), store, settings=settings
+    )
+    crystals = (
+        SelectedCrystal(
+            "image", "1070", "A01a",
+            (CrystalTarget("t", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
+            SWISSCI_MIDI_3_LENS.id,
+        ),
+    )
+    editor = _start(window, PlanType.FRAGMENT_SCREENING, crystals, "FragStrand")
+    editor.protein_input.setText("BRD4")
+    editor.library_input.setCurrentIndex(1)
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    revision = window.experiments._finalize_and_continue(editor)
+
+    assert revision is not None
+    assert window.experiments._revision_is_still_the_plan(editor)
+
+    # The plan changes, and is not finalized again: refused, as before.
+    editor.volume_input.setValue(30.0)
+
+    assert editor.current_plan is not None
+    assert not window.experiments._revision_is_still_the_plan(editor)
+
+    editor.volume_input.setValue(25.0)
+
+    # The library goes away. The editor can compose nothing at all.
+    (libs / "set.csv").unlink()
+    window.experiments._refresh_fragment_library_choices()
+    editor.refresh_plan()
+
+    assert editor.current_plan is None
+    assert editor.plan_snapshot() is None
+    assert window.experiments._revision_is_still_the_plan(editor)
+
+    said: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        QMessageBox, "warning",
+        lambda parent, title, text, *args, **kwargs: said.append((title, text)),
+    )
+    window.experiments._save_plan_worksheets(editor)
+
+    assert not said, said
+    exports = store.audit.list_worksheet_exports(revision.id)
+    assert [event.status for event in exports] == ["succeeded"]
+    assert Path(exports[0].path_for("echo650")).is_file()
+
+    # And the upload, which is the other half of what the step promises:
+    # "r1 and its worksheets were built from it and are unaffected" was
+    # printed while both were refused.
+    key = tmp_path / "keys.dsa"
+    key.write_bytes(b"a key")
+    from xtalflow.infrastructure.mxlive_config import resolve_mxlive_account
+
+    account = resolve_mxlive_account(
+        None, os_username="fbdd", base_url="https://mxlive.example", key_path=key,
+    )
+    window.experiments.mxlive_account = account
+    editor.set_mxlive_account(account)
+    window.experiments._sync_webdb_upload_state(editor)
+
+    assert editor.webdb_upload_button.isEnabled()
+    window.close()
+    app.processEvents()
+
+
+def test_a_library_folder_that_moved_leaves_the_revision_finalized(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Where a library was read from is not part of the plan.
+
+    ``library_id`` is a path in the snapshot, so the same file in a renamed
+    folder read as a changed plan: the revision showed as a draft and
+    refused to deliver. It stays in the snapshot - taking it out would
+    change the canonical JSON of every revision already stored - and is
+    left out of the comparison instead.
+    """
+    app = QApplication.instance() or QApplication([])
+    first = tmp_path / "libs"
+    first.mkdir()
+    _fragment_library_file(first / "set.csv")
+    database = tmp_path / "reviews.sqlite3"
+
+    def viewer(folder: Path) -> ViewerWindow:
+        return ViewerWindow(
+            RockMakerImageRepository(tmp_path), SQLiteReviewStore(database),
+            settings=replace(DEFAULT_SETTINGS, fragment_library_directory=folder),
+        )
+
+    crystals = (
+        SelectedCrystal(
+            "image", "1070", "A01a",
+            (CrystalTarget("t", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
+            SWISSCI_MIDI_3_LENS.id,
+        ),
+    )
+    window = viewer(first)
+    editor = _start(window, PlanType.FRAGMENT_SCREENING, crystals, "FragMoved")
+    editor.protein_input.setText("BRD4")
+    editor.library_input.setCurrentIndex(1)
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    revision = window.experiments._finalize_and_continue(editor)
+
+    assert revision is not None
+    assert editor.lifecycle_label.text() == "Finalized r1"
+    window.close()
+    app.processEvents()
+
+    second = tmp_path / "libs-2026"
+    second.mkdir()
+    (first / "set.csv").rename(second / "set.csv")
+    reopened = viewer(second)
+    recent = reopened.experiments._recent_experiments()
+    restored = reopened.experiments.resume_experiment(
+        recent[0].workspace_id, recent[0].plan_id
+    )
+    reopened.experiments._sync_editor_selection(restored, crystals)
+
+    assert restored.current_plan is not None, restored.error_label.text()
+    assert restored.plan_snapshot() != restored.last_revision_snapshot
+    assert reopened.experiments._revision_is_still_the_plan(restored)
+
+    # "Draft · saving…" is the autosave the selection kicked off; let it land.
+    reopened.experiments._persist_draft(restored)
+
+    assert restored.lifecycle_label.text() == "Finalized r1"
+    reopened.close()
     app.processEvents()
 

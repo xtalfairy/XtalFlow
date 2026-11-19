@@ -331,12 +331,41 @@ def plan_from_snapshot(plan_id: str, snapshot_json: str) -> Plan:
     )
 
 
+def plans_match(one: str | None, other: str | None) -> bool:
+    """Whether two snapshots fix the same plan.
+
+    ``library_id`` is where a fragment library was read from, not part of
+    the plan. The same file in a renamed folder is the same plan, and
+    counting the path as a change turned a finalized revision back into a
+    draft - which refuses to save its worksheets or upload it, for an
+    experiment whose liquid may already be in the wells.
+
+    It stays in the snapshot: taking it out would change the canonical JSON
+    of every revision already stored, and they would all read as changed.
+    """
+    if one == other:
+        return True
+    if one is None or other is None:
+        return False
+    try:
+        left, right = json.loads(one), json.loads(other)
+    except ValueError:
+        return False
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return False
+    left.pop("library_id", None)
+    right.pop("library_id", None)
+    return left == right
+
+
 def saved_plan_status(
     last_revision: PlanRevision | None,
     last_revision_snapshot: str | None,
     current_snapshot: str | None,
 ) -> PlanStatus:
-    if last_revision is not None and last_revision_snapshot == current_snapshot:
+    if last_revision is not None and plans_match(
+        last_revision_snapshot, current_snapshot
+    ):
         finalized = f"Finalized r{last_revision.revision}"
         return PlanStatus(finalized, finalized=True)
     if last_revision is not None:

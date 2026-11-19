@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from xtalflow.text import counted
 from xtalflow.ui import theme
 from xtalflow.ui.forms import form_layout
 
@@ -193,6 +194,11 @@ class WorksheetsStep(QWidget):
         self.harvest_table.hide()
         self.harvest_check_button = QPushButton("Check harvest…")
         self.harvest_check_button.setEnabled(False)
+        # Only ever enabled by a check that found something to record, so
+        # that nobody writes to MxLive without having first seen what would
+        # be written. A harvest write cannot be taken back.
+        self.harvest_record_button = QPushButton("Record harvest in MxLive…")
+        self.harvest_record_button.setEnabled(False)
         self.harvest_toggle = QPushButton("Show crystals")
         self.harvest_toggle.setCheckable(True)
         self.harvest_toggle.setEnabled(False)
@@ -207,6 +213,7 @@ class WorksheetsStep(QWidget):
         harvest_header.addWidget(self.harvest_status_label, 1)
         harvest_header.addWidget(self.harvest_toggle)
         harvest_header.addWidget(self.harvest_check_button)
+        harvest_header.addWidget(self.harvest_record_button)
 
         layout = QVBoxLayout()
         layout.setContentsMargins(0, theme.SPACING_M, 0, 0)
@@ -277,13 +284,23 @@ class WorksheetsStep(QWidget):
         self.harvest_toggle.setText("Hide crystals" if visible else "Show crystals")
 
     def show_harvest(
-        self, status: str, rows: tuple[tuple[str, ...], ...] = (), notes: str = ""
+        self,
+        status: str,
+        rows: tuple[tuple[str, ...], ...] = (),
+        notes: str = "",
+        recordable: int = 0,
     ) -> None:
         """What was read, one line and one row per crystal.
 
         Called with rows only after a check: before that the line says so,
         because an empty table under a heading reads as "there is nothing",
         and here it means "nobody has looked yet".
+
+        ``recordable`` is how many crystals a send would write, and it is
+        what offers the send at all - so the offer cannot outlive the read it
+        came from. The button says the number rather than leaving it to be
+        found in the line above, because that number is the whole of what
+        pressing it does to MxLive.
         """
         self.harvest_status_label.setText(status)
         self.harvest_table.setRowCount(len(rows))
@@ -297,3 +314,9 @@ class WorksheetsStep(QWidget):
             self.harvest_toggle.setChecked(False)
         self.harvest_note_label.setText(notes)
         self.harvest_note_label.setVisible(bool(notes))
+        self.harvest_record_button.setEnabled(bool(recordable))
+        self.harvest_record_button.setText(
+            f"Record {counted(recordable, 'harvest')} in MxLive…"
+            if recordable
+            else "Record harvest in MxLive…"
+        )

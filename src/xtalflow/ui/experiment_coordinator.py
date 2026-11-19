@@ -18,7 +18,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 from uuid import uuid4
 
 from PyQt5.QtCore import QTimer, Qt
@@ -84,7 +84,7 @@ from xtalflow.application.harvest_review import (
     prepare_harvest_review,
     read_harvest,
 )
-from xtalflow.domain.harvest_record import WRITTEN_BLIND
+from xtalflow.domain.harvest_record import WRITTEN_BLIND, harvest_writes
 from xtalflow.domain.labwork import mxlive_soak_volume
 from xtalflow.application.labwork_upload import (
     FAILED,
@@ -297,6 +297,21 @@ def _harvest_rows(review) -> tuple[tuple[str, ...], ...]:
 
 def _file_name(path: str) -> str:
     return path.rsplit("/", 1)[-1] if path else ""
+
+
+def _puck_names(writes: Sequence[Mapping[str, Any]]) -> str:
+    """The pucks these records would be recorded into, each named once.
+
+    Sorted, so two presses of the same plate read the same. Named rather
+    than counted: a puck is a physical thing on the bench and the one part
+    of this write that can be checked by looking.
+    """
+    found: list[str] = []
+    for write in writes:
+        name = str(write.get("puck_name") or "")
+        if name and name not in found:
+            found.append(name)
+    return ", ".join(sorted(found)) or "no puck named"
 
 
 def _harvest_notes(review) -> str:
@@ -1191,6 +1206,9 @@ class ExperimentCoordinator:
         )
         editor.worksheets_step.harvest_check_button.clicked.connect(
             lambda _checked=False, item=editor: self._check_harvest(item)
+        )
+        editor.worksheets_step.harvest_record_button.clicked.connect(
+            lambda _checked=False, item=editor: self._record_harvest(item)
         )
         editor.worksheets_step.choose_location_button.clicked.connect(
             lambda _=False, selected_editor=editor: self._save_worksheets_elsewhere(
@@ -2112,7 +2130,7 @@ class ExperimentCoordinator:
             return
         if not lock.can_upload:
             state = {
-                UploadAvailability.UPLOADED: "Uploaded",
+                UploadAvailability.UPLOADED: "Sample list uploaded",
                 UploadAvailability.PARTIAL: "Partial upload · review MxLive",
                 UploadAvailability.NEEDS_VERIFICATION:
                     "Upload result unknown · verify on MxLive",
@@ -2184,7 +2202,10 @@ class ExperimentCoordinator:
                 and lock.availability is UploadAvailability.UPLOADED
                 for lock in locks
             ):
-                reason = "Upload this experiment to MxLive first"
+                # Named as the sample list, because this sentence sits in
+                # the Harvest section and "upload to MxLive" there was read
+                # as being about the harvest - the thing the section is for.
+                reason = "Upload this experiment's sample list to MxLive first"
         step.harvest_check_button.setEnabled(not reason)
         if reason:
             step.show_harvest(reason)
@@ -2236,6 +2257,7 @@ class ExperimentCoordinator:
         said: list[tuple[str, str]] = []
         rows: tuple[tuple[str, ...], ...] = ()
         notes: list[str] = []
+        recordable = 0
         for experiment_id in self._uploaded_experiment_ids(editor, revision):
             review = self._harvest_review_of(editor, revision, experiment_id)
             if isinstance(review, str):
@@ -2243,6 +2265,12 @@ class ExperimentCoordinator:
                 continue
             said.append((experiment_id, review.summary()))
             rows = rows + _harvest_rows(review)
+            # can_record, not the count alone: one conflicting or stray well
+            # stops the whole experiment, because a half-sent harvest leaves
+            # somebody to work out which half went and MxLive cannot take a
+            # record back.
+            if review.can_record:
+                recordable += len(review.sendable)
             note = _harvest_notes(review)
             if note:
                 notes.append(note)
@@ -2255,7 +2283,175 @@ class ExperimentCoordinator:
             if len(said) > 1
             else said[0][1] if said else ""
         )
-        editor.worksheets_step.show_harvest(status, rows, "\n".join(notes))
+        editor.worksheets_step.show_harvest(
+            status, rows, "\n".join(notes), recordable
+        )
+
+    def _record_harvest(self, editor: PlanEditorBase) -> None:
+        """Add every harvest already reached to the records on MxLive.
+
+        The only write in this program that touches a record somebody else
+        may have had in their hands. So it reads afresh instead of sending
+        what the screen happens to be holding: what goes out is what was
+        read a moment before, and that read is the whole of the check,
+        because MxLive cannot be asked to undo a harvest.
+
+        Nothing is written locally, and that is deliberate twice over. A
+        harvest write proves itself - the next read finds the values on
+        MxLive and the row says "already on MxLive" - which is a better
+        witness than a row in our own database saying we sent it. And an
+        audit row would do active harm: it would become this experiment
+        ID's newest successful upload, and the next read takes that one for
+        the records as they were first uploaded, which is the only proof of
+        who owns them.
+
+        A write that stops halfway needs no repair for the same reason. What
+        went in reads as recorded and what did not reads as still to record,
+        so pressing again sends the remainder and nothing twice.
+        """
+        revision = editor.last_revision
+        account = self.mxlive_account
+        if revision is None or account is None or self.window.review_store is None:
+            return
+        # Asked again here, as uploading does, so that somebody who put the
+        # key file in place since starting work need not restart.
+        account = account.rechecked()
+        self.mxlive_account = account
+        if not account.upload_ready:
+            QMessageBox.warning(
+                self.window, "Cannot record the harvest",
+                "\n".join(account.upload_blockers),
+            )
+            return
+        sending: list[tuple[str, tuple[Mapping[str, Any], ...]]] = []
+        refused: list[str] = []
+        for experiment_id in self._uploaded_experiment_ids(editor, revision):
+            read = self._harvest_read_of(editor, revision, experiment_id)
+            if isinstance(read, str):
+                refused.append(f"{experiment_id}: {read}")
+                continue
+            sources, review = read
+            if not review.can_record:
+                refused.append(f"{experiment_id}: {review.summary()}")
+                continue
+            try:
+                writes = harvest_writes(review.sendable, sources.payloads)
+            except ValueError as error:
+                # A row that passed every check and still cannot be built is
+                # a fault in this program. Said rather than skipped.
+                refused.append(f"{experiment_id}: {error}")
+                continue
+            sending.append((experiment_id, writes))
+        if not sending:
+            QMessageBox.information(
+                self.window, "Nothing to record",
+                "No crystal of this plate can be recorded at the moment.\n\n"
+                + "\n".join(refused),
+            )
+            self._check_harvest(editor)
+            return
+        if not self._harvest_send_agreed(account, sending, refused):
+            return
+        self._send_harvests(editor, account, sending)
+
+    def _harvest_send_agreed(
+        self,
+        account,
+        sending: Sequence[tuple[str, Sequence[Mapping[str, Any]]]],
+        refused: Sequence[str],
+    ) -> bool:
+        """Ask once, naming the pucks and what cannot be checked first.
+
+        The pucks are named because they are what somebody can check against
+        the tray in front of them - a wrong puck is the one mistake here that
+        no reading of ours could catch, and the records would carry it.
+
+        What is being left out is named too. Somebody who expected the whole
+        plate to go must see that it did not before they agree, not after.
+        """
+        total = sum(len(writes) for _, writes in sending)
+        named = "\n".join(
+            f"{experiment_id}: {counted(len(writes), 'crystal')} "
+            f"into {_puck_names(writes)}"
+            for experiment_id, writes in sending
+        )
+        left_out = ("\n\nNot being recorded:\n" + "\n".join(refused)) if refused else ""
+        answer = QMessageBox.question(
+            self.window,
+            "Record harvest in MxLive",
+            f"Add the harvest of {counted(total, 'crystal')} to the records "
+            f"already on MxLive?\n\n{named}{left_out}\n\n"
+            + "\n\n".join(WRITTEN_BLIND)
+            + "\n\nMxLive cannot undo this.\n\n"
+            f"Account: {account.username}\n"
+            f"API project_id: {account.account_id}\n"
+            f"Endpoint: {labworks_endpoint(account.base_url, account.beamline)}",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return answer == QMessageBox.Yes
+
+    def _send_harvests(
+        self,
+        editor: PlanEditorBase,
+        account,
+        sending: Sequence[tuple[str, Sequence[Mapping[str, Any]]]],
+    ) -> None:
+        """Send each experiment ID's harvests, and stop at the first that does not.
+
+        Stopping, because the second ID's crystals are still on the bench
+        either way, while a second failure box stacked on the first says
+        nothing new and hides what already went in.
+        """
+        recorded = 0
+        failure = ""
+        for experiment_id, writes in sending:
+            payload = tuple(writes)
+            outcome = self.window._run_in_background(
+                f"Recording {counted(len(payload), 'harvest')} for {experiment_id}…",
+                lambda payload=payload: send_labworks(
+                    lambda: LegacyMxLiveWriteClient(
+                        account.base_url, account.beamline, account.username,
+                        account.key_path, ca_bundle=account.ca_bundle,
+                        timeout_seconds=self.window.settings.mxlive_timeout_seconds,
+                    ).upload_labworks(payload)
+                ),
+            )
+            operations_log.event(
+                "harvest-recorded",
+                experiment_id=experiment_id,
+                crystals=len(payload),
+                outcome=outcome.status,
+            )
+            if outcome.status != SUCCEEDED:
+                failure = (
+                    f"{experiment_id}: {outcome.error_message or 'Unknown error'}"
+                )
+                break
+            recorded += len(payload)
+        # Read again either way: MxLive, not this program, is what says what
+        # was recorded, and after a write that stopped halfway it is the only
+        # thing that can say how far it got.
+        self._check_harvest(editor)
+        if failure:
+            QMessageBox.critical(
+                self.window, "The harvest was not fully recorded",
+                f"{failure}\n\n"
+                + (
+                    f"{counted(recorded, 'crystal')} went in before it stopped.\n\n"
+                    if recorded
+                    else ""
+                )
+                + "The table above has been read again from MxLive. A crystal "
+                "that went in reads as already recorded, so pressing again "
+                "sends what is left and nothing twice.",
+            )
+            return
+        QMessageBox.information(
+            self.window, "Harvest recorded",
+            f"{counted(recorded, 'crystal')} now carry their harvest time and "
+            "puck on MxLive.",
+        )
 
     def _revisions_holding_worksheets(
         self, editor: PlanEditorBase, revision: PlanRevision, experiment_id: str
@@ -2293,6 +2489,19 @@ class ExperimentCoordinator:
         under two IDs is not reported as a failure because one of them has
         not been uploaded yet.
         """
+        read = self._harvest_read_of(editor, revision, experiment_id)
+        return read if isinstance(read, str) else read[1]
+
+    def _harvest_read_of(
+        self, editor: PlanEditorBase, revision: PlanRevision, experiment_id: str
+    ):
+        """The sources and the review together, or the sentence saying why not.
+
+        Both, because recording a harvest needs the review for what to send
+        and the sources for the payloads each record was uploaded with - the
+        only proof of who owns it. MxLive validates nothing, so a write that
+        invented those columns would be accepted.
+        """
         account = self.mxlive_account
         store = self.window.review_store
         if account is None or store is None:
@@ -2323,7 +2532,7 @@ class ExperimentCoordinator:
                     editor.plan_id, revision.snapshot_json
                 ),
             )
-            return self.window._run_in_background(
+            review = self.window._run_in_background(
                 f"Reading the harvest of {experiment_id}…",
                 lambda: read_harvest(
                     sources,
@@ -2334,6 +2543,7 @@ class ExperimentCoordinator:
                     ),
                 ),
             )
+            return sources, review
         except HarvestReviewError as error:
             return str(error)
         except (MxLiveReadError, ReviewPersistenceError, ValueError, OSError) as error:

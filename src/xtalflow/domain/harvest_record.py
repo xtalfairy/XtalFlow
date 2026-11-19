@@ -36,6 +36,7 @@ __all__ = [
     "HARVEST_MARK",
     "STAFF_COMMENTS_LIMIT",
     "harvest_payload",
+    "harvest_writes",
     "HarvestOutcome",
     "WRITTEN_BLIND",
     "HarvestRow",
@@ -74,15 +75,23 @@ happens after beamline staff have had the record in their hands.
 
 
 class HarvestOutcome(Enum):
-    """What would happen to one crystal's record, in the person's words."""
+    """What would happen to one crystal's record, in the person's words.
 
-    WILL_RECORD = "will be recorded"
-    ALREADY_RECORDED = "already on MxLive"
-    DIFFERS_ON_MXLIVE = "on MxLive with different values; not changed"
+    Every one of these says "harvest" where it means the harvest, and
+    "record" where it means the record the sample list created. The two are
+    different deliveries to the same server and they were not distinguished
+    here: a row reading "already on MxLive" is true of every record by this
+    point - the upload put it there - so it was read as "yes, I uploaded
+    that" when it meant "the harvest of it is already recorded".
+    """
+
+    WILL_RECORD = "harvest will be recorded"
+    ALREADY_RECORDED = "harvest already recorded"
+    DIFFERS_ON_MXLIVE = "a different harvest on MxLive; not changed"
     NOT_PICKED = "not picked yet"
     PICK_FAILED = "pick failed; not sent"
     FILES_DISAGREE = "the returned files disagree about this well"
-    NO_RECORD = "no record on MxLive; nothing would be sent"
+    NO_RECORD = "no record on MxLive to add a harvest to"
     SEVERAL_RECORDS = "more than one record on MxLive"
     NO_PAYLOAD = "this experiment's upload is not in the local audit"
     PUCK_NAME_TOO_LONG = "the puck name is too long for MxLive"
@@ -318,6 +327,43 @@ def harvest_payload(
     payload["puck_nohole"] = _position_number(harvest.puck_position)
     payload.pop("harvest_order", None)
     return payload
+
+
+def harvest_writes(
+    rows: Sequence[HarvestRow],
+    payloads: Mapping[tuple[str, str], Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """The records to send so that MxLive holds every harvest already reached.
+
+    Only a row that will be recorded, and that is checked here rather than
+    assumed. Every other outcome is either nothing to send or something that
+    must not be sent, and two of them matter enough to name:
+
+    - a pick that failed. The instrument writes its own comment about what
+      happened to the crystal, and that comment is the one thing on this
+      screen that a person might want on the record. It is not sent: nothing
+      about a failed pick goes to MxLive, because the record would then say
+      a crystal was handled when none was, and a record this program has
+      written to is one it will not correct.
+    - a harvest MxLive already holds with other values. Sending ours would
+      overwrite what the beamline wrote, which cannot be undone.
+
+    The order is the order of the plate, so the preview and what is sent
+    cannot drift apart.
+    """
+    writes: list[dict[str, Any]] = []
+    for row in rows:
+        if not row.outcome.is_sendable:
+            raise ValueError(f"{row.describe()} must not be sent")
+        original = payloads.get(row.key)
+        if original is None or row.on_mxlive is None or row.harvest is None:
+            # WILL_RECORD is not reachable without all three, so arriving
+            # here is a fault in this program, not a state of the plate.
+            raise ValueError(
+                f"{row.describe()} is missing what it would have to be sent with"
+            )
+        writes.append(harvest_payload(original, row.on_mxlive, row.harvest))
+    return tuple(writes)
 
 
 def _marked(staff_comments: Any) -> str:

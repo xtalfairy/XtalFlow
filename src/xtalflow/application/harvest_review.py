@@ -16,6 +16,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
+from ..text import counted
 from .labwork_upload import SUCCEEDED as UPLOAD_SUCCEEDED
 from .worksheet_export import SUCCEEDED as EXPORT_SUCCEEDED
 from ..domain.harvest_record import HarvestOutcome, HarvestRow, plan_harvest_records
@@ -75,9 +76,9 @@ class HarvestReview:
         return sum(1 for row in self.rows if row.outcome is outcome)
 
     def summary(self) -> str:
-        parts = [f"{len(self.sendable)} to record"]
+        parts = [f"{counted(len(self.sendable), 'harvest')} to record"]
         for outcome, word in (
-            (HarvestOutcome.ALREADY_RECORDED, "already on MxLive"),
+            (HarvestOutcome.ALREADY_RECORDED, "already recorded"),
             (HarvestOutcome.PICK_FAILED, "picks failed"),
             (HarvestOutcome.NOT_PICKED, "not picked yet"),
         ):

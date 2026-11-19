@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Mapping
+
+import pytest
 
 from xtalflow.domain.harvest_record import (
     PUCK_NAME_LIMIT,
     HarvestOutcome,
+    harvest_writes,
     plan_harvest_records,
 )
 from xtalflow.domain.mxlive import MxLiveLabwork
@@ -347,3 +351,113 @@ def test_a_puck_position_that_is_not_a_number_is_refused() -> None:
 
     assert rows[0].outcome is HarvestOutcome.PUCK_POSITION_NOT_A_NUMBER
     assert rows[0].outcome.needs_attention
+
+
+def _sendable_rows(*wells: str, payloads=None):
+    """Rows the plan says will be recorded, for the wells named."""
+    report = HarvestReport(harvested=tuple(_crystal(well) for well in wells))
+    return plan_harvest_records(
+        tuple(("2069", well) for well in wells),
+        report,
+        tuple(_record(well) for well in wells),
+        payloads if payloads is not None else _payloads(*wells),
+    )
+
+
+def test_a_harvest_write_carries_the_record_it_was_uploaded_with() -> None:
+    """The columns MxLive is not sent become NULL, so all of them go.
+
+    And they come from the payload this experiment was uploaded with, which
+    is the only proof of who owns the record: MxLive validates nothing, so a
+    write that invented them would be accepted and would quietly move the
+    record to whatever it claimed.
+    """
+    owned = {
+        ("2069", "A01a"): {
+            "plate_code": "2069", "plate_well": "A01a",
+            "expri_id": "PreTest-202611-BRD4-01", "protein_name": "BRD4",
+            "soak_id": "BRD4_c1_60m", "project_id": "jjh", "status": 5,
+        },
+    }
+    rows = _sendable_rows("A01a", payloads=owned)
+    assert rows[0].outcome is HarvestOutcome.WILL_RECORD
+
+    (write,) = harvest_writes(rows, owned)
+
+    for column, value in owned[("2069", "A01a")].items():
+        assert write[column] == value
+    assert write["harvest_time"] == "2026-11-17 17:17:00.0"
+    assert write["puck_name"] == "5C-0001"
+    assert write["puck_nohole"] == 1
+    # Any rank we invented would have to stay stable across presses, and a
+    # file read later with an earlier time would shift ranks already written.
+    assert "harvest_order" not in write
+
+
+def test_nothing_about_a_failed_pick_is_sent() -> None:
+    """Not even the instrument's own comment about losing the crystal.
+
+    The comment is the one thing on that row somebody might want on the
+    record, which is why it has to be refused deliberately: a record saying
+    a crystal was handled when none was is a record this program will not
+    correct.
+    """
+    lost = HarvestedCrystal(
+        "2069", "A01c", "", "", "", "FAILED: crystal lost on mount", "", "shifter2",
+    )
+    report = HarvestReport(
+        harvested=(_crystal("A01a"),), attempted=(lost,),
+    )
+    rows = plan_harvest_records(
+        (("2069", "A01a"), ("2069", "A01c")),
+        report,
+        (_record("A01a"), _record("A01c")),
+        _payloads("A01a", "A01c"),
+    )
+    outcomes = [row.outcome for row in rows]
+    assert outcomes == [HarvestOutcome.WILL_RECORD, HarvestOutcome.PICK_FAILED]
+
+    writes = harvest_writes([row for row in rows if row.outcome.is_sendable],
+                            _payloads("A01a", "A01c"))
+
+    assert len(writes) == 1
+    assert "crystal lost" not in json.dumps(writes)
+    assert all(write["plate_well"] != "A01c" for write in writes)
+
+
+def test_a_row_that_must_not_be_sent_is_refused_rather_than_skipped() -> None:
+    """Silently dropping it would send a different set than was agreed to.
+
+    The preview is what the person said yes to. If a row could be dropped
+    between the preview and the send, the count in the question would stop
+    meaning anything.
+    """
+    rows = plan_harvest_records(
+        (("2069", "A01a"),),
+        HarvestReport(harvested=(_crystal("A01a"),)),
+        (_record("A01a", harvest_time="2026-11-17 09:00:00.0",
+                 puck_name="5C-0009", puck_nohole=4),),
+        _payloads("A01a"),
+    )
+    assert rows[0].outcome is HarvestOutcome.DIFFERS_ON_MXLIVE
+
+    with pytest.raises(ValueError, match="must not be sent"):
+        harvest_writes(rows, _payloads("A01a"))
+
+
+def test_the_staff_comment_comes_from_what_mxlive_holds_now() -> None:
+    """Staff may have written there since the upload.
+
+    Sending the comment the record was uploaded with would undo whatever
+    they wrote, and nobody would see it happen.
+    """
+    rows = plan_harvest_records(
+        (("2069", "A01a"),),
+        HarvestReport(harvested=(_crystal("A01a"),)),
+        (_record("A01a", staff_comments="looked cracked under the loop"),),
+        _payloads("A01a"),
+    )
+
+    (write,) = harvest_writes(rows, _payloads("A01a"))
+
+    assert write["staff_comments"].startswith("looked cracked under the loop")

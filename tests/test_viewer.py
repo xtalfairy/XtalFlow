@@ -1,4 +1,5 @@
 import getpass
+import json
 import os
 import socket
 import sqlite3
@@ -1217,7 +1218,12 @@ def test_later_revision_with_uploaded_experiment_id_is_not_uploaded_again(
 
     assert second is not None and second.revision == 2
     assert not editor.webdb_upload_button.isEnabled()
-    assert "Uploaded (earlier revision)" in editor.webdb_status_label.text()
+    # "Sample list", because the harvest is the other thing sent to MxLive
+    # and the same person reads both lines.
+    assert (
+        "Sample list uploaded (earlier revision)"
+        in editor.webdb_status_label.text()
+    )
     window.experiments._upload_plan_labworks(editor)
     assert len(Writer.posted) == 1
     assert dialogs[-1][0] == "information"
@@ -4543,14 +4549,14 @@ def test_a_renamed_solvent_reaches_mxlive_under_the_name_that_was_typed(
     app.processEvents()
 
 
-def test_the_harvest_of_an_uploaded_experiment_is_read_and_shown(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """The whole read path, from the save's own audit to the table.
+def _harvest_ready(tmp_path: Path, monkeypatch, *, second_pick: str = "failed"):
+    """A plate uploaded, its worksheet returned by the SHIFTER, nothing checked.
 
-    Nothing in this is sent: the files are opened read-only, MxLive is only
-    asked what it holds, and the section exists so a person can see where a
-    harvest stands before anything irreversible is offered.
+    Where every harvest question starts: the records exist on MxLive, the
+    file has come back rewritten in place, and no harvest has been read or
+    sent. ``second_pick`` is whether the second crystal came back picked or
+    failed, which is the difference between a plate with one crystal to
+    record and a plate with two.
     """
     app = QApplication.instance() or QApplication([])
     key = tmp_path / "keys.dsa"
@@ -4612,7 +4618,9 @@ def test_the_harvest_of_an_uploaded_experiment_is_read_and_shown(
     # Before the upload there is nothing on MxLive for a harvest to join, and
     # the line says which of the two is missing.
     assert not step.harvest_check_button.isEnabled()
-    assert step.harvest_status_label.text() == "Upload this experiment to MxLive first"
+    assert step.harvest_status_label.text() == (
+        "Upload this experiment's sample list to MxLive first"
+    )
 
     window.experiments._upload_plan_labworks(editor)
     assert _RecordingWriter.posted, dialogs
@@ -4632,17 +4640,40 @@ def test_the_harvest_of_an_uploaded_experiment_is_read_and_shown(
         "2026-11-17 17:17:00.0", "00:00:04.6", "5C-0001", "1",
     ]
     failed = rows[1].split(",")
-    failed[6:13] = [
-        "FAIL: Clear:Melted", "", "2026-11-17 17:17:03.6",
-        "2026-11-17 17:17:07.4", "00:00:03.8", "", "",
-    ]
+    failed[6:13] = (
+        [
+            "FAIL: Clear:Melted", "", "2026-11-17 17:17:03.6",
+            "2026-11-17 17:17:07.4", "00:00:03.8", "", "",
+        ]
+        if second_pick == "failed"
+        else [
+            "OK: Clear:No comment", "XTal-2", "2026-11-17 17:17:03.6",
+            "2026-11-17 17:17:07.4", "00:00:03.8", "5C-0001", "2",
+        ]
+    )
     Path(path).write_text(
         ",".join(picked) + "\r\n" + ",".join(failed) + "\r\n", encoding="utf-8"
     )
 
+    return app, window, store, editor, step, held, dialogs
+
+
+def test_the_harvest_of_an_uploaded_experiment_is_read_and_shown(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The whole read path, from the save's own audit to the table.
+
+    Nothing in this is sent: the files are opened read-only, MxLive is only
+    asked what it holds, and the section exists so a person can see where a
+    harvest stands before anything irreversible is offered.
+    """
+    app, window, _store, _editor, step, _held, _dialogs = _harvest_ready(
+        tmp_path, monkeypatch
+    )
+
     step.harvest_check_button.click()
 
-    assert step.harvest_status_label.text() == "1 to record · 1 picks failed"
+    assert step.harvest_status_label.text() == "1 harvest to record · 1 picks failed"
     # Not named: a plate sent under one experiment ID has nothing to
     # distinguish, and the name would only be in the way. It is named when
     # there are two of them - see the late-harvest split.
@@ -4650,7 +4681,7 @@ def test_the_harvest_of_an_uploaded_experiment_is_read_and_shown(
     table = step.harvest_table
     assert table.rowCount() == 2
     assert [table.item(0, column).text() for column in (0, 1, 3, 4, 5, 7)] == [
-        "1070", "A01a", "2026-11-17 17:17:00.0", "5C-0001", "1", "will be recorded",
+        "1070", "A01a", "2026-11-17 17:17:00.0", "5C-0001", "1", "harvest will be recorded",
     ]
     # The instrument's own words on the failed pick, shown and never sent.
     assert table.item(1, 7).text() == "pick failed; not sent · FAIL: Clear:Melted"
@@ -6270,5 +6301,295 @@ def test_an_unreadable_upload_history_does_not_read_as_sent(
 
     assert outstanding.experiment_id == early.experiment_id
     assert lock is None
+    window.close()
+    app.processEvents()
+
+
+def _records_now_holding(held: list):
+    """A writer that puts what it posts where MxLive would hold it.
+
+    So a harvest write can be read back the way it proves itself in the real
+    thing: the next read finds the values on MxLive and the row says so.
+    """
+
+    class Writes(_RecordingWriter):
+        def upload_labworks(self, records):
+            result = super().upload_labworks(records)
+            by_well = {
+                (record.plate_code, record.plate_well): record for record in held
+            }
+            for payload in records:
+                key = (payload["plate_code"], payload["plate_well"])
+                if key in by_well:
+                    held.remove(by_well[key])
+                held.append(MxLiveLabwork.from_mapping(dict(payload)))
+            return result
+
+    return Writes
+
+
+def test_a_harvest_cannot_be_sent_before_it_has_been_looked_at(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The offer to write to MxLive comes only from a read that found something.
+
+    A harvest write cannot be taken back, so the one thing this screen must
+    never do is let somebody send a plate they have not seen. The button is
+    enabled by the check and says the number it would send, because that
+    number is the whole of what pressing it does.
+    """
+    app, window, _store, _editor, step, _held, _dialogs = _harvest_ready(
+        tmp_path, monkeypatch
+    )
+
+    assert not step.harvest_record_button.isEnabled()
+    assert step.harvest_record_button.text() == "Record harvest in MxLive…"
+
+    step.harvest_check_button.click()
+
+    assert step.harvest_record_button.isEnabled()
+    assert step.harvest_record_button.text() == "Record 1 harvest in MxLive…"
+    window.close()
+    app.processEvents()
+
+
+def test_recording_a_harvest_sends_the_picked_crystal_and_not_the_failed_one(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """And proves itself by reading MxLive again, not by its own say-so.
+
+    The row that went in comes back as already recorded, which is what makes
+    a second press safe. Nothing is written locally: an audit row would
+    become this experiment ID's newest successful upload, and the next read
+    takes that for the records as they were first uploaded.
+    """
+    app, window, store, editor, step, held, dialogs = _harvest_ready(
+        tmp_path, monkeypatch
+    )
+    monkeypatch.setattr(
+        "xtalflow.ui.experiment_coordinator.LegacyMxLiveWriteClient",
+        _records_now_holding(held),
+    )
+    step.harvest_check_button.click()
+    before = len(_RecordingWriter.posted)
+    uploads_before = len(store.audit.list_webdb_uploads_for_experiment(
+        editor.last_revision.experiment_id
+    ))
+
+    step.harvest_record_button.click()
+
+    sent = _RecordingWriter.posted[-1]
+    assert len(_RecordingWriter.posted) == before + 1
+    assert [payload["plate_well"] for payload in sent] == ["A01a"]
+    assert sent[0]["harvest_time"] == "2026-11-17 17:17:00.0"
+    assert sent[0]["puck_name"] == "5C-0001"
+    assert sent[0]["puck_nohole"] == 1
+    # The record this experiment was uploaded with, carried whole: MxLive
+    # nulls every column it is not sent.
+    assert sent[0]["project_id"] == window.experiments.mxlive_account.account_id
+    assert sent[0]["name"] and sent[0]["plate_imgpath"]
+    # Every column the upload sent, so that none of them is nulled: MxLive
+    # builds its column dict per column from what it is sent.
+    original = json.loads(
+        store.audit.list_webdb_uploads_for_experiment(
+            editor.last_revision.experiment_id
+        )[0].payload_json
+    )
+    was_sent = next(
+        item for item in original if item["plate_well"] == "A01a"
+    )
+    assert set(sent[0]) >= set(was_sent) - {"harvest_order"}
+    assert sent[0]["expri_id"] == editor.last_revision.experiment_id
+    # Nothing of the failed pick, not even the instrument's words about it.
+    assert "Melted" not in json.dumps(list(sent))
+    # Read back from MxLive, and that is the whole of the proof.
+    assert step.harvest_status_label.text() == (
+        "0 harvests to record · 1 already recorded · 1 picks failed"
+    )
+    assert not step.harvest_record_button.isEnabled()
+    # Not in our own audit: that row would be read as the original upload.
+    assert len(store.audit.list_webdb_uploads_for_experiment(
+        editor.last_revision.experiment_id
+    )) == uploads_before
+    assert ("critical", ) not in [(name,) for name, _ in dialogs]
+    window.close()
+    app.processEvents()
+
+
+def test_declining_the_harvest_question_sends_nothing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """And the default is No, because the box cannot be undone by pressing Enter."""
+    app, window, _store, _editor, step, held, _dialogs = _harvest_ready(
+        tmp_path, monkeypatch
+    )
+    monkeypatch.setattr(
+        "xtalflow.ui.experiment_coordinator.LegacyMxLiveWriteClient",
+        _records_now_holding(held),
+    )
+    step.harvest_check_button.click()
+    before = len(_RecordingWriter.posted)
+    asked: list = []
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        lambda *args, **kwargs: asked.append((args[2], kwargs or args[4:])) or
+        QMessageBox.No,
+    )
+
+    step.harvest_record_button.click()
+
+    assert len(_RecordingWriter.posted) == before
+    # The pucks are named, because a wrong puck is the one mistake here that
+    # no reading of ours could catch.
+    assert "5C-0001" in asked[-1][0]
+    assert "MxLive cannot undo this" in asked[-1][0]
+    assert "status" in asked[-1][0] and "Active" in asked[-1][0]
+    assert QMessageBox.No in asked[-1][1]
+    window.close()
+    app.processEvents()
+
+
+def test_a_harvest_write_that_stops_halfway_leaves_the_rest_sendable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The one failure that must not need repairing by hand.
+
+    MxLive is written one record at a time, so a connection that drops in
+    the middle leaves some crystals recorded and some not. Nothing local
+    could be trusted to say which: the program may not have been running
+    when it happened. So MxLive is asked again, and what it holds is the
+    answer - the crystals that went in read as already recorded and the rest
+    read as still to record, which is what makes pressing again safe.
+    """
+    from xtalflow.domain.mxlive import MxLivePartialWriteError
+
+    app, window, _store, _editor, step, held, dialogs = _harvest_ready(
+        tmp_path, monkeypatch, second_pick="picked"
+    )
+
+    class StopsAfterOne(_records_now_holding(held)):
+        def upload_labworks(self, records):
+            # The first record goes in, then the connection drops.
+            super().upload_labworks(records[:1])
+            raise MxLivePartialWriteError(1, len(records), "connection reset")
+
+    monkeypatch.setattr(
+        "xtalflow.ui.experiment_coordinator.LegacyMxLiveWriteClient", StopsAfterOne
+    )
+    step.harvest_check_button.click()
+    assert step.harvest_status_label.text() == "2 harvests to record"
+    assert step.harvest_record_button.text() == "Record 2 harvests in MxLive…"
+
+    step.harvest_record_button.click()
+
+    # Said, with the number that decides what to do next.
+    said = [text for name, text in dialogs if name == "critical"]
+    assert said and "connection reset" in said[-1]
+    # And the table says where the plate actually stands now.
+    assert step.harvest_status_label.text() == "1 harvest to record · 1 already recorded"
+    assert step.harvest_record_button.isEnabled()
+    assert step.harvest_record_button.text() == "Record 1 harvest in MxLive…"
+
+    # Pressing again sends only what is left, and nothing twice.
+    monkeypatch.setattr(
+        "xtalflow.ui.experiment_coordinator.LegacyMxLiveWriteClient",
+        _records_now_holding(held),
+    )
+    step.harvest_record_button.click()
+
+    assert [payload["plate_well"] for payload in _RecordingWriter.posted[-1]] == [
+        "A02a"
+    ]
+    assert step.harvest_status_label.text() == "0 harvests to record · 2 already recorded"
+    assert not step.harvest_record_button.isEnabled()
+    window.close()
+    app.processEvents()
+
+
+def test_a_file_holding_a_well_the_plate_never_sent_is_nobody_s_worksheet(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A returned file is recognised by its wells, and all of them have to fit.
+
+    A file holding a row for another plate is not a worksheet of ours, even
+    though every other row in it is: either it is not only ours, or the
+    plate is not the one we think. It is refused whole rather than read for
+    the rows that look right, because a record created for a well nobody
+    planned cannot be deleted - and so the plate reads as not picked yet and
+    nothing is offered to send.
+
+    The domain refuses a stray well a second time, in can_be_recorded; this
+    is the path a person actually reaches, and it stops earlier.
+    """
+    app, window, store, editor, step, held, _dialogs = _harvest_ready(
+        tmp_path, monkeypatch
+    )
+    monkeypatch.setattr(
+        "xtalflow.ui.experiment_coordinator.LegacyMxLiveWriteClient",
+        _records_now_holding(held),
+    )
+    # A row for a well of some other plate, appended to our returned file.
+    path = store.audit.list_worksheet_exports(
+        editor.last_revision.id
+    )[0].path_for("shifter1")
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    stray = lines[0].split(",")
+    stray[1] = "9999"
+    Path(path).write_text(
+        "\r\n".join(lines + [",".join(stray)]) + "\r\n", encoding="utf-8"
+    )
+
+    step.harvest_check_button.click()
+
+    # Every well of the plate is still listed, because the wells come from
+    # what was uploaded and not from the file - "not picked yet" is
+    # information, and a plate half harvested is normal mid-session.
+    assert step.harvest_status_label.text() == "0 harvests to record · 2 not picked yet"
+    assert step.harvest_table.rowCount() == 2
+    # The file is named, and what became of it, so somebody can go and look.
+    assert "not a worksheet of this revision" in step.harvest_note_label.text()
+    # Nothing may be sent, and the button does not offer it.
+    assert not step.harvest_record_button.isEnabled()
+    assert step.harvest_record_button.text() == "Record harvest in MxLive…"
+    window.close()
+    app.processEvents()
+
+
+def test_two_files_disagreeing_about_one_well_stops_the_other_crystals_too(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """One contradiction refuses the whole plate, not only its own well.
+
+    The worksheet is saved to both stations, so two files can come back
+    describing the same crystal differently - the operator loaded one, the
+    other was edited, nobody remembers which. The crystals the two files
+    agree about could be sent, and that is the trap: somebody would later
+    have to work out which half of the plate went, and MxLive cannot take a
+    record back. So nothing is offered while the contradiction stands.
+    """
+    app, window, store, editor, step, held, _dialogs = _harvest_ready(
+        tmp_path, monkeypatch, second_pick="picked"
+    )
+    monkeypatch.setattr(
+        "xtalflow.ui.experiment_coordinator.LegacyMxLiveWriteClient",
+        _records_now_holding(held),
+    )
+    export = store.audit.list_worksheet_exports(editor.last_revision.id)[0]
+    agreed = Path(export.path_for("shifter1")).read_text(encoding="utf-8")
+    # The same worksheet at the other station, with one well's harvest an
+    # hour later. Both files are this revision's, so both are read.
+    Path(export.path_for("shifter2")).write_text(
+        agreed.replace("2026-11-17 17:17:00.0", "2026-11-17 18:17:00.0"),
+        encoding="utf-8",
+    )
+
+    step.harvest_check_button.click()
+
+    said = step.harvest_status_label.text()
+    assert "1 needing a look" in said
+    # The crystal the two files agree about is still read, and still refused.
+    assert "1 harvest to record" in said
+    assert not step.harvest_record_button.isEnabled()
+    assert step.harvest_record_button.text() == "Record harvest in MxLive…"
     window.close()
     app.processEvents()

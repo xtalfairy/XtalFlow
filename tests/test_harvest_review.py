@@ -138,7 +138,7 @@ def test_a_returned_worksheet_is_read_and_each_crystal_placed() -> None:
         HarvestOutcome.WILL_RECORD, HarvestOutcome.NOT_PICKED,
     ]
     assert review.can_record and len(review.sendable) == 1
-    assert review.summary() == "1 to record · 1 not picked yet"
+    assert review.summary() == "1 harvest to record · 1 not picked yet"
     assert dict(review.sources) == {"/s1/h1.csv": "read", "/s1/h2.csv": "read"}
 
 
@@ -255,7 +255,9 @@ def test_records_mxlive_already_holds_are_counted_and_left_alone() -> None:
 
     assert review.rows[0].outcome is HarvestOutcome.ALREADY_RECORDED
     assert not review.can_record
-    assert review.summary() == "0 to record · 1 already on MxLive · 1 not picked yet"
+    assert review.summary() == (
+        "0 harvests to record · 1 already recorded · 1 not picked yet"
+    )
 
 
 def test_a_well_missing_from_the_recorded_payload_is_not_sendable() -> None:
@@ -410,3 +412,27 @@ def test_the_other_halfs_file_is_named_as_that_and_not_as_a_problem() -> None:
 
     assert dict(plain.sources)["/s1/late.csv"] == "not a worksheet of this revision"
     assert snapshot_for_part is not None  # the split that makes this happen
+
+
+def test_only_the_account_that_uploaded_may_add_to_its_records() -> None:
+    """Refused before any file is opened, and named so it can be sorted out.
+
+    MxLive ties a record to the account that created it, and this program
+    writes with the researcher's own key. Adding a harvest from another
+    account would either be rejected by MxLive or - worse, and this is why
+    it is stopped here - create a second record for the same well under the
+    wrong owner, which nobody can delete.
+
+    It is not an error in the plate: the person is told whose it is, because
+    on a beamline the answer is usually to go and ask them.
+    """
+    plan = _plan()
+    store = _store(plan, username="gistjwk")
+
+    with pytest.raises(HarvestReviewError) as raised:
+        prepare_harvest_review(
+            EXPID, store, lambda _revision: plan, username="jjh"
+        )
+
+    assert "gistjwk" in str(raised.value)
+    assert "only that account" in str(raised.value)

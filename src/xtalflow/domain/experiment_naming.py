@@ -36,6 +36,38 @@ def normalize_protein_name(value: str, *, already_named: bool = False) -> str:
     return normalized
 
 
+# The shape this app builds: PreTest-202611-BRD4-01. Anything else was not
+# built here, and cannot be read for the name it was built from.
+_OUR_ID = re.compile(r"[A-Za-z0-9]+-\d{6}-.+-\d{2,}")
+
+
+def experiment_id_holds_protein(experiment_id: str, protein: str) -> bool:
+    """Whether this ID was built from this protein name.
+
+    The rules for a name are allowed to tighten, and an experiment already
+    underway must not be stranded by that: its ID is fixed and every later
+    revision reuses it, so judging its name again takes nothing back. But
+    "has an ID" is the wrong question to ask for that leniency, because it
+    also excuses a name typed *after* the ID was fixed - finalize as BRD4,
+    rename to BRD4.v2, and the record goes up as BRD4.v2 under
+    PreTest-202611-BRD4-01. That is the ID and the record disagreeing, which
+    is the very thing the normalizing was for.
+
+    So the question is whether the ID carries this name. An ID of some other
+    shape is not ours to read, and not held against anybody: leniency
+    stands, because stranding somebody mid-beamtime is the worse mistake.
+    """
+    if not experiment_id:
+        return False
+    if not _OUR_ID.fullmatch(experiment_id):
+        return True
+    try:
+        name = normalize_protein_name(protein, already_named=True)
+    except ValueError:
+        return False
+    return bool(re.fullmatch(rf".*-{re.escape(name)}-\d{{2,}}", experiment_id))
+
+
 def protein_name_for_record(value: str) -> str:
     """The protein name as it is recorded, which is as the experiment ID has it.
 

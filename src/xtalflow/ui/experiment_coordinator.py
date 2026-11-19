@@ -2052,6 +2052,12 @@ class ExperimentCoordinator:
                 self.window, "Cannot upload", "Finalize the current plan revision first."
             )
             return
+        # Asked again here, and only here: the answer the panel shows is kept
+        # so that a key path on network storage is not looked at twice per
+        # keystroke. Somebody who put the key file in place since starting
+        # work has to be able to upload without restarting.
+        account = account.rechecked()
+        self.mxlive_account = account
         if not account.upload_ready:
             QMessageBox.warning(
                 self.window, "Cannot upload", "\n".join(account.upload_blockers)

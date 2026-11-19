@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from functools import cached_property
 import getpass
 from pathlib import Path
 from typing import Any, Mapping
@@ -26,8 +27,22 @@ class MxLiveAccount:
     ca_bundle: Path | None
     explicitly_mapped: bool
 
-    @property
+    @cached_property
     def upload_blockers(self) -> tuple[str, ...]:
+        """What stands between this account and an upload.
+
+        Asked on every refresh of the preview - twice, through
+        ``upload_ready`` as well - which is twice per keystroke in the
+        protein, rows and volume fields. Two of the answers come from the
+        filesystem, and the key path is ``/data/users/<user>/...`` at BL-5C,
+        which is network storage: on a dropped mount each look takes the
+        best part of a minute, on the thread the window is drawn on.
+
+        So the answer is kept. It is a fact about a file somebody put there
+        before starting work, not about anything this app does, and
+        ``rechecked`` asks again where it matters - before an upload, where
+        a key file added since has to count.
+        """
         blockers: list[str] = []
         if self.os_username == "root" and not self.explicitly_mapped:
             blockers.append("root requires an explicit account mapping")
@@ -42,6 +57,15 @@ class MxLiveAccount:
     @property
     def upload_ready(self) -> bool:
         return not self.upload_blockers
+
+    def rechecked(self) -> MxLiveAccount:
+        """The same account, asking the filesystem again.
+
+        For the moment somebody is told they cannot upload: the key file may
+        have been put there since, and being refused over a file that is now
+        in place, until the application is restarted, is its own problem.
+        """
+        return replace(self)
 
 
 def resolve_mxlive_account(

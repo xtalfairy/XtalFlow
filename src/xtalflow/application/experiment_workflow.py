@@ -10,7 +10,10 @@ from dataclasses import dataclass
 from enum import Enum
 
 from xtalflow.application.labwork_upload import UploadAvailability
-from xtalflow.domain.experiment_naming import normalize_protein_name
+from xtalflow.domain.experiment_naming import (
+    experiment_id_holds_protein,
+    normalize_protein_name,
+)
 from xtalflow.domain.mxlive import BeamlineProgress
 from xtalflow.domain.experiment_project import PlanType
 from xtalflow.text import counted
@@ -292,10 +295,10 @@ class ExperimentFacts:
     # detected outline is often smaller than the well, so only the person
     # looking at the image can say whether the position is where they meant.
     outside_positions_warning: str = ""
-    # Whether this experiment already has its ID. Once it does, the protein
-    # name is a record of what was chosen rather than a choice being made,
-    # and no new identifier is built from it.
-    experiment_id_assigned: bool = False
+    # This experiment's ID, once it has one. The protein name is then a
+    # record of what was chosen rather than a choice being made - but only
+    # while it is still the name the ID was built from.
+    assigned_experiment_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -320,7 +323,12 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
     notes: list[str] = []
 
     try:
-        normalize_protein_name(facts.protein, already_named=facts.experiment_id_assigned)
+        normalize_protein_name(
+            facts.protein,
+            already_named=experiment_id_holds_protein(
+                facts.assigned_experiment_id, facts.protein
+            ),
+        )
         statuses[WorkflowStep.SETUP] = StepStatus(
             WorkflowStep.SETUP, StepState.COMPLETE, f"Protein: {facts.protein.strip()}"
         )

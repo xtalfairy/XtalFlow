@@ -385,14 +385,19 @@ def test_a_dotted_protein_name_blocks_a_new_experiment_but_not_one_underway() ->
         "numbers, underscore, and hyphen."
     )
 
-    underway = evaluate_experiment(replace(dotted, experiment_id_assigned=True))
+    underway = evaluate_experiment(
+        replace(dotted, assigned_experiment_id="FragSC-202607-HSP90.N-01")
+    )
     assert underway.ready_to_finalize
     assert underway.status_of(WorkflowStep.SETUP).state is StepState.COMPLETE
 
     # Still refused once named: only the dot is excused, nothing else.
     for refused in ("HSP90%", "HSP/90"):
         status = evaluate_experiment(
-            replace(dotted, protein=refused, experiment_id_assigned=True)
+            replace(
+                dotted, protein=refused,
+                assigned_experiment_id=f"FragSC-202607-{refused}-01",
+            )
         )
         assert not status.ready_to_finalize
 
@@ -417,7 +422,44 @@ def test_a_space_in_a_protein_name_says_what_to_type_instead() -> None:
 
     # One already underway keeps working; its ID is fixed and reused.
     underway = evaluate_experiment(
-        replace(READY_FRAGMENT, protein="brd4 domain 1", experiment_id_assigned=True)
+        replace(
+            READY_FRAGMENT, protein="brd4 domain 1",
+            assigned_experiment_id="FragSC-202607-BRD4-DOMAIN-1-01",
+        )
     )
     assert underway.ready_to_finalize
+
+
+def test_a_name_typed_after_the_id_was_fixed_is_judged_afresh() -> None:
+    """The leniency is for the name the ID was built from, not for any name.
+
+    An experiment underway must not be stranded when the rules for a name
+    tighten: its ID is fixed and every revision reuses it, so judging the
+    name again takes nothing back. But keyed on "has an ID" the leniency
+    also excuses a name typed after the ID was fixed - and then the record
+    goes to MxLive disagreeing with the ID it is filed under, which is the
+    thing all of this was for.
+    """
+    named = replace(
+        READY_FRAGMENT, protein="HSP90.N",
+        assigned_experiment_id="FragSC-202607-HSP90.N-01",
+    )
+
+    # The name the ID holds: still fine, dot and all.
+    assert evaluate_experiment(named).ready_to_finalize
+
+    # Renamed afterwards. The ID cannot change, so the name has to be one
+    # the rules allow, or the two go to MxLive saying different things.
+    renamed = evaluate_experiment(replace(named, protein="HSP90.N.v2"))
+    assert not renamed.ready_to_finalize
+    assert "letters, numbers" in renamed.status_of(WorkflowStep.SETUP).message
+
+    # A rename to a name the rules do allow is no trouble at all.
+    assert evaluate_experiment(replace(named, protein="HSP90-N-v2")).ready_to_finalize
+
+    # An ID of some other shape is not ours to read, and is not held against
+    # anybody: stranding somebody mid-beamtime is the worse mistake.
+    assert evaluate_experiment(
+        replace(named, protein="HSP90.N.v2", assigned_experiment_id="adopted-from-mxlive")
+    ).ready_to_finalize
 

@@ -141,7 +141,9 @@ class CalibrationInspector(QFrame):
         self.details_label.setText(
             f"Centre ({calibration.center_x_px:.1f}, {calibration.center_y_px:.1f}) px\n"
             f"Radius {calibration.radius_x_px:.1f} × {calibration.radius_y_px:.1f} px\n"
-            f"Updated {calibration.updated_at:%Y-%m-%d %H:%M}"
+            # Local, like every other time on screen: it is written as UTC,
+            # and shown raw it was nine hours out here with nothing saying so.
+            f"Updated {calibration.updated_at.astimezone():%Y-%m-%d %H:%M}"
         )
         self.accept_button.setEnabled(not calibration.confirmed)
 

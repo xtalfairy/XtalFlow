@@ -1643,7 +1643,7 @@ class ExperimentCoordinator:
             )
             editor.worksheets_step.show_result(
                 f"{theme.SYMBOL_ATTENTION} Saved r{revision.revision} · "
-                f"{delivered.exported_at:%Y-%m-%d %H:%M} · {delivered.username} · "
+                f"{_when(delivered.exported_at)} · {delivered.username} · "
                 f"saving again {again}; the files above are from that earlier save",
                 "attention",
                 can_retry=True,
@@ -1652,7 +1652,7 @@ class ExperimentCoordinator:
         elif latest.status == WORKSHEETS_SUCCEEDED and self._saved_elsewhere(latest):
             editor.worksheets_step.show_result(
                 f"{theme.SYMBOL_ATTENTION} Saved r{revision.revision} to the folder you "
-                f"chose · {latest.exported_at:%Y-%m-%d %H:%M} · {latest.username} · "
+                f"chose · {_when(latest.exported_at)} · {latest.username} · "
                 "not in the instrument folders; copy the files there, or save again "
                 "once they can be reached",
                 "attention",
@@ -1668,7 +1668,7 @@ class ExperimentCoordinator:
             )
             editor.worksheets_step.show_result(
                 f"{theme.SYMBOL_ATTENTION} Saved r{revision.revision} · "
-                f"{latest.exported_at:%Y-%m-%d %H:%M} · {latest.username} · "
+                f"{_when(latest.exported_at)} · {latest.username} · "
                 f"{counted(len(files), 'file')} for "
                 f"{self._instrument_names(tuple(sorted(waiting)))} "
                 f"{'are' if len(files) > 1 else 'is'} not on the "
@@ -1681,7 +1681,7 @@ class ExperimentCoordinator:
         elif latest.status == WORKSHEETS_SUCCEEDED and left_out:
             editor.worksheets_step.show_result(
                 f"{theme.SYMBOL_ATTENTION} Saved r{revision.revision} · "
-                f"{latest.exported_at:%Y-%m-%d %H:%M} · {latest.username} · "
+                f"{_when(latest.exported_at)} · {latest.username} · "
                 f"{self._instrument_names(left_out)} did not receive the "
                 "worksheets; do not run this experiment there",
                 "attention",
@@ -1691,7 +1691,7 @@ class ExperimentCoordinator:
         elif latest.status == WORKSHEETS_SUCCEEDED:
             editor.worksheets_step.show_result(
                 f"{theme.SYMBOL_OK} Saved r{revision.revision} · "
-                f"{latest.exported_at:%Y-%m-%d %H:%M} · {latest.username} · "
+                f"{_when(latest.exported_at)} · {latest.username} · "
                 "files are ready; nothing has run on the instruments yet",
                 "ok",
                 copy_text="\n".join(output.path for output in latest.outputs),

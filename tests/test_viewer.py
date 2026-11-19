@@ -4680,12 +4680,15 @@ def test_the_harvest_of_an_uploaded_experiment_is_read_and_shown(
     assert ":" not in step.harvest_status_label.text()
     table = step.harvest_table
     assert table.rowCount() == 2
-    assert [table.item(0, column).text() for column in (0, 1, 3, 4, 5, 7)] == [
+    assert [table.item(0, column).text() for column in (1, 2, 4, 5, 6, 8)] == [
         "1070", "A01a", "2026-11-17 17:17:00.0", "5C-0001", "1", "harvest will be recorded",
     ]
+    # This plate went out whole, so the experiment ID is the same on every
+    # row - said once in the line above, and its column kept out of the way.
+    assert table.isColumnHidden(0)
     # The instrument's own words on the failed pick, shown and never sent.
-    assert table.item(1, 7).text() == "pick failed; not sent · FAIL: Clear:Melted"
-    assert table.item(1, 4).text() == ""
+    assert table.item(1, 8).text() == "pick failed; not sent · FAIL: Clear:Melted"
+    assert table.item(1, 5).text() == ""
     # What no check can catch is said out loud, since a harvest write cannot
     # read a record's status back before replacing it.
     note = step.harvest_note_label.text()
@@ -6591,5 +6594,59 @@ def test_two_files_disagreeing_about_one_well_stops_the_other_crystals_too(
     assert "1 harvest to record" in said
     assert not step.harvest_record_button.isEnabled()
     assert step.harvest_record_button.text() == "Record harvest in MxLive…"
+    window.close()
+    app.processEvents()
+
+
+def test_a_split_plate_says_which_shipment_each_crystal_is_in(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The column earns its place exactly when there are two experiment IDs.
+
+    A plate whose late harvest went separately has its crystals under two
+    names, and which one a crystal is under decides where its harvest is
+    recorded - and which shipment the beamline will find it in. The summary
+    line names both, but a line cannot say which of twelve rows belongs to
+    which, and the harvest times that divided them are not something to make
+    somebody re-derive from the table.
+    """
+    app = QApplication.instance() or QApplication([])
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store)
+    editor = window.experiments.start_experiment(PlanType.CONDITION_TEST)
+    revision = _condition_revision(window, editor)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    early, late = window.experiments._revisions_to_upload(editor, revision)
+
+    # The rows a read hands over carry the ID it read, which is what the
+    # column shows: nothing re-derives it from the plate or the times.
+    from xtalflow.application.harvest_review import HarvestReview
+    from xtalflow.domain.harvest_record import HarvestOutcome, HarvestRow
+    from xtalflow.ui.experiment_coordinator import _harvest_rows
+
+    read = HarvestReview(
+        early.experiment_id, early.id, "jjh",
+        (HarvestRow("1070", "A01a", HarvestOutcome.NOT_PICKED),),
+    )
+    (built,) = _harvest_rows(read)
+    assert built[0] == early.experiment_id
+
+    editor.worksheets_step.show_harvest("read", (built,))
+    # One ID in the table: nothing to tell apart, so nothing in the way.
+    assert editor.worksheets_step.harvest_table.isColumnHidden(0)
+
+    editor.worksheets_step.show_harvest(
+        "read",
+        (
+            (early.experiment_id, "1070", "A01a", "", "", "", "", "", "x"),
+            (late.experiment_id, "1070", "A02a", "", "", "", "", "", "x"),
+        ),
+    )
+
+    table = editor.worksheets_step.harvest_table
+    assert not table.isColumnHidden(0)
+    assert table.item(0, 0).text() == early.experiment_id
+    assert table.item(1, 0).text() == late.experiment_id
+    assert early.experiment_id != late.experiment_id
     window.close()
     app.processEvents()

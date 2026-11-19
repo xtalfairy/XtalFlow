@@ -284,6 +284,7 @@ def _read_text_file(path: str) -> str:
 def _harvest_rows(review) -> tuple[tuple[str, ...], ...]:
     return tuple(
         (
+            review.experiment_id,
             row.plate_code, row.well_address, row.condition,
             row.harvest.harvest_time if row.harvest else "",
             row.harvest.puck_name if row.harvest else "",

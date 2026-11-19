@@ -27,6 +27,11 @@ SETUP_WIDTH = 620
 # One crystal per row. "State" last because it is what the eye goes to, and a
 # person reading down the column should not have to cross the detail first.
 HARVEST_COLUMNS = (
+    # First, because it is what groups the rows: a plate whose late harvest
+    # went separately has its crystals under two IDs, and which shipment a
+    # crystal is in decides where its harvest is recorded. Hidden while
+    # there is only one of them - see show_harvest.
+    "Experiment ID",
     "Plate", "Well", "Condition", "Harvest time", "Puck", "Position",
     "From", "State",
 )
@@ -314,6 +319,13 @@ class WorksheetsStep(QWidget):
             self.harvest_toggle.setChecked(False)
         self.harvest_note_label.setText(notes)
         self.harvest_note_label.setVisible(bool(notes))
+        # The experiment ID only earns its column when there are two of
+        # them. On a plate that went out whole, every row would hold the
+        # same name - already said in the line above - and a column of
+        # repetition pushes the puck and the position out of sight.
+        self.harvest_table.setColumnHidden(
+            0, len({values[0] for values in rows}) < 2
+        )
         self.harvest_record_button.setEnabled(bool(recordable))
         self.harvest_record_button.setText(
             f"Record {counted(recordable, 'harvest')} in MxLive…"

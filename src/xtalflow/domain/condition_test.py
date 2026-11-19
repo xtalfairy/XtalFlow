@@ -1024,3 +1024,104 @@ def build_condition_test_plan(
     return ConditionTestPlan(
         selection, design, tuple(assignments), assignment_order, tuple(wells[len(slots):])
     )
+
+
+# Ten hours. A soak this long is harvested the next day, and the samples
+# soaked for an hour or two cannot be shipped until it is: MxLive ties a
+# shipment to the experiment ID, so one experiment is one shipment, and a
+# shipment goes when its last crystal is in a puck. BL-5C asked for the
+# short ones to go first.
+LONG_SOAK_MINUTES = 600
+
+
+def long_soak_conditions(
+    design: ConditionTestDesign, threshold_minutes: int = LONG_SOAK_MINUTES
+) -> tuple[Condition, ...]:
+    """The conditions whose soak reaches the threshold, counted whole.
+
+    ``total_minutes`` and not the cell's own time: a series can apply fixed
+    treatments before its additive, and what decides when a crystal can be
+    harvested is how long it waits altogether.
+    """
+    return tuple(
+        condition for condition in design.conditions()
+        if condition.total_minutes >= threshold_minutes
+    )
+
+
+def split_by_soak_time(
+    design: ConditionTestDesign, threshold_minutes: int = LONG_SOAK_MINUTES
+) -> tuple[ConditionTestDesign | None, ConditionTestDesign | None]:
+    """The same design as two, the short soaks and the long ones.
+
+    Returned as designs rather than performed on the store, because this is
+    a suggestion: splitting one plate's work into two experiments means two
+    ECHO worksheets for one dispensing session and a second set of source
+    wells, and whether that is worth a day is the researcher's call, not a
+    threshold's.
+
+    ``None`` on either side when nothing falls there, which is the ordinary
+    case: a design with no long soak, or one that is all long soak, is not
+    split at all. Decided on the conditions rather than on the time axis,
+    because a row whose cells are all switched off contributes no condition
+    - and splitting on the axis handed back a design with a long row and
+    nothing in it, which no plan can be built from.
+
+    A cell goes to the side its own time belongs to whether it is switched
+    on or not, so each half keeps the shape of the table the researcher
+    built, including the cells they turned off.
+
+    The long half keeps every additive but none of their source wells. A
+    source well is filled for exactly one experiment's transfers plus its
+    dead volume, so two experiments drawing from one well would take it
+    below that: the second experiment has to be given wells of its own, and
+    carrying these over would have it book wells the first one is using.
+
+    Every additive stays in both halves. Pruning the ones a half does not
+    draw on would be tidier, and it is not worth the chance of leaving a
+    treatment pointing at an additive that is no longer there.
+    """
+    short: list[ConditionSeries] = []
+    long: list[ConditionSeries] = []
+    short_conditions = 0
+    long_conditions = 0
+    for series in design.series:
+        before = sum(treatment.minutes for treatment in series.before)
+        for want_long, into in ((False, short), (True, long)):
+            cells = tuple(
+                cell for cell in series.cells
+                if ((before + cell.minutes) >= threshold_minutes) is want_long
+            )
+            if not cells:
+                continue
+            included = sum(1 for cell in cells if cell.included)
+            if want_long:
+                long_conditions += included
+            else:
+                short_conditions += included
+            into.append(
+                replace(
+                    series,
+                    times=tuple(
+                        minute for minute in series.times
+                        if ((before + minute) >= threshold_minutes) is want_long
+                    ),
+                    cells=cells,
+                )
+            )
+    if not short_conditions or not long_conditions:
+        return (design, None) if not long_conditions else (None, design)
+    return (
+        replace(design, series=tuple(short)),
+        replace(
+            design,
+            series=tuple(long),
+            additives=tuple(
+                replace(additive, source_well="", extra_source_wells=())
+                for additive in design.additives
+            ),
+            # Each half claims its own share of the crystals, and neither
+            # can claim what the researcher said the whole test could spend.
+            available_crystals=None,
+        ),
+    )

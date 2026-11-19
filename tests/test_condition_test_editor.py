@@ -1262,3 +1262,55 @@ def test_a_plate_name_that_cannot_be_written_is_refused(tmp_path) -> None:
     assert plate_of() == "SOLVENT-02"
     assert "a space" not in editor.record_note_label.text()
 
+
+
+def test_a_long_soak_holding_the_short_crystals_back_is_said_at_finalize() -> None:
+    """One experiment is one shipment, and nothing ships until the last pick.
+
+    So a twelve-hour condition keeps the one-hour crystals on the bench
+    overnight, and nothing on screen said so until the morning came.
+    """
+    editor = _editor(times=(60, 120, 720))
+    said = "\n".join(editor.finalize_warnings())
+
+    assert "2 conditions soak for" in said
+    assert "10 h" in said
+    assert "shortest soaks for 1 h" in said
+    assert "one shipment" in said
+    assert "its own source wells" in said
+
+
+def test_the_warning_names_the_threshold_not_the_longest_soak() -> None:
+    """With a ten-hour and a twelve-hour condition, "12 h or more" is false."""
+    editor = _editor(times=(60, 600, 720))
+    said = "\n".join(editor.finalize_warnings())
+
+    assert "10 h or more, up to 12 h" in said
+    assert "soak for 12 h or more" not in said
+
+
+def test_no_long_soak_and_all_long_soak_both_say_nothing() -> None:
+    """Nothing to offer either way: no split to make, or none that helps."""
+    short = "\n".join(_editor(times=(60, 120)).finalize_warnings())
+    whole = "\n".join(_editor(times=(720, 840)).finalize_warnings())
+
+    assert "one shipment" not in short
+    assert "one shipment" not in whole
+
+
+def test_once_the_worksheets_are_out_the_split_is_not_offered() -> None:
+    """A warning that cannot be acted on is worse than none.
+
+    After a worksheet reaches an instrument the liquid may already have
+    moved, and a second experiment's ECHO file would dispense onto drops
+    that are already dosed. Every warning also turns the finalize dialog's
+    default to No, so this one would sit in the way of a revision somebody
+    has to make for another reason.
+    """
+    editor = _editor(times=(60, 120, 720))
+
+    assert "one shipment" in "\n".join(editor.finalize_warnings())
+
+    editor.worksheets_are_out = True
+
+    assert "one shipment" not in "\n".join(editor.finalize_warnings())

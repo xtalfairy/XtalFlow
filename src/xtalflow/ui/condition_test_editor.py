@@ -41,6 +41,7 @@ from xtalflow.domain.condition_test import (
     Additive,
     additive_transfers,
     source_statuses,
+    LONG_SOAK_MINUTES,
     Condition,
     ConditionTestDesign,
     ConditionTestPlan,
@@ -52,6 +53,7 @@ from xtalflow.domain.condition_test import (
     compute_doses,
     fit_to_wells,
     format_minutes,
+    long_soak_conditions,
     new_series,
     parse_minutes,
     parse_minutes_list,
@@ -2486,7 +2488,58 @@ class ConditionTestEditor(PlanEditorBase):
                 f"crystal, e.g. {self._example_soak_id()}."
             )
         warnings.extend(self._source_warnings())
+        warnings.extend(self._long_soak_warning())
         return tuple(warnings)
+
+    def _long_soak_warning(self) -> tuple[str, ...]:
+        """A long soak holding the short crystals back, said before it does.
+
+        One experiment is one shipment - MxLive takes the experiment ID as
+        the shipment's name - and a shipment goes when its last crystal is
+        in a puck. So a twelve-hour condition keeps the one-hour crystals
+        waiting until the next morning, and nothing on screen said so until
+        the morning came.
+
+        Said, not done. Making the long conditions a second experiment
+        would let the short ones ship today, and it costs two ECHO
+        worksheets for one dispensing session and a second set of source
+        wells - a source well is filled for one experiment's transfers plus
+        its dead volume, so the two cannot draw from the same one.
+        """
+        if self.worksheets_are_out:
+            # Nothing can be done about it now, and a warning that cannot be
+            # acted on is worse than none: every warning turns the finalize
+            # dialog's default to No, so this one would sit in the way of a
+            # revision somebody has to make for another reason.
+            return ()
+        long = long_soak_conditions(self.design)
+        if not long or len(long) == len(self.design.conditions()):
+            # All long is one shipment that waits either way, and none long
+            # has nothing to say.
+            return ()
+        soonest = min(
+            condition.total_minutes
+            for condition in self.design.conditions()
+            if condition.total_minutes < LONG_SOAK_MINUTES
+        )
+        longest = max(condition.total_minutes for condition in long)
+        # The threshold is the bound, not the longest: with a ten-hour and a
+        # twelve-hour condition, "2 conditions soak for 12 h or more" is
+        # false of one of them.
+        reach = (
+            f"{format_minutes(LONG_SOAK_MINUTES)} or more, up to "
+            f"{format_minutes(longest)}"
+            if longest > LONG_SOAK_MINUTES
+            else f"{format_minutes(longest)}"
+        )
+        return (
+            f"{counted(len(long), 'condition')} soak for {reach}, and the "
+            f"shortest soaks for {format_minutes(soonest)}. One experiment is "
+            f"one shipment, so nothing here can be shipped until the last "
+            f"crystal is picked. To send the short ones first, make the long "
+            f"conditions their own experiment, with its own wells and its own "
+            f"source wells.",
+        )
 
     def _source_warnings(self) -> tuple[str, ...]:
         """Calibrations that do not suit the fluid, or a plate asked for two of them."""

@@ -687,3 +687,155 @@ def test_a_name_with_characters_that_cannot_be_typed_is_named_back() -> None:
     # Nothing is left to hang a hyphen on, at either end or at all.
     assert compact_name("-DMSO-") == "DMSO"
     assert compact_name("--") == "additive"
+
+
+def _soak_design(times: tuple[int, ...], before_minutes: int = 0):
+    """A one-additive design with a time axis, for the split."""
+    from xtalflow.domain.condition_test import (
+        Additive, ConditionSeries, ConditionTestDesign, MatrixCell, Treatment,
+    )
+
+    dmso = Additive("dmso", "DMSO", stock_percent=Decimal(100))
+    percents = (Decimal(5), Decimal(10))
+    series = ConditionSeries(
+        "s1", "dmso", percents, times,
+        tuple(
+            MatrixCell(f"c{percent}-{minutes}", percent, minutes, replicates=2)
+            for percent in percents
+            for minutes in times
+        ),
+        before=(
+            (Treatment("dmso", Decimal(5), before_minutes),) if before_minutes else ()
+        ),
+    )
+    return ConditionTestDesign((dmso,), (series,))
+
+
+def test_a_long_soak_can_be_split_off_so_the_short_ones_need_not_wait() -> None:
+    """One experiment is one shipment, and a shipment goes with its last crystal.
+
+    So a twelve-hour condition keeps the one-hour and two-hour crystals on
+    the bench until the next morning. Split off, they ship and are shot
+    while the long one is still soaking.
+    """
+    from xtalflow.domain.condition_test import (
+        LONG_SOAK_MINUTES, long_soak_conditions, split_by_soak_time,
+    )
+
+    design = _soak_design((60, 120, 720))
+
+    assert LONG_SOAK_MINUTES == 600
+    assert [item.total_minutes for item in long_soak_conditions(design)] == [720, 720]
+
+    short, long = split_by_soak_time(design)
+
+    assert short is not None and long is not None
+    assert sorted(item.total_minutes for item in short.conditions()) == [60, 60, 120, 120]
+    assert sorted(item.total_minutes for item in long.conditions()) == [720, 720]
+    # Both sides keep every additive: a treatment whose additive was pruned
+    # makes design.additive raise, and a design that cannot be read is worse
+    # than one carrying a row nobody uses.
+    assert short.additives == design.additives
+    assert long.additives == design.additives
+    # Nothing is lost and nothing is duplicated.
+    assert len(short.conditions()) + len(long.conditions()) == len(design.conditions())
+
+
+def test_the_whole_wait_decides_the_split_not_the_last_step() -> None:
+    """A series can treat before its additive, and the crystal waits for all of it."""
+    from xtalflow.domain.condition_test import split_by_soak_time
+
+    design = _soak_design((60,), before_minutes=600)
+
+    assert [item.total_minutes for item in design.conditions()] == [660, 660]
+
+    short, long = split_by_soak_time(design)
+
+    assert short is None
+    assert long is design
+
+
+def test_a_design_with_no_long_soak_is_not_split() -> None:
+    """The ordinary case: nothing to offer, so nothing is offered.
+
+    Splitting costs two ECHO worksheets for one dispensing session and two
+    bookings of the source wells, so it happens only where it buys a day.
+    """
+    from xtalflow.domain.condition_test import split_by_soak_time
+
+    design = _soak_design((60, 120))
+    short, long = split_by_soak_time(design)
+
+    assert short is design
+    assert long is None
+
+
+def test_a_long_row_nobody_included_is_not_a_half_to_itself() -> None:
+    """A row switched off contributes no condition, so it is not a half.
+
+    Splitting on the time axis handed back a long design holding a long row
+    and nothing in it, which no plan can be built from: the axis says what
+    the table looks like and the conditions say what will be soaked.
+    """
+    from xtalflow.domain.condition_test import (
+        Additive, ConditionSeries, ConditionTestDesign, MatrixCell,
+        long_soak_conditions, split_by_soak_time,
+    )
+
+    dmso = Additive("dmso", "DMSO", stock_percent=Decimal(100))
+    series = ConditionSeries(
+        "s1", "dmso", (Decimal(5),), (60, 720),
+        (
+            MatrixCell("c5-60", Decimal(5), 60, replicates=2),
+            MatrixCell("c5-720", Decimal(5), 720, included=False, replicates=2),
+        ),
+    )
+    design = ConditionTestDesign((dmso,), (series,))
+
+    assert long_soak_conditions(design) == ()
+
+    short, long = split_by_soak_time(design)
+
+    assert long is None
+    assert short is design
+
+
+def test_the_long_half_gets_no_source_wells_of_the_short_one() -> None:
+    """A source well is filled for one experiment, plus its dead volume.
+
+    Two experiments drawing from one well would take it below that, and
+    SourcePlateRecord.commit refuses a well another experiment recorded -
+    so carrying the wells over would have the second experiment book the
+    first one's wells and be refused at worksheet save, after the design
+    was done.
+    """
+    from xtalflow.domain.condition_test import (
+        Additive, ConditionSeries, ConditionTestDesign, MatrixCell, split_by_soak_time,
+    )
+
+    dmso = Additive(
+        "dmso", "DMSO", stock_percent=Decimal(100), source_plate="SRC-1",
+        source_well="A1", source_plate_type="384PP", extra_source_wells=("A2",),
+    )
+    series = ConditionSeries(
+        "s1", "dmso", (Decimal(5),), (60, 720),
+        tuple(
+            MatrixCell(f"c5-{minutes}", Decimal(5), minutes, replicates=2)
+            for minutes in (60, 720)
+        ),
+    )
+    design = ConditionTestDesign((dmso,), (series,), available_crystals=12)
+    short, long = split_by_soak_time(design)
+
+    assert short is not None and long is not None
+    # The short half keeps what it had; it is the experiment already set up.
+    assert short.additives[0].source_well == "A1"
+    assert short.additives[0].extra_source_wells == ("A2",)
+    assert long.additives[0].source_well == ""
+    assert long.additives[0].extra_source_wells == ()
+    # The plate and its calibration stay: the second experiment draws from
+    # the same kind of plate, just not the same wells.
+    assert long.additives[0].source_plate == "SRC-1"
+    assert long.additives[0].source_plate_type == "384PP"
+    # And neither half claims the crystals the whole test was given.
+    assert long.available_crystals is None

@@ -5520,3 +5520,128 @@ def test_a_library_folder_that_moved_leaves_the_revision_finalized(
     reopened.close()
     app.processEvents()
 
+
+def test_a_solvent_test_finalized_with_a_space_in_a_name_is_still_delivered(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Names could hold a space until a937f57; designs saved then still exist.
+
+    The beamline asked for the space to be refused because a solvent name
+    becomes a sample name and then a data file name, and a space in a path
+    loses the data. Refusing it is right, and refusing it everywhere would
+    have been wrong: a design finalized with "Solvent 2" cannot compose a
+    plan any more, so without care its worksheets could not be saved and its
+    records could not be uploaded - for an experiment whose drops have
+    already been soaked.
+
+    The name is kept exactly as it was finalized. What goes out is what went
+    out then, because it is rebuilt from the snapshot and not from today's
+    rules.
+    """
+    from xtalflow.domain.condition_test import new_series
+    from xtalflow.ui.condition_test_editor import ConditionTestEditor
+
+    app = QApplication.instance() or QApplication([])
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        instruments=standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
+        ),
+        create_missing_instrument_roots=True,
+        source_plate_record_directory=tmp_path / "source-plates",
+    )
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(RockMakerImageRepository(tmp_path), store, settings=settings)
+    window.workspace_sidebar.start_buttons["solvent_test"].click()
+    editor = window.experiments.current_editor
+
+    assert isinstance(editor, ConditionTestEditor)
+    editor.protein_input.setText("BRD4")
+    editor.drop_volume_input.setValue(600)
+    editor.replicates_input.setValue(1)
+    editor.design = replace(
+        editor.design,
+        series=(new_series(
+            editor.design.additives[0].id, (Decimal("0"), Decimal("3")), (0,), 1
+        ),),
+    )
+    editor.update_additive(
+        source_plate="SOLVENT-09", source_well="a1", source_plate_type="384PP_DMSO2"
+    )
+
+    # The name a design saved before the rule carries. Put into the design
+    # the way a stored one arrives, because the field refuses it now.
+    editor.design = replace(
+        editor.design,
+        additives=(replace(editor.design.additives[0], name="Solvent 2"),),
+    )
+    now = datetime.now(timezone.utc)
+    crystals = tuple(
+        SelectedCrystal(
+            f"image-{index}", "2070",
+            f"{'ABCDEFGH'[index // 12]}{index % 12 + 1:02d}a",
+            (CrystalTarget(f"target-{index}", Decimal(0), Decimal(0), now + timedelta(seconds=index)),),
+            SWISSCI_MIDI_3_LENS.id, f"/rmserver/{index}.jpg",
+        )
+        for index in range(editor.design.required_crystals)
+    )
+    window.experiments._sync_editor_selection(editor, crystals)
+
+    # Today's rules refuse it, so there is no plan to finalize - which is the
+    # point: nobody can newly send a space to the beamline.
+    assert editor.current_plan is None
+    assert "Rename Solvent 2" in editor.design_error
+    assert "a space (use -)" in editor.design_error
+
+    # Finalized the way one finalized before a937f57 existed, which is how
+    # the revisions this is about came to be.
+    monkeypatch.setattr(
+        "xtalflow.ui.condition_test_editor.characters_not_allowed_in_a_name",
+        lambda name: (),
+    )
+    editor.refresh_plan()
+
+    assert editor.current_plan is not None, editor.design_error
+    revision = window.experiments._finalize_plan(editor)
+
+    assert revision is not None
+    assert "Solvent 2" in revision.snapshot_json
+
+    # And the rule is back, as it is for everyone opening that experiment now.
+    monkeypatch.undo()
+    editor.refresh_plan()
+
+    assert editor.current_plan is None
+    assert window.experiments._revision_is_still_the_plan(editor)
+
+    said: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox, "warning",
+        lambda parent, title, text, *args, **kwargs: said.append(text),
+    )
+    window.experiments._save_plan_worksheets(editor)
+
+    assert not said, said
+    exports = store.audit.list_worksheet_exports(revision.id)
+    assert [event.status for event in exports] == ["succeeded"]
+
+    # And the record that becomes the sample name - and then the data file
+    # name - carries it as it was finalized, through the same compacting it
+    # always had. The space was taken out here all along; refusing it at the
+    # field is about the name nobody can check afterwards, not about this.
+    from xtalflow.application.planning_service import plan_from_snapshot
+
+    records = editor.record_builder()(
+        plan_from_snapshot(editor.plan_id, revision.snapshot_json),
+        experiment_id=revision.experiment_id,
+        protein_name="BRD4", username="tester", account_id="tester",
+    )
+    names = {record.soak_id for record in records}
+
+    assert names
+    assert all("Solvent2" in name for name in names), names
+    assert not any(" " in name for name in names), names
+    window.close()
+    app.processEvents()
+

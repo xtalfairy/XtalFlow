@@ -289,6 +289,40 @@ def _harvest_notes(review) -> str:
     return "\n".join(f"{theme.SYMBOL_ATTENTION} {note}" for note in notes)
 
 
+_RECORD_IDENTIFIER = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _unwritable_name_note(records) -> str:
+    """Names in these records that cannot be used as identifiers, if any.
+
+    A plan composed now is refused for these, but a revision finalized
+    before that check existed still has to be uploadable: the liquid has
+    already gone into the wells, and a record nobody can make is worse than
+    an awkward name. So it is said instead, as plainly as it can be - and
+    said here because this is the last place it can be said at all. The
+    names line shows three, so a bad one among ninety-six is never in it.
+    """
+    found: list[str] = []
+    for record in records:
+        for field, value in (
+            ("soak_id", getattr(record, "soak_id", "")),
+            ("soak_plate", getattr(record, "soak_plate", "")),
+            ("soak_well", getattr(record, "soak_well", "")),
+        ):
+            if value and not _RECORD_IDENTIFIER.fullmatch(value.strip()):
+                found.append(f"{field} \u201c{value.strip()}\u201d")
+    if not found:
+        return ""
+    rest = len(found) - 1
+    more = f", and {rest} more" if rest else ""
+    return (
+        f"{theme.SYMBOL_ATTENTION} {found[0]}{more} will go to MxLive as it is. "
+        f"These become identifiers there and cannot be corrected, and a space, "
+        f"a slash or a percent in one is read as something else by whatever "
+        f"reads it next.\n\n"
+    )
+
+
 def _rounded_dose_note(records) -> str:
     """What MxLive will hold for a dose it cannot hold exactly.
 
@@ -2121,6 +2155,7 @@ class ExperimentCoordinator:
             "Upload finalized revision",
             f"Upload {len(records)} records for {revision.experiment_id}?\n\n"
             f"Named in MxLive: {_soak_id_examples(records)}\n\n"
+            f"{_unwritable_name_note(records)}"
             f"{_rounded_dose_note(records)}"
             f"Account: {account.username}\n"
             f"API project_id: {account.account_id}\n"

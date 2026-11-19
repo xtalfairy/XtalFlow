@@ -4507,7 +4507,17 @@ def test_a_renamed_solvent_reaches_mxlive_under_the_name_that_was_typed(
         QMessageBox, "question", lambda *args, **kwargs: asked.append(args[2]) or QMessageBox.Yes
     )
     monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: QMessageBox.Ok)
+    # A name that cannot be an identifier is said in this dialog, which is
+    # the last place it can be said: the names line shows three, so a bad
+    # one among ninety-six would never appear in it. Stubbed rather than
+    # provoked, because what is checked here is that the dialog carries it.
+    monkeypatch.setattr(
+        "xtalflow.ui.experiment_coordinator._unwritable_name_note",
+        lambda records: "ONE OF THESE CANNOT BE WRITTEN\n\n",
+    )
     window.experiments._upload_plan_labworks(editor)
+
+    assert "ONE OF THESE CANNOT BE WRITTEN" in asked[-1]
 
     # The names are shown before the upload, and they are what is sent.
     assert (
@@ -4968,3 +4978,59 @@ def test_a_stale_reading_cannot_tip_held_wells_into_an_empty_mountpoint(
     assert list(record_directory(echo).glob("*.log")) == []
     window.close()
     app.processEvents()
+
+
+def test_a_library_id_that_cannot_be_an_identifier_stops_the_plan(
+    tmp_path: Path,
+) -> None:
+    """Nobody types a compound ID, so refusing typed names never reached it.
+
+    It becomes the soak_id in MxLive, where it is read for years and cannot
+    be corrected, and it goes into the ECHO worksheet too. Refused where the
+    plan is composed, naming the row, so the file or the row range can be
+    fixed - and not in the library or the fragment, which are rebuilt when a
+    finalized revision is restored, where a new rule would refuse to record
+    work already done at the bench.
+    """
+    app = QApplication.instance() or QApplication([])
+    header = (
+        "Vendor,Library,No,ID,Formula,MW,Smile,Conc_mM,Solvent,Plate_ID,Plate_well\n"
+    )
+    (tmp_path / "hand-made.csv").write_text(
+        header
+        + "Vendor,Lib,1,Z1001,C2H6O,46.07,CCO,100,DMSO,SRC-1,A01\n"
+        + "Vendor,Lib,2,50%/DMSO,C2H6O,46.07,CCO,100,DMSO,SRC-1,A02\n",
+        encoding="utf-8",
+    )
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(
+        RockMakerImageRepository(tmp_path), store,
+        settings=replace(DEFAULT_SETTINGS, fragment_library_directory=tmp_path),
+    )
+    crystals = tuple(
+        SelectedCrystal(
+            f"image-{index}", "1070", f"A{index + 1:02d}a",
+            (CrystalTarget(f"t{index}", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
+            SWISSCI_MIDI_3_LENS.id,
+        )
+        for index in range(2)
+    )
+    editor = _start(window, PlanType.FRAGMENT_SCREENING, crystals)
+    editor.library_input.setCurrentIndex(1)
+
+    assert editor.current_plan is None
+    message = editor.error_label.text()
+    assert "Row 2 of hand-made" in message
+    assert "compound ID" in message
+    assert "50%/DMSO" in message
+    assert "letters, numbers, - and _" in message
+    assert editor.conditions_error() is not None
+
+    # Leaving the row out is a way forward, and the message says so.
+    editor.rows_input.setText("1")
+    editor.rows_input.editingFinished.emit()
+
+    assert editor.current_plan is not None, editor.error_label.text()
+    window.close()
+    app.processEvents()
+

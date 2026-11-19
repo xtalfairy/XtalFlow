@@ -54,6 +54,8 @@ from xtalflow.domain.fragment_screening import (
     FragmentScreenPlan,
     SelectedCrystal,
     build_fragment_screen_plan,
+    library_locations_that_are_one_well,
+    library_values_that_cannot_be_written,
     volume_that_splits,
 )
 from xtalflow.domain.raw_crystal import build_raw_crystal_plan
@@ -494,6 +496,39 @@ class PlanEditorBase(QWidget):
                 table.setItem(row_index, column, item)
 
 
+def _require_writable_library(library: FragmentLibrary) -> None:
+    """Refuse a library whose identifiers cannot be used as they are.
+
+    Nothing checked these between the file and MxLive. The compound ID
+    becomes the soak_id, which is in MxLive for years and cannot be
+    corrected, and the plate and well travel in the ECHO worksheet as well.
+
+    Said here, where the plan is composed, and not in the library or the
+    fragment: those are rebuilt when a finalized revision is restored from
+    its snapshot, and a rule tightened afterwards would refuse to record
+    work already done at the bench. Here it refuses only the plan being
+    made, which has cost nobody anything yet, and names the row so the file
+    or the row range can be fixed.
+    """
+    for number, fragment in enumerate(library.fragments, start=1):
+        refused = library_values_that_cannot_be_written(fragment)
+        if refused:
+            field, value = refused[0]
+            raise ValueError(
+                f"Row {number} of {library.name}: the {field} "
+                f"\u201c{value}\u201d cannot be used as it is. It becomes an "
+                f"identifier in MxLive and a value in the ECHO worksheet, so it "
+                f"can have letters, numbers, - and _ only. Fix the library file, "
+                f"or leave the row out."
+            )
+    clashes = library_locations_that_are_one_well(library)
+    if clashes:
+        raise ValueError(
+            f"{library.name}: {clashes[0]}. Two compounds cannot come from one "
+            f"well. Fix the library file, or leave one row out."
+        )
+
+
 class FragmentScreeningEditor(PlanEditorBase):
     """Assign library fragments to selected wells and preview ECHO/SHIFTER output."""
 
@@ -826,6 +861,7 @@ class FragmentScreeningEditor(PlanEditorBase):
             if self.library is None:
                 raise ValueError("Choose a fragment library.")
             selected_library = self.library.select_rows(self.rows_input.text())
+            _require_writable_library(selected_library)
             selection = self._require_selection()
             self._show_counts(len(selected_library.fragments), len(selection.wells))
             plan = build_fragment_screen_plan(

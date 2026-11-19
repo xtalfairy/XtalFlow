@@ -118,3 +118,36 @@ def test_the_payload_carries_a_whole_number_of_nanolitres() -> None:
     # And the record knows, so somebody can be told before it is sent.
     assert record("32.5").soak_volume_is_rounded
     assert not record("50").soak_volume_is_rounded
+
+
+def test_a_name_that_cannot_be_an_identifier_is_said_before_the_upload() -> None:
+    """A plan composed now is refused for these; a finalized one is not.
+
+    The liquid has already gone into the wells by then, and a record nobody
+    can make is worse than an awkward name. So it is said instead, at the
+    last place it can be said at all - and said separately from the names
+    line, which shows three, so a bad one among ninety-six is never in it.
+    """
+    from xtalflow.domain.labwork import LabworkRecord
+    from xtalflow.ui.experiment_coordinator import _unwritable_name_note
+
+    def record(soak_id, plate="SRC-1", well="A1"):
+        return LabworkRecord(
+            "lee", "FragSC-1", "BRD4", "SWISSCI", "1070", "p.jpg", "A01a",
+            Decimal(0), Decimal(0), 1, plate, well, Decimal(100), soak_id,
+            "CC(=O)C=1C=CC.O", "42", "",
+        )
+
+    assert _unwritable_name_note((record("Z1001"), record("Z1002"))) == ""
+
+    note = _unwritable_name_note(
+        (record("Z1001"), record("50%/DMSO"), record("Z3", plate="SRC 1"))
+    )
+
+    assert "soak_id" in note and "50%/DMSO" in note
+    assert "and 1 more" in note
+    assert "cannot be corrected" in note
+    # The SMILES holds a dot and brackets in every one of these, and is
+    # never what this is about: that is how a structure is written.
+    assert "CC(=O)" not in note
+

@@ -23,6 +23,85 @@ from .crystal_selection import (
 
 TRANSFER_INCREMENT_NL = Decimal("2.5")
 
+# What a value out of a library file may hold if it is going to be an
+# identifier: letters, digits, - and _. The compound ID becomes the soak_id
+# in MxLive, where it cannot be corrected, and the plate and well travel in
+# the ECHO worksheet too. % is an escape in a URL, a slash is a path
+# separator, a dot reads as an extension, and a space breaks data processing
+# at the beamline, where the name becomes part of a path.
+#
+# SMILES is deliberately not checked: a structure is written with dots,
+# equals signs and brackets, and that is what it is for.
+_LIBRARY_ID = re.compile(r"[A-Za-z0-9_-]+")
+# A well as a plate has them: one or two row letters, then a column. Written
+# A1, A01 or a01 in different files, and the same well in all three.
+_LIBRARY_WELL = re.compile(r"([A-Za-z]{1,2})0*([1-9][0-9]?)")
+
+
+def library_well_key(address: str) -> str | None:
+    """"a01" -> "A1"; None when it is not the shape of a well at all.
+
+    No plate format is declared in a library file, so this says nothing
+    about whether the well exists on the plate it names - only that two
+    spellings of one well are one well. Written A1 in one row and A01 in
+    another, they used to load as two, and two compounds could be recorded
+    against one physical well.
+    """
+    found = _LIBRARY_WELL.fullmatch(address.strip())
+    if found is None:
+        return None
+    return f"{found.group(1).upper()}{int(found.group(2))}"
+
+
+def library_locations_that_are_one_well(
+    library: FragmentLibrary,
+) -> tuple[str, ...]:
+    """Source locations that are one physical well spelled two ways.
+
+    The library's own check compares the spellings, so A1 and A01 on one
+    plate load as two wells, as do plates P1 and p1. Two compounds then go
+    to the ECHO against one well, and two records to MxLive naming it.
+    """
+    seen: dict[tuple[str, str], str] = {}
+    clashes: list[str] = []
+    for fragment in library.fragments:
+        plate = fragment.source_plate.strip()
+        well = library_well_key(fragment.source_well) or fragment.source_well.strip()
+        key = (plate.casefold(), well)
+        first = seen.get(key)
+        if first is None:
+            seen[key] = f"{fragment.compound_id} at {plate} {fragment.source_well}"
+            continue
+        clashes.append(
+            f"{first} and {fragment.compound_id} at {plate} "
+            f"{fragment.source_well} are the same well"
+        )
+    return tuple(clashes)
+
+
+def library_values_that_cannot_be_written(
+    fragment: Fragment,
+) -> tuple[tuple[str, str], ...]:
+    """The fragment's identifiers that cannot be used as they are, named.
+
+    Nothing checked these between the file and MxLive. The shipped libraries
+    are clean, so this is about a library somebody made themselves - and a
+    soak_id is in MxLive for years and cannot be corrected.
+    """
+    found: list[tuple[str, str]] = []
+    for field, value in (
+        ("compound ID", fragment.compound_id),
+        ("source plate", fragment.source_plate),
+        ("source well", fragment.source_well),
+    ):
+        if not _LIBRARY_ID.fullmatch(value.strip()):
+            found.append((field, value.strip()))
+    if library_well_key(fragment.source_well) is None and not any(
+        field == "source well" for field, _ in found
+    ):
+        found.append(("source well", fragment.source_well.strip()))
+    return tuple(found)
+
 
 @dataclass(frozen=True)
 class Fragment:
@@ -66,6 +145,12 @@ class FragmentLibrary:
             raise ValueError("library name must not be empty")
         if not self.fragments:
             raise ValueError("fragment library must not be empty")
+        # Spelled exactly, because this runs when a finalized revision is
+        # rebuilt from its snapshot to save worksheets or upload. A stricter
+        # rule here would refuse a revision that was accepted when it was
+        # finalized, and refuse to record work already done at the bench.
+        # The stricter comparison belongs where a plan is composed:
+        # ``library_locations_that_are_one_well``.
         source_locations = [
             (fragment.source_plate, fragment.source_well)
             for fragment in self.fragments

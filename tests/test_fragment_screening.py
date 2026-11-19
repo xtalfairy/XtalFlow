@@ -3,6 +3,8 @@ from decimal import Decimal
 
 import pytest
 
+from dataclasses import replace
+
 from xtalflow.domain.fragment_screening import (
     AssignmentOrder,
     CrystalTarget,
@@ -10,6 +12,9 @@ from xtalflow.domain.fragment_screening import (
     FragmentLibrary,
     SelectedCrystal,
     build_fragment_screen_plan,
+    library_locations_that_are_one_well,
+    library_values_that_cannot_be_written,
+    library_well_key,
     parse_library_rows,
 )
 
@@ -202,3 +207,67 @@ def test_the_nearest_volume_every_well_can_share() -> None:
     # Below one step for each position there is nothing to round down to, so
     # the smallest one above is offered instead, and said to be above.
     assert volume_that_splits(Decimal("5"), [3]) == (Decimal("7.5"), False)
+
+
+def test_a_library_value_that_becomes_an_identifier_is_named() -> None:
+    """Nothing checked these between the file and MxLive.
+
+    The compound ID becomes the soak_id, which is in MxLive for years and
+    cannot be corrected; the plate and well travel in the ECHO worksheet as
+    well. Nobody types any of them, so refusing a bad name where names are
+    typed does not reach this path at all. The shipped libraries are clean,
+    so this is about a library somebody made themselves - and those exist.
+    """
+    clean = fragment(1)
+
+    assert library_values_that_cannot_be_written(clean) == ()
+
+    assert library_values_that_cannot_be_written(
+        replace(clean, compound_id="50%/DMSO")
+    ) == (("compound ID", "50%/DMSO"),)
+    assert library_values_that_cannot_be_written(
+        replace(clean, compound_id="PEG 400 (v/v)")
+    )[0][0] == "compound ID"
+    assert library_values_that_cannot_be_written(
+        replace(clean, source_plate="SRC 1")
+    ) == (("source plate", "SRC 1"),)
+    # Not the shape of a well at all, which no character check would catch.
+    assert library_values_that_cannot_be_written(
+        replace(clean, source_well="NOTAWELL")
+    ) == (("source well", "NOTAWELL"),)
+    # SMILES is never checked: a structure is written with dots, equals
+    # signs and brackets, and that is what it is for.
+    assert library_values_that_cannot_be_written(
+        replace(clean, smiles="CC(=O)C=1C=CC.O")
+    ) == ()
+
+
+def test_one_well_spelled_two_ways_is_one_well() -> None:
+    """A1 and A01 loaded as two wells, so two compounds could come from one.
+
+    The library's own check compares the spellings, and a file written by
+    hand is not consistent about them. Two compounds against one well means
+    two records in MxLive naming it, and the second transfer drawing from a
+    well the first already emptied.
+    """
+    first = replace(fragment(1), source_plate="P1", source_well="A1")
+    same = replace(fragment(2), source_plate="p1", source_well="A01")
+    elsewhere = replace(fragment(3), source_plate="P2", source_well="B2")
+
+    clashes = library_locations_that_are_one_well(
+        FragmentLibrary("hand-made", (first, same, elsewhere))
+    )
+
+    assert len(clashes) == 1
+    assert "CMP-1 at P1 A1 and CMP-2 at p1 A01 are the same well" in clashes[0]
+    assert library_locations_that_are_one_well(
+        FragmentLibrary("tidy", (first, elsewhere))
+    ) == ()
+
+    # Spelled exactly where a finalized revision is rebuilt, though: a rule
+    # tightened afterwards must not refuse to record work already done.
+    FragmentLibrary("as finalized", (first, same, elsewhere))
+
+    assert library_well_key("a01") == library_well_key("A1") == "A1"
+    assert library_well_key("NOT A WELL") is None
+

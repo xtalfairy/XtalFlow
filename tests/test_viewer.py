@@ -5088,3 +5088,143 @@ def test_one_file_nobody_can_read_does_not_hide_the_libraries(
     window.close()
     app.processEvents()
 
+
+def _fragment_library_file(path: Path, rows: int = 6) -> None:
+    path.write_text(
+        "Vendor,Library,No,ID,Formula,MW,Smile,Conc_mM,Solvent,Plate_ID,Plate_well\n"
+        + "".join(
+            f"Vendor,Lib,{index},Z{index:04d},C2H6O,46.07,CCO,100,DMSO,SRC-1,A{index:02d}\n"
+            for index in range(1, rows + 1)
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_a_moved_library_folder_keeps_the_rows_that_were_chosen(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A library is remembered by its full path, and paths move.
+
+    Rename the folder and the draft pointed at nothing: the list offered
+    the file twice, once as itself and once as "Unavailable", with nothing
+    saying they were the same. Choosing the real one reset the rows - 2-4
+    became 1-6 - so finalizing again would send six fragments to the ECHO
+    where three were planned, with nothing said about it.
+
+    Found by name now, which is not proof it is the same file, so where it
+    came from is said and the person decides.
+    """
+    app = QApplication.instance() or QApplication([])
+    first = tmp_path / "libs"
+    first.mkdir()
+    _fragment_library_file(first / "set.csv")
+    database = tmp_path / "reviews.sqlite3"
+
+    def viewer(folder: Path) -> ViewerWindow:
+        return ViewerWindow(
+            RockMakerImageRepository(tmp_path), SQLiteReviewStore(database),
+            settings=replace(DEFAULT_SETTINGS, fragment_library_directory=folder),
+        )
+
+    crystals = tuple(
+        SelectedCrystal(
+            f"image-{index}", "1070", f"A{index + 1:02d}a",
+            (CrystalTarget(f"t{index}", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
+            SWISSCI_MIDI_3_LENS.id,
+        )
+        for index in range(3)
+    )
+    window = viewer(first)
+    editor = _start(window, PlanType.FRAGMENT_SCREENING, crystals, "FragTest")
+    editor.protein_input.setText("BRD4")
+    editor.library_input.setCurrentIndex(1)
+    editor.rows_input.setText("2-4")
+    editor.rows_input.editingFinished.emit()
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    revision = window.experiments._finalize_and_continue(editor)
+
+    assert revision is not None
+    window.close()
+    app.processEvents()
+
+    # The beamline moves the library folder between runs.
+    second = tmp_path / "libs-2026"
+    second.mkdir()
+    (first / "set.csv").rename(second / "set.csv")
+    reopened = viewer(second)
+    recent = reopened.experiments._recent_experiments()
+    restored = reopened.experiments.resume_experiment(
+        recent[0].workspace_id, recent[0].plan_id
+    )
+
+    assert restored.rows_input.text() == "2-4"
+    # One entry, not the file and a dead twin of it.
+    assert [
+        restored.library_input.itemText(index)
+        for index in range(restored.library_input.count())
+    ] == ["Select imported library…", "set.csv · 6 rows"]
+    assert restored.library is not None
+    note = restored.library_label.text()
+    assert "set.csv was recorded in" in note
+    assert str(second) in note
+    assert "Check it is the same library before finalizing again." in note
+    reopened.close()
+    app.processEvents()
+
+
+def test_a_library_that_is_really_gone_says_so_not_that_none_was_chosen(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """"Choose a fragment library." for an experiment that chose one.
+
+    Said with a finalized revision sitting on the Review step, which is
+    the one thing the researcher needs to know is still intact: it was
+    built from the library's rows and is kept whole in its own snapshot.
+    """
+    app = QApplication.instance() or QApplication([])
+    first = tmp_path / "libs"
+    first.mkdir()
+    _fragment_library_file(first / "set.csv")
+    database = tmp_path / "reviews.sqlite3"
+
+    def viewer(folder: Path) -> ViewerWindow:
+        return ViewerWindow(
+            RockMakerImageRepository(tmp_path), SQLiteReviewStore(database),
+            settings=replace(DEFAULT_SETTINGS, fragment_library_directory=folder),
+        )
+
+    crystals = (
+        SelectedCrystal(
+            "image", "1070", "A01a",
+            (CrystalTarget("t", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
+            SWISSCI_MIDI_3_LENS.id,
+        ),
+    )
+    window = viewer(first)
+    editor = _start(window, PlanType.FRAGMENT_SCREENING, crystals, "FragGone")
+    editor.protein_input.setText("BRD4")
+    editor.library_input.setCurrentIndex(1)
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    revision = window.experiments._finalize_and_continue(editor)
+
+    assert revision is not None
+    window.close()
+    app.processEvents()
+
+    (first / "set.csv").unlink()
+    reopened = viewer(first)
+    recent = reopened.experiments._recent_experiments()
+    restored = reopened.experiments.resume_experiment(
+        recent[0].workspace_id, recent[0].plan_id
+    )
+    restored.refresh_plan()
+
+    message = restored.error_label.text()
+    assert "set.csv is not in" in message
+    assert f"{revision.experiment_id} r1" in message
+    assert "worksheets were built from it and are unaffected" in message
+    assert "would replace the fragments" in message
+    assert "Choose a fragment library." not in message
+    reopened.close()
+    app.processEvents()
+

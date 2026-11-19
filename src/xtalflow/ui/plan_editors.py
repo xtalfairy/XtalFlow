@@ -548,6 +548,7 @@ class FragmentScreeningEditor(PlanEditorBase):
         self.refresh_libraries_button = QPushButton("Refresh")
         self.refresh_libraries_button.setToolTip("Reload fragment library CSV files")
         self._unreadable_libraries: tuple[tuple[str, str], ...] = ()
+        self._library_found_elsewhere = ""
         self.library_label = QLabel("No library imported")
         self.library_label.setObjectName("Muted")
         self.rows_input = QLineEdit()
@@ -751,7 +752,10 @@ class FragmentScreeningEditor(PlanEditorBase):
         self._library_changed(self.library_input.currentIndex())
 
     def _select_library_id(self, library_id: str | None) -> None:
+        self._library_found_elsewhere = ""
         index = self.library_input.findData(library_id, Qt.UserRole)
+        if index < 0 and library_id is not None:
+            index = self._same_file_name_in_the_folder(library_id)
         if index < 0 and library_id is not None:
             # Keep the draft's library while its folder is offline instead of
             # saving the draft without one.
@@ -760,6 +764,32 @@ class FragmentScreeningEditor(PlanEditorBase):
             )
             index = self.library_input.count() - 1
         self.library_input.setCurrentIndex(max(0, index))
+
+    def _same_file_name_in_the_folder(self, library_id: str) -> int:
+        """The same file name in the library folder, when the path has moved.
+
+        A library is remembered by its full path, so the folder being moved
+        or renamed left the draft pointing at nothing: the list offered the
+        file twice, once as itself and once as "Unavailable", with nothing
+        saying they were the same, and choosing the real one reset the rows
+        - 2-4 became 1-6, and finalizing again sent a different set of
+        fragments to the ECHO with nothing said.
+
+        Taken on the strength of its name, which is not proof it is the
+        same file, so ``_library_found_elsewhere`` says where it came from
+        and the person decides.
+        """
+        wanted = Path(library_id).name
+        for index in range(1, self.library_input.count()):
+            found = self.library_input.itemData(index, Qt.UserRole)
+            if found and Path(found).name == wanted and found != library_id:
+                self._library_found_elsewhere = (
+                    f"{wanted} was recorded in {Path(library_id).parent} and is "
+                    f"being read from {Path(found).parent}. Check it is the same "
+                    f"library before finalizing again."
+                )
+                return index
+        return -1
 
     def _library_changed(self, index: int) -> None:
         library = self.library_input.itemData(index, Qt.UserRole + 1)
@@ -776,6 +806,27 @@ class FragmentScreeningEditor(PlanEditorBase):
                 self.rows_input.setText(f"1-{len(library.fragments)}")
             self._show_row_mode()
         self.refresh_plan()
+
+    def _no_library_message(self) -> str:
+        """Why there is no library, which is not always a choice not made.
+
+        An experiment that recorded one and cannot find it used to be told
+        "Choose a fragment library.", as though nobody had ever chosen -
+        with a finalized revision sitting right there on the Review step.
+        """
+        if not self.library_id:
+            return "Choose a fragment library."
+        name = Path(self.library_id).name
+        finalized = (
+            f" {self.last_revision.experiment_id} r{self.last_revision.revision} and "
+            f"its worksheets were built from it and are unaffected."
+            if self.last_revision is not None else ""
+        )
+        return (
+            f"{name} is not in {Path(self.library_id).parent} now.{finalized} Put it "
+            f"back to change the plan, or choose another library - which would "
+            f"replace the fragments."
+        )
 
     def _all_rows_text(self) -> str | None:
         return f"1-{len(self.library.fragments)}" if self.library is not None else None
@@ -871,6 +922,8 @@ class FragmentScreeningEditor(PlanEditorBase):
         be the one that is missing, and a list that is simply short gives
         them no way to know that.
         """
+        if self._library_found_elsewhere:
+            return self._library_found_elsewhere
         unreadable = getattr(self, "_unreadable_libraries", ())
         if not unreadable:
             return ""
@@ -884,7 +937,7 @@ class FragmentScreeningEditor(PlanEditorBase):
         selected_library = None
         try:
             if self.library is None:
-                raise ValueError("Choose a fragment library.")
+                raise ValueError(self._no_library_message())
             selected_library = self.library.select_rows(self.rows_input.text())
             _require_writable_library(selected_library)
             selection = self._require_selection()

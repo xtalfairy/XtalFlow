@@ -547,6 +547,7 @@ class FragmentScreeningEditor(PlanEditorBase):
         self.library_input.setMinimumWidth(260)
         self.refresh_libraries_button = QPushButton("Refresh")
         self.refresh_libraries_button.setToolTip("Reload fragment library CSV files")
+        self._unreadable_libraries: tuple[tuple[str, str], ...] = ()
         self.library_label = QLabel("No library imported")
         self.library_label.setObjectName("Muted")
         self.rows_input = QLineEdit()
@@ -726,7 +727,16 @@ class FragmentScreeningEditor(PlanEditorBase):
         self,
         choices: tuple[tuple[str, str, FragmentLibrary], ...],
         selected_id: str | None = None,
+        unreadable: tuple[tuple[str, str], ...] = (),
     ) -> None:
+        """The libraries found, and the files in the folder that were not.
+
+        A file that cannot be read used to be left out of the list with
+        nothing said anywhere, so the library somebody came to use was
+        simply not there - and an empty row Excel leaves at the end of a
+        file is enough to do it.
+        """
+        self._unreadable_libraries = unreadable
         previous_id = selected_id or self.library_input.currentData(Qt.UserRole)
         self.library_input.blockSignals(True)
         self.library_input.clear()
@@ -846,13 +856,28 @@ class FragmentScreeningEditor(PlanEditorBase):
 
     def _update_library_label(self) -> None:
         if self.library is not None:
-            self.library_label.setText("")
+            self.library_label.setText(self._unreadable_library_note())
         elif self.library_id:
             self.library_label.setText(f"Library unavailable: {self.library_id}")
         else:
             # "Choose a fragment library." already appears under the field.
-            self.library_label.setText("")
+            self.library_label.setText(self._unreadable_library_note())
         self.library_label.setVisible(bool(self.library_label.text()))
+
+    def _unreadable_library_note(self) -> str:
+        """Which files in the folder are not in the list, and why.
+
+        Said even when a library is chosen: the one somebody came for may
+        be the one that is missing, and a list that is simply short gives
+        them no way to know that.
+        """
+        unreadable = getattr(self, "_unreadable_libraries", ())
+        if not unreadable:
+            return ""
+        name, reason = unreadable[0]
+        rest = len(unreadable) - 1
+        more = f" ({rest} more could not be read)" if rest else ""
+        return f"Not listed: {name} — {reason}{more}"
 
     def refresh_plan(self) -> None:
         volume = Decimal(str(self.volume_input.value()))

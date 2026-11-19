@@ -5034,3 +5034,57 @@ def test_a_library_id_that_cannot_be_an_identifier_stops_the_plan(
     window.close()
     app.processEvents()
 
+
+def test_one_file_nobody_can_read_does_not_hide_the_libraries(
+    tmp_path: Path,
+) -> None:
+    """A library that is not in the list is said, by name and with a reason.
+
+    Two failures met here. A file Excel on a Korean Windows saved raised
+    UnicodeDecodeError past the loop that lists libraries, so fragment
+    screening had no libraries at all - not the bad one, not the good ones.
+    And a file refused for any reason was passed over silently, so the
+    library somebody came to use was simply not there, with nothing said
+    anywhere in the window.
+    """
+    app = QApplication.instance() or QApplication([])
+    header = (
+        "Vendor,Library,No,ID,Formula,MW,Smile,Conc_mM,Solvent,Plate_ID,Plate_well\n"
+    )
+    (tmp_path / "good.csv").write_text(
+        header + "Vendor,Lib,1,Z1,C2H6O,46.07,CCO,100,DMSO,SRC-1,A01\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "korean-excel.csv").write_bytes(
+        (header + "엔아민,Lib,1,Z2,C2H6O,46.07,CCO,100,DMSO,SRC-1,A02\n").encode("cp949")
+    )
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    window = ViewerWindow(
+        RockMakerImageRepository(tmp_path), store,
+        settings=replace(DEFAULT_SETTINGS, fragment_library_directory=tmp_path),
+    )
+    crystal = SelectedCrystal(
+        "image", "1070", "A01a",
+        (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
+        SWISSCI_MIDI_3_LENS.id,
+    )
+    editor = _start(window, PlanType.FRAGMENT_SCREENING, (crystal,))
+
+    # The good one is there, and usable.
+    assert editor.library_input.count() == 2
+    assert "good.csv" in editor.library_input.itemText(1)
+
+    note = editor.library_label.text()
+    assert "korean-excel.csv" in note
+    assert "not UTF-8 text" in note
+    assert not editor.library_label.isHidden()
+
+    # Still said once a good library is chosen: the one somebody came for
+    # may be the one that is missing.
+    editor.library_input.setCurrentIndex(1)
+
+    assert "korean-excel.csv" in editor.library_label.text()
+    assert editor.current_plan is not None, editor.error_label.text()
+    window.close()
+    app.processEvents()
+

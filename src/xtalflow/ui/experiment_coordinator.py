@@ -972,7 +972,8 @@ class ExperimentCoordinator:
         """One experiment's plan state, lifecycle, and step pages."""
         if plan_type is PlanType.FRAGMENT_SCREENING:
             editor = FragmentScreeningEditor(None, None, self.editor_holder)
-            editor.set_library_choices(self._fragment_library_choices())
+            choices, unreadable = self._fragment_library_choices()
+            editor.set_library_choices(choices, unreadable=unreadable)
             editor.refresh_libraries_button.setToolTip(
                 str(self.window.settings.fragment_library_directory)
             )
@@ -2286,18 +2287,30 @@ class ExperimentCoordinator:
 
     def _fragment_library_choices(
         self,
-    ) -> tuple[tuple[str, str, FragmentLibrary], ...]:
+    ) -> tuple[
+        tuple[tuple[str, str, FragmentLibrary], ...], tuple[tuple[str, str], ...]
+    ]:
+        """The libraries in the folder, and the files that are not libraries.
+
+        A file that cannot be read is returned rather than passed over, so
+        the researcher who came to use it is told why it is not in the list.
+        One of them used to be enough to leave fragment screening with no
+        libraries at all and nothing said: a file saved by Excel on a Korean
+        Windows raised UnicodeDecodeError straight past this loop.
+        """
         choices = []
+        unreadable = []
         library_directory = self.window.settings.fragment_library_directory
         if not library_directory.is_dir():
-            return ()
+            return (), ()
         for path in sorted(
             library_directory.glob("*.csv"),
             key=lambda item: item.name.casefold(),
         ):
             try:
                 library = load_fragment_library(path)
-            except FragmentLibraryCsvError:
+            except FragmentLibraryCsvError as error:
+                unreadable.append((path.name, str(error)))
                 continue
             choices.append(
                 (
@@ -2306,16 +2319,20 @@ class ExperimentCoordinator:
                     library,
                 )
             )
-        return tuple(choices)
+        return tuple(choices), tuple(unreadable)
 
     def _refresh_fragment_library_choices(self) -> None:
-        choices = self._fragment_library_choices()
+        choices, unreadable = self._fragment_library_choices()
         for draft_editor in self._editors.values():
             if isinstance(draft_editor, FragmentScreeningEditor):
-                draft_editor.set_library_choices(choices)
+                draft_editor.set_library_choices(choices, unreadable=unreadable)
+        missed = (
+            f", {counted(len(unreadable), 'file')} could not be read" if unreadable
+            else ""
+        )
         self.window.status_message_label.show_message(
             f"Found {len(choices)} libraries in "
-            f"{self.window.settings.fragment_library_directory}",
+            f"{self.window.settings.fragment_library_directory}{missed}",
             4000,
         )
 

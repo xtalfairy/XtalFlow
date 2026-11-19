@@ -4691,6 +4691,11 @@ def test_a_folder_that_is_not_a_mounted_share_counts_as_away(tmp_path: Path) -> 
     settings = replace(
         DEFAULT_SETTINGS,
         worksheet_staging_directory=tmp_path / "staging",
+        # Named here rather than taken from the defaults, which point at a
+        # fixture that is gitignored: on a fresh clone it is not there, the
+        # image share reads as missing, and this test fails for a reason that
+        # has nothing to do with what it is about.
+        rmserver_root=_share_with_one_plate(tmp_path / "images"),
         instruments=standard_instruments(
             tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
         ),
@@ -4699,7 +4704,7 @@ def test_a_folder_that_is_not_a_mounted_share_counts_as_away(tmp_path: Path) -> 
         create_missing_instrument_roots=False,
     )
     window = ViewerWindow(
-        RockMakerImageRepository(_share_with_one_plate(tmp_path / "images")),
+        RockMakerImageRepository(settings.rmserver_root),
         SQLiteReviewStore(tmp_path / "reviews.sqlite3"), settings=settings,
     )
     _wait_for_share_reading(app, window)

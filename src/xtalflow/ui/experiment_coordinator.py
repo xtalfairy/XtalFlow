@@ -16,6 +16,7 @@ import threading
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
+import hashlib
 from pathlib import Path
 from uuid import uuid4
 
@@ -102,6 +103,7 @@ from xtalflow.infrastructure.fragment_library_csv import (
     FragmentLibraryCsvError,
     load_fragment_library,
 )
+from xtalflow.infrastructure import operations_log
 from xtalflow.infrastructure.worksheet_exporter import (
     InstrumentLocationUnavailable,
     WorksheetDestinationUnavailable,
@@ -168,6 +170,21 @@ def _years_of(experiment_ids) -> set[int]:
     """The years in experiment IDs such as FragSC-202607-BRD4-01."""
     found = (_EXPERIMENT_YEAR.search(item or "") for item in experiment_ids)
     return {int(match.group(1)) for match in found if match is not None}
+
+
+def _size_and_hash(path: Path) -> dict[str, object]:
+    """How big the file is and what is in it, or why that is not known.
+
+    Read back from the folder it was written to, so a share that accepted
+    the write and then dropped it is visible as a file that is not there.
+    Short hash: this is read by eye, and eight characters is plenty to say
+    two files differ.
+    """
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        return {"bytes": None, "sha256": None, "unreadable": type(error).__name__}
+    return {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()[:8]}
 
 
 def _when(moment: datetime) -> str:
@@ -2777,10 +2794,47 @@ class ExperimentCoordinator:
         self, service: WorksheetExportService, revision: PlanRevision, status: str,
         *, result=None, error: str | None = None,
     ) -> None:
+        self._log_worksheet_export(revision, status, result, error)
         try:
             service.record(revision, status, result=result, error=error)
         except ReviewPersistenceError as persistence_error:
             self.window._show_persistence_error(persistence_error)
+
+    def _log_worksheet_export(self, revision, status, result, error) -> None:
+        """Where each worksheet really went, and what was in it.
+
+        The audit table holds the paths, which is the record of the work.
+        This holds enough to answer the question that could not be answered
+        before: whether the file on the instrument this morning is the one
+        this program wrote. So the size and a hash, and which kind of folder
+        it landed in - the instrument's own, ours while it waits, or one
+        somebody chose - because the path alone does not say.
+        """
+        operations_log.event(
+            "worksheet-save",
+            experiment=revision.experiment_id if revision is not None else None,
+            revision=revision.revision if revision is not None else None,
+            status=status,
+            error=error,
+        )
+        held = pending_root(self.window.settings)
+        for output in getattr(result, "outputs", ()) or ():
+            path = Path(output.path)
+            destination = self.window.settings.instrument(output.instrument)
+            if destination is not None and destination.output_directory in path.parents:
+                where = "instrument"
+            elif held in path.parents:
+                where = "held"
+            else:
+                where = "chosen"
+            operations_log.event(
+                "worksheet-file",
+                experiment=revision.experiment_id if revision is not None else None,
+                instrument=output.instrument,
+                where=where,
+                path=path,
+                **_size_and_hash(path),
+            )
 
     def _wells_needing_attention(self):
         """The wells the dock is showing, in its order; empty if unreadable."""

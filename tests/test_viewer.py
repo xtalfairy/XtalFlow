@@ -3539,7 +3539,14 @@ def test_the_panel_lights_a_lamp_for_each_share(
 
 def test_a_lamp_says_which_state_it_is_in_without_its_colour() -> None:
     """Hold the colour still: a lit lamp and an unlit one must still differ."""
-    QApplication.instance() or QApplication([])
+    # Held in a name, which is the whole point of the assignment: nothing
+    # else here refers to the application, so an unnamed one is collected
+    # the moment this line ends and the QPixmap below is built with no
+    # QGuiApplication alive - which Qt does not warn about, it aborts. The
+    # suite hid it, because a file that ran earlier left an application
+    # behind; this file on its own died at this line.
+    app = QApplication.instance() or QApplication([])
+    app.processEvents()
 
     lit = icons.lamp_pixmap(True, 14, theme.OK)
     unlit = icons.lamp_pixmap(False, 14, theme.OK)

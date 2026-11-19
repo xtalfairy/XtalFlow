@@ -35,8 +35,15 @@ def pytest_configure(config) -> None:
 
 @pytest.fixture(autouse=True)
 def isolated_user_config(tmp_path_factory, monkeypatch):
-    """Keep viewer tests from reading or writing the developer's preferences."""
+    """Keep viewer tests from reading or writing the developer's own files.
+
+    XDG_STATE_HOME as well as XDG_CONFIG_HOME: main() opens the operations
+    log, and the suite calls main() many times, so a run wrote the
+    developer's real ~/.local/state and left the log of a test run where
+    somebody would later read it as the log of a real session.
+    """
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("config")))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("state")))
 
 
 @pytest.fixture(autouse=True)

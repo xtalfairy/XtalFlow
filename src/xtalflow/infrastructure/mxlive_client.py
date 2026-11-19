@@ -11,6 +11,7 @@ import msgpack
 import requests
 from cryptography.hazmat.primitives import hashes, serialization
 
+from xtalflow.infrastructure import operations_log
 from xtalflow.domain.mxlive import (
     MxLiveLabwork,
     MxLiveReadError,
@@ -193,8 +194,27 @@ class LegacyMxLiveReadClient:
     def _get(self, path: str) -> tuple[Mapping[str, Any], ...]:
         signed_user = quote(self.signer.sign(self.username), safe=":=_-")
         url = f"{self.base_url}/api/v2/{signed_user}/{path}"
-        payload = self.transport.get_json(
-            url, timeout_seconds=self.timeout_seconds, ca_bundle=self.ca_bundle
+        # The path, never the URL: the signature of the account's private
+        # key is in the URL, and a log is the one place it must not be.
+        started = time.monotonic()
+        try:
+            payload = self.transport.get_json(
+                url, timeout_seconds=self.timeout_seconds, ca_bundle=self.ca_bundle
+            )
+        except Exception as error:
+            operations_log.problem(
+                "mxlive-read",
+                path=path,
+                seconds=f"{time.monotonic() - started:.1f}",
+                outcome=type(error).__name__,
+                reason=str(error),
+            )
+            raise
+        operations_log.event(
+            "mxlive-read",
+            path=path,
+            seconds=f"{time.monotonic() - started:.1f}",
+            records=len(payload) if isinstance(payload, list) else None,
         )
         if not isinstance(payload, list) or not all(
             isinstance(item, Mapping) for item in payload
@@ -243,6 +263,12 @@ class LegacyMxLiveWriteClient:
         if not all(isinstance(record, Mapping) for record in records):
             raise ValueError("labwork records must be mappings")
         responses: list[Mapping[str, Any]] = []
+        started = time.monotonic()
+        operations_log.event(
+            "mxlive-upload-begin",
+            endpoint=labworks_endpoint(self.base_url, self.beamline),
+            records=len(records),
+        )
         for record in records:
             signed_user = quote(self.signer.sign(self.username), safe=":=_-")
             url = (
@@ -259,6 +285,18 @@ class LegacyMxLiveWriteClient:
                         "MxLive upload response must be an object"
                     )
             except MxLiveWriteError as error:
+                # How many went in before it stopped: the one number that
+                # decides what can be done next, and the one nobody could
+                # find afterwards.
+                operations_log.problem(
+                    "mxlive-upload-stopped",
+                    stored=len(responses),
+                    of=len(records),
+                    seconds=f"{time.monotonic() - started:.1f}",
+                    outcome=type(error).__name__,
+                    uncertain=isinstance(error, MxLiveUncertainWriteError),
+                    reason=str(error),
+                )
                 if responses:
                     raise MxLivePartialWriteError(
                         len(responses), len(records), str(error),
@@ -266,6 +304,11 @@ class LegacyMxLiveWriteClient:
                     ) from error
                 raise
             responses.append(dict(response))
+        operations_log.event(
+            "mxlive-upload-done",
+            records=len(responses),
+            seconds=f"{time.monotonic() - started:.1f}",
+        )
         return {"uploaded_count": len(responses), "responses": responses}
 
 

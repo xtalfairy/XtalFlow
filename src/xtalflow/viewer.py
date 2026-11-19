@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import os
 import sys
 import socket
 import threading
@@ -21,12 +22,14 @@ from datetime import datetime, timezone
 
 from PyQt5.QtCore import (
     QEventLoop,
+    QUrl,
     QStandardPaths,
     QStringListModel,
     QTimer,
     Qt,
+    qInstallMessageHandler,
 )
-from PyQt5.QtGui import QColor, QKeySequence, QPixmap
+from PyQt5.QtGui import QColor, QDesktopServices, QKeySequence, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -90,6 +93,7 @@ from xtalflow.infrastructure import (
     SQLiteReviewStore,
 )
 from xtalflow.infrastructure.instrument_config import load_instrument_destinations
+from xtalflow.infrastructure import operations_log
 from xtalflow.infrastructure.mounts import IMAGE_SHARE, ShareReader, ShareState
 from xtalflow.infrastructure.examples import load_examples
 from xtalflow.infrastructure.user_preferences import JsonUserPreferencesStore
@@ -596,6 +600,58 @@ class ViewerWindow(QMainWindow):
         self.shortcuts_action = self.help_menu.addAction("Keyboard Shortcuts")
         self.shortcuts_action.setShortcut(QKeySequence("?"))
         self.shortcuts_action.triggered.connect(self.show_shortcuts)
+        self.diagnostics_action = self.help_menu.addAction("Copy Diagnostics")
+        self.diagnostics_action.triggered.connect(self.copy_diagnostics)
+        self.log_folder_action = self.help_menu.addAction("Open Log Folder")
+        self.log_folder_action.triggered.connect(self.open_log_folder)
+
+    def copy_diagnostics(self) -> None:
+        """Put on the clipboard what a report needs, and nothing private.
+
+        A report that says "it did not work this morning" cannot be acted
+        on. This is the build, the profile, the settings that change what
+        the program does, the shares as last read, and the end of the log -
+        which is what somebody would otherwise be asked to find and paste
+        by hand, badly, under time pressure.
+        """
+        lines = [
+            f"XtalFlow {operations_log.commit_hash()}",
+            f"profile {os.environ.get('XTALFLOW_SETTINGS') or 'development'}",
+            f"log {operations_log.log_directory() or 'none'}",
+            "",
+            "shares as last read:",
+        ]
+        for state in self._share_states:
+            lines.append(
+                f"  {state.key} mounted={state.mounted} exists={state.exists} "
+                f"{state.path} {state.detail}"
+            )
+        lines.append("")
+        lines.append("last of the log:")
+        files = operations_log.log_files()
+        if not files:
+            lines.append("  (no log was opened)")
+        else:
+            try:
+                tail = files[0].read_text(encoding="utf-8").splitlines()[-80:]
+                lines.extend(f"  {line}" for line in tail)
+            except OSError as error:
+                lines.append(f"  (the log could not be read: {error})")
+        QApplication.clipboard().setText("\n".join(lines))
+        self.status_message_label.show_message("Diagnostics copied", 4000)
+
+    def open_log_folder(self) -> None:
+        """Show the folder the log is in, or say there is none."""
+        directory = operations_log.log_directory()
+        if directory is None:
+            QMessageBox.information(
+                self,
+                "No log folder",
+                "No operations log was opened, so there is no folder to show. "
+                "Copy Diagnostics still works and says why.",
+            )
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory)))
 
     def _build_status_bar(self) -> None:
         self.status_message_label = StatusMessageLabel()
@@ -2274,6 +2330,25 @@ class ViewerWindow(QMainWindow):
             self.workspace_sidebar.show_share_states(self._share_states)
             return
         changed = states != self._share_states
+        if changed:
+            # Every change, not the current reading: a share that dropped at
+            # 09:12 and came back at 09:40 is the whole explanation of a
+            # worksheet that went to the held folder, and asking afterwards
+            # only ever gets the answer as it is now.
+            was = {state.key: state for state in self._share_states}
+            for state in states:
+                before = was.get(state.key)
+                if before is None or (before.mounted, before.exists) != (
+                    state.mounted, state.exists
+                ):
+                    operations_log.event(
+                        "share",
+                        key=state.key,
+                        mounted=state.mounted,
+                        exists=state.exists,
+                        path=state.path,
+                        detail=state.detail,
+                    )
         self._share_states = states
         self.workspace_sidebar.show_share_states(states)
         if changed:
@@ -2753,6 +2828,7 @@ class ViewerWindow(QMainWindow):
         details = "".join(
             traceback.format_exception(error_type, error, error_traceback)
         )
+        operations_log.exception("unhandled-exception", thread="qt-slot")
         print(details, file=sys.stderr)
         if self.error_log_path is not None:
             try:
@@ -2918,8 +2994,36 @@ def settings_from_arguments(args: argparse.Namespace) -> ApplicationSettings:
     )
 
 
+def _log_qt_messages() -> None:
+    """Send Qt's own complaints to the operations log.
+
+    Qt writes to stderr, which on a workstation started from a launcher
+    goes nowhere. A missing font, a failed pixmap, a widget painted after
+    its parent went away: all of it only ever appeared on a terminal
+    nobody was watching.
+    """
+    def handler(mode, context, message) -> None:
+        operations_log.event(
+            "qt",
+            level=int(mode),
+            file=getattr(context, "file", None) or "-",
+            line=getattr(context, "line", 0),
+            message=message,
+        )
+
+    try:
+        qInstallMessageHandler(handler)
+    except Exception:  # pragma: no cover - never worth failing startup for
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    # Before anything that can fail: the first thing worth logging is a
+    # startup that did not finish.
+    operations_log.configure()
+    operations_log.install_exception_hooks()
+    _log_qt_messages()
     app = QApplication.instance() or QApplication(
         sys.argv if argv is None else [sys.argv[0], *argv]
     )
@@ -2932,11 +3036,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = settings_from_arguments(args)
     except ValueError as error:
+        operations_log.problem("startup-refused", reason=str(error))
         print(f"xtalflow-viewer: {error}", file=sys.stderr)
         return 2
+    operations_log.record_startup(settings)
     try:
         review_store = SQLiteReviewStore(database_path)
     except ReviewPersistenceError as error:
+        operations_log.problem(
+            "review-store-refused", path=database_path, reason=str(error)
+        )
         print(f"xtalflow-viewer: {error}", file=sys.stderr)
         return 2
     window = ViewerWindow(

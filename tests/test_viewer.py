@@ -292,7 +292,7 @@ def test_viewer_loads_and_navigates_images() -> None:
     window.well_input.setText("A01d")
     window._go_to_entered_well()
     assert window.well_input.text() == "A02a"
-    assert "Invalid" in window.status_message_label.text()
+    assert "Invalid" in window.status_message_label.message()
     assert window.controller.image_index == 2
     assert window.navigation_label.text() != first_text
     assert not window.image_canvas.pixmap().isNull()
@@ -3336,7 +3336,7 @@ def test_the_count_that_moves_to_the_next_well_is_read_while_clicking() -> None:
     window._handle_image_click(0.6, 0.6, Qt.LeftButton)
 
     assert window.well_input.text() != first_well
-    message = window.status_message_label.text()
+    message = window.status_message_label.message()
     assert "2 positions placed" in message
     assert first_well in message and window.well_input.text() in message
     # The reading starts again on the new well.
@@ -5348,7 +5348,18 @@ def test_mxlive_history_is_not_shut_by_a_thread_that_will_not_start(
         monkeypatch.undo()
 
     # Said, not swallowed: the page stops claiming a reading is underway.
-    assert coordinator.window.status_message_label.text().startswith(
+    #
+    # ``message()`` and not ``text()``: the label elides to its own width, so
+    # the server read 'Beamline progress unavailabl…' and this failed there
+    # on nothing but the font. Narrowed here so a machine that elides is what
+    # runs, rather than something nobody tests on.
+    coordinator.window.status_message_label.setFixedWidth(90)
+    coordinator.window.status_message_label._refresh_text()
+
+    assert coordinator.window.status_message_label.text() != (
+        coordinator.window.status_message_label.message()
+    )
+    assert coordinator.window.status_message_label.message().startswith(
         "Beamline progress unavailable"
     )
 

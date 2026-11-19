@@ -355,6 +355,15 @@ class StatusMessageLabel(QLabel):
         self._clear_timer.setSingleShot(True)
         self._clear_timer.timeout.connect(lambda: self.show_message(""))
 
+    def message(self) -> str:
+        """What was said, which is not always what fits.
+
+        ``text()`` is the elided version for the width this label happens to
+        have, so it depends on the font the machine is running. Anything
+        asking what the window said - a test, or a later read - wants this.
+        """
+        return self._full_text
+
     def show_message(self, message: str, timeout_ms: int = 0) -> None:
         self._clear_timer.stop()
         self._full_text = message

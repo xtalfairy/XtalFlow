@@ -9,10 +9,12 @@ a different channel:
 
     what the model said    the glyph, in the middle
     whether it is reviewed the cell's fill, a tone rather than a hue
-    positions placed       the count, in place of the glyph
+    positions placed       a dot, in the bottom-right corner
 
-The count replaces the glyph because once somebody has marked a well, what a
-model guessed about it is history.
+The dot says that a well has positions and not how many. The count used to be
+drawn in place of the glyph, so marking a well - the ordinary thing to do -
+hid whether a crystal was ever seen in it, which is what the map is for. How
+many is in the tooltip: a count is a number to read, and this is looked at.
 
 Colour is never the only difference: filled diamond, open ring and dot differ
 in how much ink is on the screen, which survives both a monochrome screen and
@@ -34,6 +36,8 @@ CELL = 28
 GAP = 2
 MARGIN_LEFT = 24
 MARGIN_TOP = 18
+# The chosen dot, in the corner where it cannot sit on the class glyph.
+DOT = 6
 
 CRYSTAL_GLYPH = "◆"
 NO_CRYSTAL_GLYPH = "○"
@@ -46,9 +50,11 @@ GLYPHS = {
     "no crystal": (NO_CRYSTAL_GLYPH, theme.TEXT_MUTED),
     "empty": (EMPTY_GLYPH, theme.TEXT_TERTIARY),
 }
+CHOSEN_GLYPH = "●"
 LEGEND = (
     f"{CRYSTAL_GLYPH} crystal   {NO_CRYSTAL_GLYPH} no crystal   {EMPTY_GLYPH} empty   "
-    f"{UNSCORED_GLYPH} not scored   2 positions placed   shaded = reviewed"
+    f"{UNSCORED_GLYPH} not scored   {CHOSEN_GLYPH} positions placed   "
+    f"shaded = reviewed"
 )
 
 
@@ -145,10 +151,15 @@ class PlateMap(QWidget):
 
     @staticmethod
     def tooltip_for(cell: WellCell) -> str:
-        """What the cell says in words. Rank is the only number.
+        """What the cell says in words. Numbers live here, not on the map.
 
         No percentage: this model has never had its accuracy measured, so a
         figure would read as a chance of a crystal and could not be backed.
+
+        How many positions a well holds is here because the map shows only
+        that it holds some: a count is a number to read, and the map is
+        looked at. The per-drop lines follow, so three drops of one well can
+        be told apart.
         """
         head = cell.address
         if cell.label:
@@ -159,6 +170,9 @@ class PlateMap(QWidget):
             head = f"{head}"
         else:
             head = f"{head} · not scored"
+        if cell.positions:
+            head = f"{head} · {cell.positions} position"
+            head = head if cell.positions == 1 else f"{head}s"
         return f"{head}\n{cell.detail}" if cell.detail else head
 
     # -- painting -----------------------------------------------------------
@@ -209,11 +223,7 @@ class PlateMap(QWidget):
             return
 
         glyph_font = QFont(self.font())
-        if cell.positions:
-            # The user's own mark outranks the model's guess.
-            glyph, colour = str(cell.positions), theme.FOCUS
-            glyph_font.setBold(True)
-        elif not cell.label:
+        if not cell.label:
             glyph, colour = UNSCORED_GLYPH, theme.ATTENTION
             glyph_font.setBold(True)
         else:
@@ -223,6 +233,20 @@ class PlateMap(QWidget):
         painter.setFont(glyph_font)
         painter.setPen(QColor(colour))
         painter.drawText(x, y, CELL, CELL, Qt.AlignCenter, glyph)
+
+        if cell.positions:
+            # Chosen or not, and not how many: the count is a number to read,
+            # and this map is looked at rather than read. It used to be drawn
+            # in place of the class, so marking a well hid whether a crystal
+            # was ever seen in it - the one thing the map is for. The count
+            # per drop is in the tooltip, where a number can be read.
+            #
+            # A dot, not a colour: it has to survive a beamline monitor and
+            # somebody who does not separate blue from grey.
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(theme.FOCUS))
+            painter.drawEllipse(x + CELL - DOT - 3, y + CELL - DOT - 3, DOT, DOT)
+            painter.setBrush(Qt.NoBrush)
 
         if well_number == self._current_well:
             painter.setPen(QPen(QColor(theme.FOCUS), 2))

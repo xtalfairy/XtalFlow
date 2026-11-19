@@ -6,7 +6,12 @@ from PyQt5.QtGui import QMouseEvent
 from PyQt5.QtWidgets import QApplication
 
 from xtalflow.domain.plate_format import SWISSCI_MIDI_3_LENS, SWISSCI_MRC_2_WELL
-from xtalflow.ui.plate_map import CELL, GAP, MARGIN_LEFT, MARGIN_TOP, PlateMap, WellCell
+from xtalflow.ui.plate_map import (
+    CELL, DOT, GAP, MARGIN_LEFT, MARGIN_TOP, PlateMap, WellCell,
+)
+
+# The corner the chosen dot is drawn in, left out when comparing two cells.
+DOT_FREE = DOT + 4
 
 
 @pytest.fixture(scope="module")
@@ -73,9 +78,39 @@ def test_a_tooltip_says_the_class_and_the_rank_and_never_a_percentage(app) -> No
     assert PlateMap.tooltip_for(unscored) == "A04 · not scored"
 
 
-def test_a_well_with_positions_shows_the_count_in_place_of_the_glyph(app) -> None:
-    """Once somebody has marked a well, what a model guessed about it is history."""
-    from xtalflow.ui.plate_map import NO_CRYSTAL_GLYPH, CRYSTAL_GLYPH
+def _rendered(plate_map: PlateMap):
+    from PyQt5.QtGui import QPixmap
+
+    plate_map.resize(plate_map.sizeHint())
+    pixmap = QPixmap(plate_map.size())
+    plate_map.render(pixmap)
+    return pixmap.toImage()
+
+
+def _cell_corner_has(image, plate_map: PlateMap, well: int, colour: str) -> bool:
+    """Whether the chosen dot is in that well's bottom-right corner."""
+    from xtalflow.ui.plate_map import DOT
+    from PyQt5.QtGui import QColor
+
+    row, column = (well - 1) // plate_map.columns, (well - 1) % plate_map.columns
+    x, y = plate_map._cell_rect(row, column)
+    wanted = QColor(colour).rgb()
+    return any(
+        image.pixel(x + CELL - 3 - offset, y + CELL - 3 - other) == wanted
+        for offset in range(1, DOT)
+        for other in range(1, DOT)
+    )
+
+
+def test_a_chosen_well_still_says_whether_a_crystal_was_seen_in_it(app) -> None:
+    """The count used to be drawn in place of the class, which hid it.
+
+    Marking a well is the ordinary thing to do, and doing it removed the one
+    thing the map is for: whether the model ever saw a crystal there. The
+    class stays, a dot says the well has positions, and how many is in the
+    tooltip - a count is a number to read, and this map is looked at.
+    """
+    from xtalflow.ui import theme
 
     plate_map = PlateMap()
     cells = (
@@ -83,12 +118,28 @@ def test_a_well_with_positions_shows_the_count_in_place_of_the_glyph(app) -> Non
         _cell(2, label="crystal", positions=2, image_index=3),
     )
     plate_map.show_plate(SWISSCI_MIDI_3_LENS, cells)
+    image = _rendered(plate_map)
 
-    # Rendered off-screen; what matters is that the two differ and the second
-    # carries the count. Painting is checked by rendering in the viewer test.
-    assert CRYSTAL_GLYPH != NO_CRYSTAL_GLYPH
-    assert plate_map._cells[2].positions == 2
-    assert plate_map._cells[1].positions == 0
+    assert _cell_corner_has(image, plate_map, 2, theme.FOCUS)
+    assert not _cell_corner_has(image, plate_map, 1, theme.FOCUS)
+
+    # The two wells are drawn the same but for that dot: the class is still
+    # there in both. Compared down the middle, clear of the corner.
+    row_y = MARGIN_TOP
+    middle = [
+        (
+            image.pixel(MARGIN_LEFT + offset, row_y + down),
+            image.pixel(MARGIN_LEFT + CELL + GAP + offset, row_y + down),
+        )
+        for offset in range(CELL - DOT_FREE)
+        for down in range(CELL - DOT_FREE)
+    ]
+
+    assert all(left == right for left, right in middle)
+
+    # And the number is in the tooltip, for both the well and its drops.
+    assert "2 positions" in PlateMap.tooltip_for(plate_map._cells[2])
+    assert "position" not in PlateMap.tooltip_for(plate_map._cells[1])
 
 
 def test_a_cell_can_be_read_without_colour(app) -> None:

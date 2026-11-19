@@ -271,3 +271,39 @@ def test_one_well_spelled_two_ways_is_one_well() -> None:
     assert library_well_key("a01") == library_well_key("A1") == "A1"
     assert library_well_key("NOT A WELL") is None
 
+
+
+def test_a_refused_row_is_numbered_as_the_row_range_counts(tmp_path) -> None:
+    """The row named is the row in the file, whichever range was chosen.
+
+    A row range counts positions in the whole library, so a message that
+    starts counting again at the first row chosen names a row the researcher
+    cannot find: the same bad row was row 5 for "1-6", row 2 for "4-6" and
+    row 1 for "5", and only the range starting at 1 was right.
+    """
+    from xtalflow.domain.fragment_screening import parse_library_rows
+    from xtalflow.infrastructure.fragment_library_csv import load_fragment_library
+    from xtalflow.ui.plan_editors import _require_writable_library
+
+    rows = [
+        "Vendor,Library,No,ID,Formula,MW,Smile,Conc_mM,Solvent,Plate_ID,Plate_well"
+    ]
+    for index in range(1, 7):
+        compound = "Z 0005" if index == 5 else f"Z{index:04d}"
+        rows.append(
+            f"Vendor,Lib,{index},{compound},C2H6O,46.07,CCO,100,DMSO,SRC-1,"
+            f"A{index:02d}"
+        )
+    path = tmp_path / "set.csv"
+    path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    library = load_fragment_library(path)
+
+    for expression in ("1-6", "4-6", "5"):
+        selected = library.select_rows(expression)
+        with pytest.raises(ValueError) as refused:
+            _require_writable_library(
+                selected, parse_library_rows(expression, len(library.fragments))
+            )
+
+        assert "Row 5 of set" in str(refused.value), expression
+        assert "Z 0005" in str(refused.value)

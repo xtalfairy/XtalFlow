@@ -5656,3 +5656,297 @@ def test_a_solvent_test_finalized_with_a_space_in_a_name_is_still_delivered(
     window.close()
     app.processEvents()
 
+
+def test_a_library_of_the_same_name_that_holds_other_compounds_is_refused(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Matching a moved library on its file name is a guess, not proof.
+
+    A file of the same name in another folder can be another library - a
+    vendor's second plate, a colleague's copy with rows taken out. The row
+    numbers then mean different compounds: rows 2-4 held Z0002-4 when r1
+    was finalized and OTHER0002-4 now, and finalizing again would send
+    those to the ECHO under the same experiment ID.
+
+    The note used to be set once by the match, so the first Refresh cleared
+    it for good, and saving the draft wrote the found path - so the next
+    open had nothing left to notice.
+    """
+    app = QApplication.instance() or QApplication([])
+
+    def library(path: Path, prefix: str) -> None:
+        path.write_text(
+            "Vendor,Library,No,ID,Formula,MW,Smile,Conc_mM,Solvent,Plate_ID,Plate_well\n"
+            + "".join(
+                f"Vendor,Lib,{index},{prefix}{index:04d},C2H6O,46.07,CCO,100,DMSO,"
+                f"SRC-1,A{index:02d}\n"
+                for index in range(1, 7)
+            ),
+            encoding="utf-8",
+        )
+
+    first = tmp_path / "libs"
+    first.mkdir()
+    library(first / "set.csv", "Z")
+    database = tmp_path / "reviews.sqlite3"
+
+    def viewer(folder: Path) -> ViewerWindow:
+        return ViewerWindow(
+            RockMakerImageRepository(tmp_path), SQLiteReviewStore(database),
+            settings=replace(DEFAULT_SETTINGS, fragment_library_directory=folder),
+        )
+
+    crystals = tuple(
+        SelectedCrystal(
+            f"image-{index}", "1070", f"A{index + 1:02d}a",
+            (CrystalTarget(f"t{index}", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
+            SWISSCI_MIDI_3_LENS.id,
+        )
+        for index in range(3)
+    )
+    window = viewer(first)
+    editor = _start(window, PlanType.FRAGMENT_SCREENING, crystals, "FragOther")
+    editor.protein_input.setText("BRD4")
+    editor.library_input.setCurrentIndex(1)
+    editor.rows_input.setText("2-4")
+    editor.rows_input.editingFinished.emit()
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    revision = window.experiments._finalize_and_continue(editor)
+
+    assert revision is not None
+    assert [
+        item.fragment.compound_id for item in editor.current_plan.assignments
+    ] == ["Z0002", "Z0003", "Z0004"]
+    window.close()
+    app.processEvents()
+
+    # Same name, another folder, other compounds.
+    second = tmp_path / "libs-2026"
+    second.mkdir()
+    library(second / "set.csv", "OTHER")
+    reopened = viewer(second)
+    recent = reopened.experiments._recent_experiments()
+    restored = reopened.experiments.resume_experiment(
+        recent[0].workspace_id, recent[0].plan_id
+    )
+    reopened.experiments._sync_editor_selection(restored, crystals)
+
+    assert restored.current_plan is None
+    assert "is not the library r1 was finalized from" in restored.error_label.text()
+    assert "Z0002 is not in rows 2-4" in restored.error_label.text()
+    assert "set.csv was recorded in" in restored.library_label.text()
+
+    # The note used to go on the first Refresh, and on the next open.
+    reopened.experiments._refresh_fragment_library_choices()
+
+    assert "set.csv was recorded in" in restored.library_label.text()
+
+    reopened.experiments._persist_draft(restored)
+    reopened.close()
+    app.processEvents()
+    again = viewer(second)
+    recent = again.experiments._recent_experiments()
+    third = again.experiments.resume_experiment(
+        recent[0].workspace_id, recent[0].plan_id
+    )
+    again.experiments._sync_editor_selection(third, crystals)
+
+    assert "set.csv was recorded in" in third.library_label.text()
+    assert third.current_plan is None
+
+    # Choosing it from the list is a decision, and it is allowed to stand.
+    # The entry is the one already showing, so the index does not change -
+    # only ``activated`` says somebody chose.
+    third.library_input.activated.emit(1)
+
+    assert third.library_label.text() == ""
+    assert third.current_plan is not None, third.error_label.text()
+    assert third.rows_input.text() == "2-4"
+    assert [
+        item.fragment.compound_id for item in third.current_plan.assignments
+    ] == ["OTHER0002", "OTHER0003", "OTHER0004"]
+    again.close()
+    app.processEvents()
+
+
+
+def test_a_save_held_in_our_own_folder_is_not_called_delivered(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """One save, one story, on every screen that tells it.
+
+    On a morning when every share is down, a save goes wholly to a folder of
+    this account's own. Three screens described that one save three ways, two
+    of them false: the panel said the files were not on the instruments yet,
+    the step summary said they were in a folder you chose - nobody chose it -
+    and the home list said, in green, that they were in the instrument
+    folders when not one file was there.
+
+    The cause was one boolean carrying two facts. "No file reached an
+    instrument" and "the whole save went to a folder the user chose" are not
+    the same thing, and callers reached for whichever predicate was nearest.
+    """
+    app = QApplication.instance() or QApplication([])
+    gone = tmp_path / "mnt"  # Never created: the shares are down.
+    pending = tmp_path / "pending"
+    pending.mkdir()
+    libraries = tmp_path / "libs"
+    libraries.mkdir()
+    (libraries / "set.csv").write_text(
+        "Vendor,Library,No,ID,Formula,MW,Smile,Conc_mM,Solvent,Plate_ID,Plate_well\n"
+        + "".join(
+            f"Vendor,Lib,{index},Z{index:04d},C2H6O,46.07,CCO,100,DMSO,SRC-1,"
+            f"A{index:02d}\n"
+            for index in range(1, 7)
+        ),
+        encoding="utf-8",
+    )
+    settings = replace(
+        DEFAULT_SETTINGS,
+        fragment_library_directory=libraries,
+        pending_worksheet_directory=pending,
+        create_missing_instrument_roots=False,
+        instruments=tuple(
+            replace(item, output_directory=gone / item.instrument)
+            for item in DEFAULT_SETTINGS.instruments
+        ),
+    )
+    window = ViewerWindow(
+        RockMakerImageRepository(tmp_path),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        settings=settings,
+    )
+    crystals = tuple(
+        SelectedCrystal(
+            f"image-{index}", "1070", f"A{index + 1:02d}a",
+            (CrystalTarget(f"t{index}", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
+            SWISSCI_MIDI_3_LENS.id,
+        )
+        for index in range(3)
+    )
+    editor = _start(window, PlanType.FRAGMENT_SCREENING, crystals, "Held")
+    editor.protein_input.setText("BRD4")
+    editor.library_input.setCurrentIndex(1)
+    editor.rows_input.setText("2-4")
+    editor.rows_input.editingFinished.emit()
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: None)
+    revision = window.experiments._finalize_and_continue(editor)
+    window.experiments._save_plan_worksheets(editor)
+    for _ in range(200):
+        app.processEvents()
+        if window.experiments._successful_worksheet_export(revision) is not None:
+            break
+    saved = window.experiments._successful_worksheet_export(revision)
+
+    assert saved is not None
+    assert saved.outputs
+    assert all(pending in Path(output.path).parents for output in saved.outputs)
+    assert window.experiments._worksheets_held(revision)
+    assert not window.experiments._worksheets_saved_elsewhere(revision)
+
+    window.experiments._refresh_experiment_status(editor)
+    panel = editor.worksheets_step.result_label.text()
+    summary = editor.experiment_status.status_of(WorkflowStep.WORKSHEETS)
+    home = next(
+        item for item in window.experiments._recent_experiments()
+        if item.plan_id == editor.plan_id
+    )
+
+    # The panel was right all along; the other two now agree with it.
+    assert "not on the instruments yet" in panel
+    assert summary.state is StepState.ATTENTION
+    assert "waiting for the instruments" in summary.message
+    assert home.stage_state == "attention"
+    assert "waiting for instruments" in home.stage
+    assert "waiting in this account's own folder" in home.stage_detail
+
+    # The two sentences that were false.
+    assert "a folder you chose" not in summary.message
+    assert "are in the instrument folders" not in home.stage_detail
+    window.close()
+    app.processEvents()
+
+
+def test_a_library_that_cannot_be_read_is_not_reported_as_gone(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Present and unreadable is not the same as missing.
+
+    A spreadsheet saving a library as cp949 leaves the file exactly where it
+    was. The editor had the reason in hand - the folder is read as a whole
+    and every file that failed is kept with why - and said "set.csv is not in
+    <folder> now. Put it back", which cannot be acted on because it never
+    left. The note under the field was dropped in this one branch, which is
+    the only branch a library in use that stopped being readable reaches.
+    """
+    app = QApplication.instance() or QApplication([])
+    libraries = tmp_path / "libs"
+    libraries.mkdir()
+    rows = (
+        "Vendor,Library,No,ID,Formula,MW,Smile,Conc_mM,Solvent,Plate_ID,Plate_well\n"
+        + "".join(
+            f"Vendor,Lib,{index},Z{index:04d},C2H6O,46.07,CCO,100,DMSO,SRC-1,"
+            f"A{index:02d}\n"
+            for index in range(1, 7)
+        )
+    )
+    (libraries / "set.csv").write_text(rows, encoding="utf-8")
+    database = tmp_path / "reviews.sqlite3"
+
+    def viewer() -> ViewerWindow:
+        return ViewerWindow(
+            RockMakerImageRepository(tmp_path), SQLiteReviewStore(database),
+            settings=replace(DEFAULT_SETTINGS, fragment_library_directory=libraries),
+        )
+
+    crystals = tuple(
+        SelectedCrystal(
+            f"image-{index}", "1070", f"A{index + 1:02d}a",
+            (CrystalTarget(f"t{index}", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
+            SWISSCI_MIDI_3_LENS.id,
+        )
+        for index in range(3)
+    )
+    window = viewer()
+    editor = _start(window, PlanType.FRAGMENT_SCREENING, crystals, "Unread")
+    editor.protein_input.setText("BRD4")
+    editor.library_input.setCurrentIndex(1)
+    editor.rows_input.setText("2-4")
+    editor.rows_input.editingFinished.emit()
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    revision = window.experiments._finalize_and_continue(editor)
+
+    assert revision is not None
+    window.close()
+    app.processEvents()
+
+    # The file does not move; it stops being UTF-8.
+    (libraries / "set.csv").write_text(
+        rows.replace("Lib", "라이브러리"), encoding="cp949"
+    )
+
+    assert (libraries / "set.csv").exists()
+
+    reopened = viewer()
+    recent = reopened.experiments._recent_experiments()
+    restored = reopened.experiments.resume_experiment(
+        recent[0].workspace_id, recent[0].plan_id
+    )
+    reopened.experiments._sync_editor_selection(restored, crystals)
+    note = restored.library_label.text()
+    error = restored.error_label.text()
+
+    assert restored.library is None
+    assert "not UTF-8" in note, note
+    assert "cannot be read" in error, error
+    assert "not UTF-8" in error, error
+    # Already finalized, and the revision does not depend on reading it again.
+    assert f"r{revision.revision} and its worksheets" in error
+
+    # The two things it used to say, both of which sent people to the folder.
+    assert "is not in" not in error
+    assert "Put it back" not in error
+    reopened.close()
+    app.processEvents()

@@ -463,3 +463,39 @@ def test_a_name_typed_after_the_id_was_fixed_is_judged_afresh() -> None:
         replace(named, protein="HSP90.N.v2", assigned_experiment_id="adopted-from-mxlive")
     ).ready_to_finalize
 
+
+
+def test_renaming_the_protein_says_the_experiment_id_does_not_follow() -> None:
+    """The ID is fixed once records can exist under it, so say so.
+
+    Correcting a typo is fine and the ID keeps the old spelling. Moving an
+    experiment to another protein is not, and it used to pass Setup in green
+    with nothing said - leaving r2's plan to go out under an ID that names
+    the protein it is not for.
+
+    A warning, not a refusal: only the person renaming knows which of the
+    two they are doing.
+    """
+    renamed = replace(
+        READY_FRAGMENT,
+        protein="BRD9",
+        assigned_experiment_id="FragSC-202611-BRD4-01",
+    )
+    status = evaluate_experiment(renamed)
+    setup = status.status_of(WorkflowStep.SETUP)
+
+    assert setup.state is StepState.WARNING
+    assert "the experiment ID is still FragSC-202611-BRD4-01" in setup.message
+    assert "Start a new experiment for a different protein" in setup.message
+    # A warning holds nothing up.
+    assert status.ready_to_finalize
+
+    # The same name, and a name whose spelling the ID already holds, do not.
+    kept = replace(renamed, protein="BRD4")
+
+    assert evaluate_experiment(kept).status_of(WorkflowStep.SETUP).state is (
+        StepState.COMPLETE
+    )
+    assert evaluate_experiment(READY_FRAGMENT).status_of(WorkflowStep.SETUP).state is (
+        StepState.COMPLETE
+    )

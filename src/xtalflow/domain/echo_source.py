@@ -203,7 +203,10 @@ class PlateRecordEntry:
     plate_type: str = ""
 
     def describe(self, well: str, plate: str) -> str:
-        when = f"{self.time:%Y-%m-%d}"
+        # The clock on the wall, not UTC: a well taken at 08:00 here is
+        # 23:00 the day before in UTC, and this sentence is read by somebody
+        # deciding whether that well is the one they took this morning.
+        when = f"{self.time.astimezone():%Y-%m-%d}"
         if self.kind == SKIPPED:
             return f"{plate} {well} was skipped by {self.user} on {when}: {self.reason or 'no reason'}"
         return (

@@ -636,6 +636,20 @@ class ExperimentCoordinator:
             )
             return {}
 
+    def _agreed_to_save_without_the_name_history(self, editor) -> bool:
+        """Ask before saving with the overwrite guard off."""
+        answer = QMessageBox.question(
+            self.window,
+            "Save without the record of earlier saves?",
+            "The record of what earlier saves wrote cannot be read, so a "
+            "worksheet held for an instrument that is away could take the "
+            "name of an earlier revision's and overwrite it when somebody "
+            "carries it across.\n\nSave anyway?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return answer == QMessageBox.Yes
+
     def _worksheet_exports(self) -> dict[str, tuple[tuple[int, object], ...]]:
         """Every plan's save attempts, with the revision each one was for."""
         if self.window.review_store is None:
@@ -648,7 +662,7 @@ class ExperimentCoordinator:
             )
             return {}
 
-    def _worksheet_names_already_used(self, plan_id: str) -> frozenset[str]:
+    def _worksheet_names_already_used(self, plan_id: str) -> frozenset[str] | None:
         """Every file name this plan's earlier saves wrote, from our own log.
 
         A file name is chosen by looking in the folders being written to,
@@ -660,11 +674,21 @@ class ExperimentCoordinator:
 
         The log is in our own database, so it answers with every share
         down, which is when this happens.
+
+        ``None`` when the log cannot be read at all, which is not the same
+        as a plan that has never been saved: one means no name to avoid,
+        the other means no way to tell. Returning an empty set for both
+        turned the guard off without a word.
         """
-        events = self._worksheet_exports().get(plan_id, ())
+        if self.window.review_store is None:
+            return frozenset()
+        try:
+            history = self.window.review_store.audit.list_worksheet_exports_by_plan()
+        except ReviewPersistenceError:
+            return None
         return frozenset(
             Path(output.path).name
-            for _, event in events
+            for _, event in history.get(plan_id, ())
             for output in getattr(event, "outputs", ())
         )
 
@@ -719,6 +743,7 @@ class ExperimentCoordinator:
             revision.revision,
             worksheets_saved=saved,
             worksheets_saved_elsewhere=saved and self._saved_elsewhere(delivered[1]),
+            worksheets_held=saved and self._held_for_the_instruments(delivered[1]),
             instruments_missing=missing,
             instruments_expected=expected,
             save_failed=(
@@ -1044,6 +1069,15 @@ class ExperimentCoordinator:
         )
         editor.persisted = restored is not None
         editor.default_name = name
+        # Before restore_draft, which refreshes: an editor restoring a draft
+        # asks what its last revision was finalized from - the library it
+        # names, and whether the one on disk is still that one - and it used
+        # to be told "no revision" because this ran twenty lines later. The
+        # step then said nothing about r1 until something else refreshed.
+        if restored is not None and self.planning_service is not None:
+            editor.last_revision = self.planning_service.latest_revision(plan_id)
+            if editor.last_revision is not None:
+                editor.last_revision_snapshot = editor.last_revision.snapshot_json
         if restored is not None:
             editor.restore_draft(restored)
         editor.remember_opened_state()
@@ -1074,10 +1108,6 @@ class ExperimentCoordinator:
                 selected_editor, text
             )
         )
-        if restored is not None and self.planning_service is not None:
-            editor.last_revision = self.planning_service.latest_revision(plan_id)
-            if editor.last_revision is not None:
-                editor.last_revision_snapshot = editor.last_revision.snapshot_json
         editor.set_destinations(
             ", ".join(item.label for item in self._instruments_for(plan_type))
             or "no configured instruments"
@@ -1352,6 +1382,7 @@ class ExperimentCoordinator:
         return editor.facts(
             self._worksheets_saved(revision),
             self._worksheets_saved_elsewhere(revision),
+            self._worksheets_held(revision),
         )
 
     def _refresh_experiment_status(self, editor: PlanEditorBase) -> None:
@@ -1714,17 +1745,22 @@ class ExperimentCoordinator:
         return self._successful_worksheet_export(revision) is not None
 
     def _worksheets_saved_elsewhere(self, revision) -> bool:
-        """No file reached an instrument, whichever folder they are all in.
+        """The last good save went wholly to a folder the user chose."""
+        delivered = self._successful_worksheet_export(revision)
+        return delivered is not None and self._saved_elsewhere(delivered)
 
-        The step cannot be done either way: nothing can run until somebody
-        carries them across.
+    def _worksheets_held(self, revision) -> bool:
+        """The last good save is waiting wholly in a folder of our own.
+
+        Both this and the one above mean nothing can run until somebody
+        carries the files across, and they used to be the same answer. The
+        step then described a held save with whichever predicate its caller
+        reached for: the panel said the files were not on the instruments
+        yet, the step summary said they were in a folder you chose, and the
+        home list said they were in the instrument folders.
         """
         delivered = self._successful_worksheet_export(revision)
-        return (
-            delivered is not None
-            and bool(delivered.outputs)
-            and len(self._waiting_outputs(delivered)) == len(delivered.outputs)
-        )
+        return delivered is not None and self._held_for_the_instruments(delivered)
 
     def _successful_worksheet_export(self, revision):
         """The last save that worked, which is what the instruments hold."""
@@ -1749,17 +1785,34 @@ class ExperimentCoordinator:
             output for output in event.outputs if not self._on_its_instrument(output)
         )
 
+    def _nothing_reached_an_instrument(self, event) -> bool:
+        """No file in this save is in its instrument's own folder."""
+        return bool(event.outputs) and len(
+            self._waiting_outputs(event)
+        ) == len(event.outputs)
+
+    def _held_for_the_instruments(self, event) -> bool:
+        """True when the whole save is waiting in a folder of our own.
+
+        The ordinary every-share-down save. Told apart from the one below by
+        the folder worksheets wait in when no instrument can be reached: that
+        one is ours and we know where it is.
+        """
+        if not self._nothing_reached_an_instrument(event):
+            return False
+        held = pending_root(self.window.settings)
+        return all(held in Path(output.path).parents for output in event.outputs)
+
     def _saved_elsewhere(self, event) -> bool:
         """True when the whole save went to a folder the user chose.
 
-        Told from the folder worksheets wait in when no instrument can be
-        reached: that one is ours and we know where it is.
+        Not a held save: those wait in our own folder, and calling them
+        "the folder you chose" sent people looking for a folder they had
+        never picked.
         """
-        waiting = self._waiting_outputs(event)
-        if not event.outputs or len(waiting) != len(event.outputs):
-            return False
-        held = pending_root(self.window.settings)
-        return not all(held in Path(output.path).parents for output in waiting)
+        return self._nothing_reached_an_instrument(event) and not (
+            self._held_for_the_instruments(event)
+        )
 
     def _latest_worksheet_export(self, revision):
         exports = self._worksheet_exports_for(revision)
@@ -2454,6 +2507,14 @@ class ExperimentCoordinator:
         # was swallowed as "history unavailable", and the save went ahead
         # with no names to avoid - which is the bug this is here to stop.
         names_already_used = self._worksheet_names_already_used(editor.plan_id)
+        if names_already_used is None:
+            # Asked, not assumed. The only save this can spoil is one held
+            # for an instrument that cannot be reached, and a held worksheet
+            # is carried across by hand later - so there is time to ask, and
+            # an overwritten r1 cannot be got back.
+            if not self._agreed_to_save_without_the_name_history(editor):
+                return
+            names_already_used = frozenset()
         try:
             result = self.window._run_in_background(
                 f"Saving worksheets to {destination}…",

@@ -2518,9 +2518,14 @@ class ConditionTestEditor(PlanEditorBase):
         return self.design_error
 
     def facts(
-        self, worksheets_saved: bool, worksheets_saved_elsewhere: bool
+        self,
+        worksheets_saved: bool,
+        worksheets_saved_elsewhere: bool,
+        worksheets_held: bool = False,
     ) -> ExperimentFacts:
-        facts = super().facts(worksheets_saved, worksheets_saved_elsewhere)
+        facts = super().facts(
+            worksheets_saved, worksheets_saved_elsewhere, worksheets_held
+        )
         design = self.design
         plan = self.current_plan
         # Too few wells is the Conditions step's own message, not the selection's.

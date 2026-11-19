@@ -358,6 +358,31 @@ def plans_match(one: str | None, other: str | None) -> bool:
     return left == right
 
 
+def compound_ids_in_snapshot(snapshot_json: str | None) -> tuple[str, ...]:
+    """The compound IDs a finalized fragment screen actually used.
+
+    Read from the revision's own snapshot, which holds every fragment it
+    was finalized with, so it can be compared against a library found
+    somewhere other than where it was recorded.
+    """
+    if not snapshot_json:
+        return ()
+    try:
+        payload = json.loads(snapshot_json)
+    except ValueError:
+        return ()
+    if not isinstance(payload, dict):
+        return ()
+    found: list[str] = []
+    for item in payload.get("assignments") or ():
+        fragment = item.get("fragment") if isinstance(item, dict) else None
+        if isinstance(fragment, dict) and isinstance(
+            fragment.get("compound_id"), str
+        ):
+            found.append(fragment["compound_id"])
+    return tuple(found)
+
+
 def saved_plan_status(
     last_revision: PlanRevision | None,
     last_revision_snapshot: str | None,

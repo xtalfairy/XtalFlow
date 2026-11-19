@@ -69,6 +69,7 @@ def experiment_progress(
     *,
     worksheets_saved: bool = False,
     worksheets_saved_elsewhere: bool = False,
+    worksheets_held: bool = False,
     instruments_missing: tuple[str, ...] = (),
     instruments_expected: int = 0,
     save_failed: bool = False,
@@ -123,8 +124,12 @@ def experiment_progress(
             f"in the folders of all {instruments_expected} instruments that read them"
             if instruments_expected > 1 else "in the instrument folders"
         )
-        stage = f"The worksheets for r{revision_number} are {every}."
-        clean = "The sample list has not been sent to MxLive."
+        # Where they landed goes in `clean`, which is said only when nothing
+        # is in the way. In `stage` it was said either way, so a save held in
+        # our own folder read "The worksheets for r1 are in the instrument
+        # folders." and then, in the same breath, where they really were.
+        stage = f"Saved the worksheets for r{revision_number}."
+        clean = f"They are {every}, and the sample list has not been sent to MxLive."
     else:
         headline = f"Finalized r{revision_number}"
         stage = f"Finalized as r{revision_number}."
@@ -135,6 +140,7 @@ def experiment_progress(
         sent=sent,
         worksheets_saved=worksheets_saved,
         worksheets_saved_elsewhere=worksheets_saved_elsewhere,
+        worksheets_held=worksheets_held,
         instruments_missing=instruments_missing,
         save_failed=save_failed,
         instruments_have_revision=instruments_have_revision,
@@ -154,6 +160,7 @@ def _stage_clause(
     sent: bool,
     worksheets_saved: bool,
     worksheets_saved_elsewhere: bool,
+    worksheets_held: bool,
     instruments_missing: tuple[str, ...],
     save_failed: bool,
     instruments_have_revision: int | None,
@@ -175,6 +182,19 @@ def _stage_clause(
             f"The instruments still hold the worksheets of {older}. Harvesting "
             f"now would follow that plan, not this one: save the worksheets "
             f"for r{revision_number} before anybody runs it."
+        )
+    if worksheets_held:
+        # Its own sentence, and not the one below. Both mean no file reached
+        # an instrument, but this folder is ours and nobody chose it, so
+        # "the folder you chose" sent people looking for a folder they had
+        # never picked. Saying neither was worse still: this fell through to
+        # "nothing is in the way", and the list read "the worksheets for r1
+        # are in the instrument folders" on a morning when every share was
+        # down and not one file was there.
+        return "waiting for instruments", (
+            "They are waiting in this account's own folder because no "
+            "instrument could be reached. Copy them to the instrument "
+            "folders before anybody runs the experiment."
         )
     if worksheets_saved_elsewhere:
         return "not on instruments", (
@@ -272,6 +292,9 @@ class ExperimentFacts:
     # Saved, but to a folder the user chose because an instrument folder could
     # not be reached: the files still have to reach the instrument.
     worksheets_saved_elsewhere: bool = False
+    # Also not on any instrument, but waiting in a folder of this account's
+    # own - which is not a folder anybody chose, and has to say so.
+    worksheets_held: bool = False
     # Condition tests: crystals the included conditions need, a one-line summary
     # of them, a problem found only with the chosen wells, and wells left over.
     required_well_count: int = 0
@@ -329,9 +352,26 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
                 facts.assigned_experiment_id, facts.protein
             ),
         )
-        statuses[WorkflowStep.SETUP] = StepStatus(
-            WorkflowStep.SETUP, StepState.COMPLETE, f"Protein: {facts.protein.strip()}"
-        )
+        named = facts.protein.strip()
+        if facts.assigned_experiment_id and not experiment_id_holds_protein(
+            facts.assigned_experiment_id, facts.protein
+        ):
+            # A warning and not a refusal: the ID is fixed once records can
+            # exist under it, and only the person renaming knows which this
+            # is. Correcting a typo is fine and the ID keeps the old
+            # spelling; moving the experiment to another protein is not, and
+            # used to pass here with nothing said, leaving r2's plan to go
+            # out under an ID naming the protein it is not for.
+            statuses[WorkflowStep.SETUP] = StepStatus(
+                WorkflowStep.SETUP, StepState.WARNING,
+                f"Protein: {named} · the experiment ID is still "
+                f"{facts.assigned_experiment_id} and does not change. Start a "
+                f"new experiment for a different protein.",
+            )
+        else:
+            statuses[WorkflowStep.SETUP] = StepStatus(
+                WorkflowStep.SETUP, StepState.COMPLETE, f"Protein: {named}"
+            )
     except ValueError as error:
         # The reason, not just that there is one. "Fix the protein name"
         # leaves somebody who typed a space with nothing to act on: the
@@ -511,7 +551,13 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
         )
     statuses[WorkflowStep.REVIEW] = review
 
-    if finalized and facts.worksheets_saved_for_revision and facts.worksheets_saved_elsewhere:
+    if finalized and facts.worksheets_saved_for_revision and facts.worksheets_held:
+        worksheets = StepStatus(
+            WorkflowStep.WORKSHEETS, StepState.ATTENTION,
+            f"Worksheets r{facts.revision_number} are waiting for the "
+            "instruments · copy them across before running",
+        )
+    elif finalized and facts.worksheets_saved_for_revision and facts.worksheets_saved_elsewhere:
         worksheets = StepStatus(
             WorkflowStep.WORKSHEETS, StepState.ATTENTION,
             f"Worksheets r{facts.revision_number} saved to a folder you chose · "

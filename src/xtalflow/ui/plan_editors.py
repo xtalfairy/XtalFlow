@@ -46,6 +46,7 @@ from xtalflow.domain import (
     crystal_selection_from_selected_crystals,
 )
 from xtalflow.domain.crystal_selection import order_selected_wells
+from xtalflow.application.planning_service import compound_ids_in_snapshot
 from xtalflow.domain.experiment_naming import protein_name_for_record
 from xtalflow.domain.fragment_screening import (
     TRANSFER_INCREMENT_NL,
@@ -56,6 +57,7 @@ from xtalflow.domain.fragment_screening import (
     build_fragment_screen_plan,
     library_locations_that_are_one_well,
     library_values_that_cannot_be_written,
+    parse_library_rows,
     volume_that_splits,
 )
 from xtalflow.domain.raw_crystal import build_raw_crystal_plan
@@ -391,12 +393,19 @@ class PlanEditorBase(QWidget):
         return self.error_label.text() or "The plan is not valid."
 
     def facts(
-        self, worksheets_saved: bool, worksheets_saved_elsewhere: bool
+        self,
+        worksheets_saved: bool,
+        worksheets_saved_elsewhere: bool,
+        worksheets_held: bool = False,
     ) -> ExperimentFacts:
         """Where this experiment stands, for the workflow to judge its steps by.
 
-        Only the two worksheet answers come from outside, because they are kept
-        in the review database rather than in the editor.
+        Only the worksheet answers come from outside, because they are kept in
+        the review database rather than in the editor. The last two are both
+        "no file reached an instrument" and are still not the same thing: one
+        folder somebody chose, one this account's own, and a save held in ours
+        used to be described by whichever predicate the caller happened to
+        reach for.
         """
         revision = self.last_revision
         # Named, not positional: a field added to ExperimentFacts in the
@@ -418,6 +427,7 @@ class PlanEditorBase(QWidget):
             worksheets_saved_for_revision=worksheets_saved,
             local_save_failed=self.save_failed,
             worksheets_saved_elsewhere=worksheets_saved_elsewhere,
+            worksheets_held=worksheets_held,
             images_unavailable=self.images_unavailable,
             wells_unusable=self.wells_unusable,
             wells_attention_reason=self.wells_attention_reason,
@@ -496,7 +506,9 @@ class PlanEditorBase(QWidget):
                 table.setItem(row_index, column, item)
 
 
-def _require_writable_library(library: FragmentLibrary) -> None:
+def _require_writable_library(
+    library: FragmentLibrary, rows: tuple[int, ...] = ()
+) -> None:
     """Refuse a library whose identifiers cannot be used as they are.
 
     Nothing checked these between the file and MxLive. The compound ID
@@ -509,13 +521,26 @@ def _require_writable_library(library: FragmentLibrary) -> None:
     work already done at the bench. Here it refuses only the plan being
     made, which has cost nobody anything yet, and names the row so the file
     or the row range can be fixed.
+
+    ``rows`` is where these fragments sit in the whole library, which is what
+    a row range counts in. Without it the count started again at the first
+    row chosen, so the one bad row was called row 5 for "1-6", row 2 for
+    "4-6" and row 1 for "5" - and only the range starting at 1 was right.
     """
-    for number, fragment in enumerate(library.fragments, start=1):
+    numbered = zip(rows, library.fragments) if rows else enumerate(
+        library.fragments, start=1
+    )
+    for number, fragment in numbered:
         refused = library_values_that_cannot_be_written(fragment)
         if refused:
             field, value = refused[0]
             raise ValueError(
-                f"Row {number} of {library.name}: the {field} "
+                f"Row {number} of {library.name}"
+                + (
+                    f" (No {fragment.number})"
+                    if fragment.number.strip() not in ("", str(number)) else ""
+                )
+                + f": the {field} "
                 f"\u201c{value}\u201d cannot be used as it is. It becomes an "
                 f"identifier in MxLive and a value in the ECHO worksheet, so it "
                 f"can have letters, numbers, - and _ only. Fix the library file, "
@@ -548,7 +573,10 @@ class FragmentScreeningEditor(PlanEditorBase):
         self.refresh_libraries_button = QPushButton("Refresh")
         self.refresh_libraries_button.setToolTip("Reload fragment library CSV files")
         self._unreadable_libraries: tuple[tuple[str, str], ...] = ()
-        self._library_found_elsewhere = ""
+        # Where the draft recorded its library, kept so the note below
+        # survives a reload of the folder. It used to be a flag set once by
+        # the match, and the first Refresh cleared it for good.
+        self._library_recorded_at = ""
         self.library_label = QLabel("No library imported")
         self.library_label.setObjectName("Muted")
         self.rows_input = QLineEdit()
@@ -616,6 +644,10 @@ class FragmentScreeningEditor(PlanEditorBase):
         self.apply_reassignment_button.clicked.connect(self._apply_reassignment)
         self.keep_assignment_button.clicked.connect(self._keep_assignment)
         self.library_input.currentIndexChanged.connect(self._library_changed)
+        # ``activated`` and not ``currentIndexChanged``: the library somebody
+        # would pick to overrule a name match is the one already showing, so
+        # the index does not change and only this says they chose it.
+        self.library_input.activated.connect(self._library_picked)
         self.refresh_libraries_button.clicked.connect(self.library_refresh_requested.emit)
         if library is not None:
             self.set_library_choices(
@@ -628,9 +660,14 @@ class FragmentScreeningEditor(PlanEditorBase):
         return build_fragment_labworks
 
     def facts(
-        self, worksheets_saved: bool, worksheets_saved_elsewhere: bool
+        self,
+        worksheets_saved: bool,
+        worksheets_saved_elsewhere: bool,
+        worksheets_held: bool = False,
     ) -> ExperimentFacts:
-        facts = super().facts(worksheets_saved, worksheets_saved_elsewhere)
+        facts = super().facts(
+            worksheets_saved, worksheets_saved_elsewhere, worksheets_held
+        )
         plan = self.current_plan
         return replace(
             facts,
@@ -647,7 +684,14 @@ class FragmentScreeningEditor(PlanEditorBase):
     def draft(self, now: datetime) -> PlanningDraft:
         return PlanningDraft(
             self.plan_id, self.project_id, self.plan_type.value, self.plan_name,
-            self.library_input.currentData(Qt.UserRole), self.rows_input.text(),
+            # The path recorded wins while the library is only a name match,
+            # so the match - and what it says under the field - happens again
+            # on every open. Saving where the file was found instead made the
+            # editor forget it had guessed, and the next open said nothing.
+            # Picking a library from the list clears it, and finalizing
+            # writes the found path into the revision's own snapshot.
+            self._library_recorded_at or self.library_input.currentData(Qt.UserRole),
+            self.rows_input.text(),
             self.protein_input.text(), str(self.volume_input.value()),
             self.order_input.currentData().value, self.plan_created_at, now,
             self.assigned_experiment_id, self.workflow_step,
@@ -752,7 +796,6 @@ class FragmentScreeningEditor(PlanEditorBase):
         self._library_changed(self.library_input.currentIndex())
 
     def _select_library_id(self, library_id: str | None) -> None:
-        self._library_found_elsewhere = ""
         index = self.library_input.findData(library_id, Qt.UserRole)
         if index < 0 and library_id is not None:
             index = self._same_file_name_in_the_folder(library_id)
@@ -776,20 +819,31 @@ class FragmentScreeningEditor(PlanEditorBase):
         fragments to the ECHO with nothing said.
 
         Taken on the strength of its name, which is not proof it is the
-        same file, so ``_library_found_elsewhere`` says where it came from
-        and the person decides.
+        same file, so where it came from is said under the field until the
+        person picks a library themselves, and a revision finalized from it
+        is checked against what the file now holds.
         """
         wanted = Path(library_id).name
         for index in range(1, self.library_input.count()):
             found = self.library_input.itemData(index, Qt.UserRole)
             if found and Path(found).name == wanted and found != library_id:
-                self._library_found_elsewhere = (
-                    f"{wanted} was recorded in {Path(library_id).parent} and is "
-                    f"being read from {Path(found).parent}. Check it is the same "
-                    f"library before finalizing again."
-                )
+                self._library_recorded_at = library_id
                 return index
         return -1
+
+    def _library_picked(self, index: int) -> None:
+        """Somebody chose from the list, which only this signal means.
+
+        ``set_library_choices`` calls ``_library_changed`` directly with the
+        signal blocked, so a reload of the folder never arrives here. That
+        is the whole difference: a library taken on the strength of its file
+        name is a guess this editor made, and one picked from the list is a
+        decision the person made and is allowed to overrule it.
+        """
+        if not self._library_recorded_at:
+            return  # Nothing was guessed, so there is nothing to overrule.
+        self._library_recorded_at = ""
+        self._library_changed(index)
 
     def _library_changed(self, index: int) -> None:
         library = self.library_input.itemData(index, Qt.UserRole + 1)
@@ -817,6 +871,22 @@ class FragmentScreeningEditor(PlanEditorBase):
         if not self.library_id:
             return "Choose a fragment library."
         name = Path(self.library_id).name
+        why = self._why_the_chosen_library_will_not_load()
+        if why:
+            # Present and unreadable, which is not gone. The reason was
+            # already in hand and thrown away, so a file saved as cp949 by
+            # a spreadsheet was reported as missing and the advice was to
+            # put it back - which does nothing, because it never left.
+            return (
+                f"{name} is in {Path(self.library_id).parent} and cannot be "
+                f"read: {why}."
+                + (
+                    f" {self.last_revision.experiment_id} "
+                    f"r{self.last_revision.revision} and its worksheets were "
+                    f"built from it and are unaffected."
+                    if self.last_revision is not None else ""
+                )
+            )
         finalized = (
             f" {self.last_revision.experiment_id} r{self.last_revision.revision} and "
             f"its worksheets were built from it and are unaffected."
@@ -826,6 +896,24 @@ class FragmentScreeningEditor(PlanEditorBase):
             f"{name} is not in {Path(self.library_id).parent} now.{finalized} Put it "
             f"back to change the plan, or choose another library - which would "
             f"replace the fragments."
+        )
+
+    def _why_the_chosen_library_will_not_load(self) -> str:
+        """The reason the chosen file is not in the list, if it is the reason.
+
+        The folder is read as a whole and every file that failed is kept with
+        why it failed, so a library that is present and unreadable can say so
+        instead of being counted as one that is not there.
+        """
+        if not self.library_id:
+            return ""
+        wanted = Path(self.library_id).name
+        return next(
+            (
+                reason for name, reason in getattr(self, "_unreadable_libraries", ())
+                if name == wanted
+            ),
+            "",
         )
 
     def _all_rows_text(self) -> str | None:
@@ -905,11 +993,47 @@ class FragmentScreeningEditor(PlanEditorBase):
         self._pending_order = None
         self.reassignment_panel.hide()
 
+    def _require_what_it_was_finalized_from(self, library: FragmentLibrary) -> None:
+        """Refuse a library found by name that does not hold what was used.
+
+        Matching on a file name is a guess, and a file of the same name in
+        another folder can be another library - a vendor's second plate, a
+        colleague's copy with rows taken out. The row numbers then mean
+        different compounds: rows 2-4 held Z0002-4 when r1 was finalized and
+        OTHER0002-4 now, and finalizing again would send those to the ECHO
+        under the same experiment ID, with nothing having said so.
+
+        The revision's own snapshot holds every fragment it used, so no
+        hash and no change to the stored draft is needed to tell.
+        """
+        if not self._library_recorded_at or self.last_revision is None:
+            return
+        finalized = compound_ids_in_snapshot(self.last_revision_snapshot)
+        if not finalized:
+            return
+        here = {fragment.compound_id for fragment in library.fragments}
+        missing = [name for name in finalized if name not in here]
+        if missing:
+            raise ValueError(
+                f"{Path(self._library_recorded_at).name} was found in "
+                f"{Path(self.library_id or '').parent}, and it is not the "
+                f"library r{self.last_revision.revision} was finalized from: "
+                f"{missing[0]} is not in rows {self.rows_input.text()}. Put the "
+                f"recorded file back, or choose a library from the list to use "
+                f"this one instead."
+            )
+
     def _update_library_label(self) -> None:
         if self.library is not None:
             self.library_label.setText(self._unreadable_library_note())
         elif self.library_id:
-            self.library_label.setText(f"Library unavailable: {self.library_id}")
+            # The note first: this is the one branch that dropped it, and
+            # the only branch a library in use that stopped being readable
+            # ever reaches - so the reason was suppressed exactly where it
+            # was needed most.
+            self.library_label.setText(
+                self._unreadable_library_note() or f"Library unavailable: {self.library_id}"
+            )
         else:
             # "Choose a fragment library." already appears under the field.
             self.library_label.setText(self._unreadable_library_note())
@@ -922,8 +1046,13 @@ class FragmentScreeningEditor(PlanEditorBase):
         be the one that is missing, and a list that is simply short gives
         them no way to know that.
         """
-        if self._library_found_elsewhere:
-            return self._library_found_elsewhere
+        if self._library_recorded_at and self.library_id != self._library_recorded_at:
+            return (
+                f"{Path(self._library_recorded_at).name} was recorded in "
+                f"{Path(self._library_recorded_at).parent} and is being read from "
+                f"{Path(self.library_id or '').parent}. Check it is the same "
+                f"library before finalizing again."
+            )
         unreadable = getattr(self, "_unreadable_libraries", ())
         if not unreadable:
             return ""
@@ -939,7 +1068,13 @@ class FragmentScreeningEditor(PlanEditorBase):
             if self.library is None:
                 raise ValueError(self._no_library_message())
             selected_library = self.library.select_rows(self.rows_input.text())
-            _require_writable_library(selected_library)
+            _require_writable_library(
+                selected_library,
+                parse_library_rows(
+                    self.rows_input.text(), len(self.library.fragments)
+                ),
+            )
+            self._require_what_it_was_finalized_from(selected_library)
             selection = self._require_selection()
             self._show_counts(len(selected_library.fragments), len(selection.wells))
             plan = build_fragment_screen_plan(

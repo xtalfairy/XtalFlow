@@ -1264,53 +1264,59 @@ def test_a_plate_name_that_cannot_be_written_is_refused(tmp_path) -> None:
 
 
 
-def test_a_long_soak_holding_the_short_crystals_back_is_said_at_finalize() -> None:
+def test_a_late_harvest_holding_the_other_crystals_back_is_said() -> None:
     """One experiment is one shipment, and nothing ships until the last pick.
 
-    So a twelve-hour condition keeps the one-hour crystals on the bench
+    So a harvest twelve hours in keeps the one-hour crystals on the bench
     overnight, and nothing on screen said so until the morning came.
     """
     editor = _editor(times=(60, 120, 720))
     said = "\n".join(editor.finalize_warnings())
 
-    assert "2 conditions soak for" in said
+    assert "2 conditions are harvested" in said
     assert "10 h" in said
-    assert "shortest soaks for 1 h" in said
-    assert "one shipment" in said
-    assert "its own source wells" in said
+    assert "soonest at 1 h" in said
+    assert "one shipment per experiment ID" in said
+    # And it must not send anybody off to prepare a second plate: nothing
+    # physical is divided, only the ID the records go out under.
+    assert "source well" not in said
+    assert "its own wells" not in said
+    # And it must not promise a choice that is not built yet.
+    assert "cannot yet upload" in said
+    assert "decide before you upload" in said
 
 
-def test_the_warning_names_the_threshold_not_the_longest_soak() -> None:
-    """With a ten-hour and a twelve-hour condition, "12 h or more" is false."""
+def test_the_warning_names_the_threshold_not_the_latest_harvest() -> None:
+    """With a ten-hour and a twelve-hour harvest, "after 12 h" is false of one."""
     editor = _editor(times=(60, 600, 720))
     said = "\n".join(editor.finalize_warnings())
 
     assert "10 h or more, up to 12 h" in said
-    assert "soak for 12 h or more" not in said
+    assert "harvested 12 h or more" not in said
 
 
-def test_no_long_soak_and_all_long_soak_both_say_nothing() -> None:
-    """Nothing to offer either way: no split to make, or none that helps."""
-    short = "\n".join(_editor(times=(60, 120)).finalize_warnings())
+def test_no_late_harvest_and_all_late_both_say_nothing() -> None:
+    """Nothing to offer either way: nobody held back, or nobody to send ahead."""
+    soon = "\n".join(_editor(times=(60, 120)).finalize_warnings())
     whole = "\n".join(_editor(times=(720, 840)).finalize_warnings())
 
-    assert "one shipment" not in short
+    assert "one shipment" not in soon
     assert "one shipment" not in whole
 
 
-def test_once_the_worksheets_are_out_the_split_is_not_offered() -> None:
-    """A warning that cannot be acted on is worse than none.
+def test_only_the_upload_closes_the_choice_not_the_worksheets() -> None:
+    """The one point of no return is the first upload.
 
-    After a worksheet reaches an instrument the liquid may already have
-    moved, and a second experiment's ECHO file would dispense onto drops
-    that are already dosed. Every warning also turns the finalize dialog's
-    default to No, so this one would sit in the way of a revision somebody
-    has to make for another reason.
+    A record under one experiment ID cannot be taken off MxLive, and sending
+    it again under another would make a duplicate. Everything before that -
+    the dispense, the worksheets reaching the instruments, even picking the
+    first crystals - binds no crystal to an ID, so the choice is still open
+    the next morning as long as nothing has gone up.
     """
     editor = _editor(times=(60, 120, 720))
 
     assert "one shipment" in "\n".join(editor.finalize_warnings())
 
-    editor.worksheets_are_out = True
+    editor.uploaded_already = True
 
     assert "one shipment" not in "\n".join(editor.finalize_warnings())

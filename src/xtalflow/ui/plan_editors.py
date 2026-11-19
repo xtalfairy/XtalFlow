@@ -136,12 +136,14 @@ class PlanEditorBase(QWidget):
         self.workflow_step: str | None = None
         self.persisted = False
         self.save_failed = False
-        # Whether a worksheet of this plan has reached an instrument, or its
-        # records have reached MxLive. Set from outside, because only the
-        # coordinator can see either. After that the plan cannot usefully be
-        # rearranged: liquid may already have moved, and records under this
-        # experiment ID cannot be taken off MxLive.
-        self.worksheets_are_out = False
+        # Whether this plan's records have reached MxLive. Set from outside,
+        # because only the coordinator can see the upload lock. This is the
+        # one point of no return: a record under this experiment ID cannot
+        # be taken off, and sending it again under another ID would make a
+        # duplicate. Everything before it - the dispense, the worksheets
+        # going to the instruments, even picking the first crystals - binds
+        # nothing to an ID and can still be decided differently.
+        self.uploaded_already = False
         self.last_revision: PlanRevision | None = None
         self.last_revision_snapshot: str | None = None
         self.selection_signature: tuple = ()

@@ -1397,17 +1397,12 @@ class ExperimentCoordinator:
     def _experiment_facts(self, editor: PlanEditorBase) -> ExperimentFacts:
         revision = editor.last_revision
         saved = self._worksheets_saved(revision)
-        # Out means out of our hands: on an instrument, or on MxLive. A save
-        # that is still waiting in a folder of ours has moved no liquid.
-        editor.worksheets_are_out = bool(
-            saved
-            and not self._worksheets_held(revision)
-            and not self._worksheets_saved_elsewhere(revision)
-        ) or (
-            revision is not None
-            and self._webdb_upload_lock(revision.experiment_id) is not None
-            and not self._webdb_upload_lock(revision.experiment_id).can_upload
+        lock = (
+            self._webdb_upload_lock(revision.experiment_id)
+            if revision is not None
+            else None
         )
+        editor.uploaded_already = lock is not None and not lock.can_upload
         return editor.facts(
             saved,
             self._worksheets_saved_elsewhere(revision),

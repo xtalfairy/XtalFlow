@@ -12,7 +12,9 @@ from xtalflow.domain.condition_test import (
     characters_not_allowed_in_a_name,
     Additive,
     HUNDRED,
+    ConditionSeries,
     ConditionTestDesign,
+    MatrixCell,
     Treatment,
     build_condition_test_plan,
     compute_doses,
@@ -689,13 +691,13 @@ def test_a_name_with_characters_that_cannot_be_typed_is_named_back() -> None:
     assert compact_name("--") == "additive"
 
 
-def _soak_design(times: tuple[int, ...], before_minutes: int = 0):
-    """A one-additive design with a time axis, for the split."""
-    from xtalflow.domain.condition_test import (
-        Additive, ConditionSeries, ConditionTestDesign, MatrixCell, Treatment,
-    )
 
-    dmso = Additive("dmso", "DMSO", stock_percent=Decimal(100))
+def _soak_design(times: tuple[int, ...], before_minutes: int = 0):
+    """A one-additive design whose harvests fall at the given minutes."""
+    dmso = Additive(
+        "dmso", "DMSO", stock_percent=Decimal(100), source_plate="LDV-1",
+        source_well="A1", source_plate_type="384PP_DMSO2",
+    )
     percents = (Decimal(5), Decimal(10))
     series = ConditionSeries(
         "s1", "dmso", percents, times,
@@ -708,79 +710,53 @@ def _soak_design(times: tuple[int, ...], before_minutes: int = 0):
             (Treatment("dmso", Decimal(5), before_minutes),) if before_minutes else ()
         ),
     )
-    return ConditionTestDesign((dmso,), (series,))
+    return ConditionTestDesign((dmso,), (series,), Decimal(100))
 
 
-def test_a_long_soak_can_be_split_off_so_the_short_ones_need_not_wait() -> None:
+def test_a_late_harvest_is_found_so_it_can_be_sent_under_its_own_id() -> None:
     """One experiment is one shipment, and a shipment goes with its last crystal.
 
-    So a twelve-hour condition keeps the one-hour and two-hour crystals on
-    the bench until the next morning. Split off, they ship and are shot
-    while the long one is still soaking.
+    So a harvest twelve hours in keeps the one-hour and two-hour crystals
+    from being shot until the next morning. Sent under its own experiment
+    ID, it holds nothing back.
     """
     from xtalflow.domain.condition_test import (
-        LONG_SOAK_MINUTES, long_soak_conditions, split_by_soak_time,
+        LATE_HARVEST_MINUTES, conditions_harvested_late,
     )
 
     design = _soak_design((60, 120, 720))
 
-    assert LONG_SOAK_MINUTES == 600
-    assert [item.total_minutes for item in long_soak_conditions(design)] == [720, 720]
-
-    short, long = split_by_soak_time(design)
-
-    assert short is not None and long is not None
-    assert sorted(item.total_minutes for item in short.conditions()) == [60, 60, 120, 120]
-    assert sorted(item.total_minutes for item in long.conditions()) == [720, 720]
-    # Both sides keep every additive: a treatment whose additive was pruned
-    # makes design.additive raise, and a design that cannot be read is worse
-    # than one carrying a row nobody uses.
-    assert short.additives == design.additives
-    assert long.additives == design.additives
-    # Nothing is lost and nothing is duplicated.
-    assert len(short.conditions()) + len(long.conditions()) == len(design.conditions())
+    assert LATE_HARVEST_MINUTES == 600
+    assert [
+        item.total_minutes for item in conditions_harvested_late(design)
+    ] == [720, 720]
 
 
-def test_the_whole_wait_decides_the_split_not_the_last_step() -> None:
-    """A series can treat before its additive, and the crystal waits for all of it."""
-    from xtalflow.domain.condition_test import split_by_soak_time
+def test_the_whole_wait_decides_the_harvest_not_the_last_step() -> None:
+    """A series can treat its wells before the additive, and that is waiting too.
+
+    Ten hours of a fixed treatment and then an hour of soaking is a harvest
+    eleven hours in, however short the last step reads.
+    """
+    from xtalflow.domain.condition_test import conditions_harvested_late
 
     design = _soak_design((60,), before_minutes=600)
 
-    assert [item.total_minutes for item in design.conditions()] == [660, 660]
-
-    short, long = split_by_soak_time(design)
-
-    assert short is None
-    assert long is design
+    assert [
+        item.total_minutes for item in conditions_harvested_late(design)
+    ] == [660, 660]
 
 
-def test_a_design_with_no_long_soak_is_not_split() -> None:
-    """The ordinary case: nothing to offer, so nothing is offered.
+def test_nothing_harvested_late_is_nothing_to_offer() -> None:
+    """A test finished in one session holds nobody back."""
+    from xtalflow.domain.condition_test import conditions_harvested_late
 
-    Splitting costs two ECHO worksheets for one dispensing session and two
-    bookings of the source wells, so it happens only where it buys a day.
-    """
-    from xtalflow.domain.condition_test import split_by_soak_time
-
-    design = _soak_design((60, 120))
-    short, long = split_by_soak_time(design)
-
-    assert short is design
-    assert long is None
+    assert conditions_harvested_late(_soak_design((60, 120))) == ()
 
 
-def test_a_long_row_nobody_included_is_not_a_half_to_itself() -> None:
-    """A row switched off contributes no condition, so it is not a half.
-
-    Splitting on the time axis handed back a long design holding a long row
-    and nothing in it, which no plan can be built from: the axis says what
-    the table looks like and the conditions say what will be soaked.
-    """
-    from xtalflow.domain.condition_test import (
-        Additive, ConditionSeries, ConditionTestDesign, MatrixCell,
-        long_soak_conditions, split_by_soak_time,
-    )
+def test_a_row_nobody_included_is_not_a_late_harvest() -> None:
+    """A switched-off cell is not soaked, so nothing is picked for it."""
+    from xtalflow.domain.condition_test import conditions_harvested_late
 
     dmso = Additive("dmso", "DMSO", stock_percent=Decimal(100))
     series = ConditionSeries(
@@ -790,52 +766,43 @@ def test_a_long_row_nobody_included_is_not_a_half_to_itself() -> None:
             MatrixCell("c5-720", Decimal(5), 720, included=False, replicates=2),
         ),
     )
-    design = ConditionTestDesign((dmso,), (series,))
 
-    assert long_soak_conditions(design) == ()
-
-    short, long = split_by_soak_time(design)
-
-    assert long is None
-    assert short is design
+    assert conditions_harvested_late(ConditionTestDesign((dmso,), (series,))) == ()
 
 
-def test_the_long_half_gets_no_source_wells_of_the_short_one() -> None:
-    """A source well is filled for one experiment, plus its dead volume.
+def test_the_crystals_are_split_on_whole_shifter_files() -> None:
+    """The cut has to land where the worksheets were already divided.
 
-    Two experiments drawing from one well would take it below that, and
-    SourcePlateRecord.commit refuses a well another experiment recorded -
-    so carrying the wells over would have the second experiment book the
-    first one's wells and be refused at worksheet save, after the design
-    was done.
+    SHIFTER worksheets are written one per harvest group, and a returned
+    file holding part of a group is refused as nobody's worksheet. The cut
+    is on harvest_minutes, which is what harvest_groups keys on, so no file
+    can ever straddle the two halves - and that is why the split can be
+    made at upload, after the worksheets have gone out.
     """
-    from xtalflow.domain.condition_test import (
-        Additive, ConditionSeries, ConditionTestDesign, MatrixCell, split_by_soak_time,
-    )
+    from xtalflow.domain.condition_test import assignments_by_harvest_time
 
-    dmso = Additive(
-        "dmso", "DMSO", stock_percent=Decimal(100), source_plate="SRC-1",
-        source_well="A1", source_plate_type="384PP", extra_source_wells=("A2",),
-    )
-    series = ConditionSeries(
-        "s1", "dmso", (Decimal(5),), (60, 720),
-        tuple(
-            MatrixCell(f"c5-{minutes}", Decimal(5), minutes, replicates=2)
-            for minutes in (60, 720)
-        ),
-    )
-    design = ConditionTestDesign((dmso,), (series,), available_crystals=12)
-    short, long = split_by_soak_time(design)
+    design = _soak_design((60, 720))
+    plan = build_condition_test_plan(design, _selection(8))
+    soon, late = assignments_by_harvest_time(plan)
 
-    assert short is not None and long is not None
-    # The short half keeps what it had; it is the experiment already set up.
-    assert short.additives[0].source_well == "A1"
-    assert short.additives[0].extra_source_wells == ("A2",)
-    assert long.additives[0].source_well == ""
-    assert long.additives[0].extra_source_wells == ()
-    # The plate and its calibration stay: the second experiment draws from
-    # the same kind of plate, just not the same wells.
-    assert long.additives[0].source_plate == "SRC-1"
-    assert long.additives[0].source_plate_type == "384PP"
-    # And neither half claims the crystals the whole test was given.
-    assert long.available_crystals is None
+    assert [item.harvest_minutes for item in soon] == [60] * len(soon)
+    assert [item.harvest_minutes for item in late] == [720] * len(late)
+    assert len(soon) + len(late) == len(plan.assignments)
+    # Every harvest group falls wholly on one side.
+    halves = {minute: set() for minute, _ in plan.harvest_groups}
+    for half, items in (("soon", soon), ("late", late)):
+        for item in items:
+            halves[item.harvest_minutes].add(half)
+
+    assert all(len(where) == 1 for where in halves.values())
+
+
+def test_a_test_finished_in_one_session_is_not_split() -> None:
+    """Nobody is held back, so there is nothing to send ahead."""
+    from xtalflow.domain.condition_test import assignments_by_harvest_time
+
+    plan = build_condition_test_plan(_soak_design((60, 120)), _selection(8))
+    soon, late = assignments_by_harvest_time(plan)
+
+    assert late == ()
+    assert soon == plan.assignments

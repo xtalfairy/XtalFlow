@@ -41,7 +41,7 @@ from xtalflow.domain.condition_test import (
     Additive,
     additive_transfers,
     source_statuses,
-    LONG_SOAK_MINUTES,
+    LATE_HARVEST_MINUTES,
     Condition,
     ConditionTestDesign,
     ConditionTestPlan,
@@ -53,7 +53,7 @@ from xtalflow.domain.condition_test import (
     compute_doses,
     fit_to_wells,
     format_minutes,
-    long_soak_conditions,
+    conditions_harvested_late,
     new_series,
     parse_minutes,
     parse_minutes_list,
@@ -2488,59 +2488,60 @@ class ConditionTestEditor(PlanEditorBase):
                 f"crystal, e.g. {self._example_soak_id()}."
             )
         warnings.extend(self._source_warnings())
-        warnings.extend(self._long_soak_warning())
+        warnings.extend(self._late_harvest_warning())
         return tuple(warnings)
 
-    def _long_soak_warning(self) -> tuple[str, ...]:
-        """A long soak holding the short crystals back, said before it does.
+    def _late_harvest_warning(self) -> tuple[str, ...]:
+        """A late harvest holding back every crystal uploaded beside it.
 
-        One experiment is one shipment - MxLive takes the experiment ID as
-        the shipment's name - and a shipment goes when its last crystal is
-        in a puck. So a twelve-hour condition keeps the one-hour crystals
-        waiting until the next morning, and nothing on screen said so until
-        the morning came.
+        MxLive makes one shipment per experiment ID, and a shipment goes
+        with its last crystal. So a harvest ten hours in keeps the one-hour
+        crystals from being shot until the next morning, and nothing on
+        screen said so until that morning came.
 
-        Said, not done. Making the long conditions a second experiment
-        would let the short ones ship today, and it costs two ECHO
-        worksheets for one dispensing session and a second set of source
-        wells - a source well is filled for one experiment's transfers plus
-        its dead volume, so the two cannot draw from the same one.
+        Said here, decided at upload. Nothing on the plate is divided: one
+        dispense, one set of source wells, one set of worksheets, and the
+        SHIFTER files are already written one per harvest time. The only
+        thing that is split is which experiment ID the records go out
+        under, and that is chosen when they are uploaded.
         """
-        if self.worksheets_are_out:
-            # Nothing can be done about it now, and a warning that cannot be
-            # acted on is worse than none: every warning turns the finalize
-            # dialog's default to No, so this one would sit in the way of a
-            # revision somebody has to make for another reason.
+        if self.uploaded_already:
+            # The one point of no return. Once these crystals' records are
+            # on MxLive under one ID they cannot be taken off, and sending
+            # them again under another would make duplicates. Before that,
+            # every stage can be undone by choosing differently at upload -
+            # including the next morning, if nothing has gone up yet.
             return ()
-        long = long_soak_conditions(self.design)
-        if not long or len(long) == len(self.design.conditions()):
-            # All long is one shipment that waits either way, and none long
+        late = conditions_harvested_late(self.design)
+        if not late or len(late) == len(self.design.conditions()):
+            # All late is one shipment that waits either way, and none late
             # has nothing to say.
             return ()
         soonest = min(
             condition.total_minutes
             for condition in self.design.conditions()
-            if condition.total_minutes < LONG_SOAK_MINUTES
+            if condition.total_minutes < LATE_HARVEST_MINUTES
         )
-        longest = max(condition.total_minutes for condition in long)
         # The threshold is the bound, not the longest: with a ten-hour and a
-        # twelve-hour condition, "2 conditions soak for 12 h or more" is
-        # false of one of them.
+        # twelve-hour harvest, "2 harvested after 12 h" is false of one.
+        latest = late[-1].total_minutes
         reach = (
-            f"{format_minutes(LONG_SOAK_MINUTES)} or more, up to "
-            f"{format_minutes(longest)}"
-            if longest > LONG_SOAK_MINUTES
-            else f"{format_minutes(longest)}"
+            f"{format_minutes(LATE_HARVEST_MINUTES)} or more, up to "
+            f"{format_minutes(latest)}"
+            if latest > LATE_HARVEST_MINUTES
+            else f"{format_minutes(latest)}"
         )
         return (
-            f"{counted(len(long), 'condition')} soak for {reach}, and the "
-            f"shortest soaks for {format_minutes(soonest)}. One experiment is "
-            f"one shipment, so nothing here can be shipped until the last "
-            f"crystal is picked. To send the short ones first, make the long "
-            f"conditions their own experiment, with its own wells and its own "
-            f"source wells.",
+            f"{counted(len(late), 'condition')} are harvested {reach}, and "
+            f"the soonest at {format_minutes(soonest)}. MxLive makes one "
+            f"shipment per experiment ID, and a shipment goes with its last "
+            f"crystal, so uploaded together the soonest crystals cannot be "
+            f"shot until the last late one is picked. Nothing on the plate "
+            f"or in the worksheets has to change for them to go separately, "
+            f"but XtalFlow cannot yet upload one plate under two experiment "
+            f"IDs, so decide before you upload: afterwards the records "
+            f"cannot be moved.",
         )
-
     def _source_warnings(self) -> tuple[str, ...]:
         """Calibrations that do not suit the fluid, or a plate asked for two of them."""
         try:

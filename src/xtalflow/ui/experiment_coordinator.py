@@ -2295,9 +2295,10 @@ class ExperimentCoordinator:
 
         The only write in this program that touches a record somebody else
         may have had in their hands. So it reads afresh instead of sending
-        what the screen happens to be holding: what goes out is what was
-        read a moment before, and that read is the whole of the check,
-        because MxLive cannot be asked to undo a harvest.
+        what the screen happens to be holding, and reads again after the
+        question is answered: what goes out is what was read with nobody's
+        hand off the keyboard in between, because MxLive cannot be asked to
+        undo a harvest.
 
         Nothing is written locally, and that is deliberate twice over. A
         harvest write proves itself - the next read finds the values on
@@ -2326,6 +2327,51 @@ class ExperimentCoordinator:
                 "\n".join(account.upload_blockers),
             )
             return
+        sending, refused = self._harvest_sending(editor, revision)
+        if not sending:
+            QMessageBox.information(
+                self.window, "Nothing to record",
+                "No crystal of this plate can be recorded at the moment.\n\n"
+                + "\n".join(refused),
+            )
+            self._check_harvest(editor)
+            return
+        if not self._harvest_send_agreed(account, sending, refused):
+            return
+        # Read once more, now that the question has been answered. Nothing
+        # limits how long that box can stand open - a person can leave it and
+        # come back after lunch - and in that time the beamline can write a
+        # harvest of its own, or a later worksheet can land. Everything this
+        # program knows about those records was read before the question was
+        # asked, so without this the agreement is to a state that may be
+        # gone. It costs one more read of MxLive, against a write that cannot
+        # be undone.
+        again, _ = self._harvest_sending(editor, revision)
+        if again != sending:
+            QMessageBox.warning(
+                self.window, "The harvest changed; nothing was sent",
+                "What MxLive holds, or what the worksheets say, is no longer "
+                "what the question described, so nothing was sent.\n\n"
+                "The harvest below has been read again. Look at it and, if it "
+                "is right, record it.",
+            )
+            self._check_harvest(editor)
+            return
+        self._send_harvests(editor, account, sending)
+
+    def _harvest_sending(
+        self, editor: PlanEditorBase, revision: PlanRevision
+    ) -> tuple[
+        list[tuple[str, tuple[Mapping[str, Any], ...]]], list[str]
+    ]:
+        """What every experiment ID of this plate would have sent, read now.
+
+        Reading only, and the whole of the check: each ID is read from MxLive
+        afresh, judged, and turned into the records that would go out. What
+        cannot be sent comes back as a sentence for each ID rather than being
+        passed over, because somebody who expected the whole plate to go has
+        to see that it will not.
+        """
         sending: list[tuple[str, tuple[Mapping[str, Any], ...]]] = []
         refused: list[str] = []
         for experiment_id in self._uploaded_experiment_ids(editor, revision):
@@ -2345,17 +2391,7 @@ class ExperimentCoordinator:
                 refused.append(f"{experiment_id}: {error}")
                 continue
             sending.append((experiment_id, writes))
-        if not sending:
-            QMessageBox.information(
-                self.window, "Nothing to record",
-                "No crystal of this plate can be recorded at the moment.\n\n"
-                + "\n".join(refused),
-            )
-            self._check_harvest(editor)
-            return
-        if not self._harvest_send_agreed(account, sending, refused):
-            return
-        self._send_harvests(editor, account, sending)
+        return sending, refused
 
     def _harvest_send_agreed(
         self,

@@ -6791,3 +6791,53 @@ def test_declining_to_finish_an_upload_sends_nothing(
     ] == ["partial"]
     window.close()
     app.processEvents()
+
+
+def test_a_harvest_written_while_the_question_stood_open_is_not_overwritten(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Nothing limits how long that box can stand open.
+
+    A person can leave it and come back after lunch, and in that time the
+    beamline can record a harvest of its own through MxLive's own web page.
+    Everything the question described was read before it was asked, so
+    without a second read the agreement is to a state that is gone - and
+    what would go out is the harvest of a crystal somebody has already
+    recorded differently, which MxLive cannot undo.
+    """
+    app, window, _store, editor, step, held, dialogs = _harvest_ready(
+        tmp_path, monkeypatch
+    )
+    step.harvest_check_button.click()
+    assert step.harvest_record_button.isEnabled()
+    monkeypatch.setattr(
+        "xtalflow.ui.experiment_coordinator.LegacyMxLiveWriteClient",
+        _records_now_holding(held),
+    )
+    before = len(_RecordingWriter.posted)
+
+    def the_beamline_records_it_meanwhile(*args, **kwargs):
+        held[:] = [
+            MxLiveLabwork.from_mapping(dict(
+                record.raw,
+                harvest_time="2026-11-17 18:40:11.2",
+                puck_name="ISA-009",
+                puck_nohole=3,
+            ))
+            if record.plate_well == "A01a" else record
+            for record in held
+        ]
+        return QMessageBox.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", the_beamline_records_it_meanwhile)
+    step.harvest_record_button.click()
+
+    assert len(_RecordingWriter.posted) == before
+    assert dialogs[-1][0] == "warning"
+    assert "nothing was sent" in dialogs[-1][1].lower()
+    # And the table now shows what the beamline wrote, so the person can see
+    # why rather than being told only that it did not go.
+    assert "ISA-009" not in step.harvest_table.item(0, 5).text()
+    assert "different harvest" in step.harvest_table.item(0, 8).text()
+    window.close()
+    app.processEvents()

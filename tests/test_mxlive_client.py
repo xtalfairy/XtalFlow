@@ -308,3 +308,123 @@ def test_beamline_progress_counts_harvests_and_collects_pucks() -> None:
     # MxLive writes the string "None" for an empty field; it is not a puck.
     assert progress["C"] == progress["C"].__class__(2, 1, ("5C-0030",))
     assert not progress["C"].fully_harvested
+
+
+def _rendered(error: BaseException) -> str:
+    import traceback
+
+    return "".join(
+        traceback.format_exception(type(error), error, error.__traceback__)
+    )
+
+
+SIGNED = "jjh:AAAAEXAMPLESIGNATUREBBBB"
+SIGNED_URL = f"https://mxlive.example/api/v2/{SIGNED}/labworks/BL-5C/2026/"
+
+
+def _refusing(*, status: int | None):
+    """A requests call that fails the way the network really fails.
+
+    Either before the request arrives, which requests reports as a connection
+    error, or with a status, which it reports as an HTTPError carrying the
+    response. Both messages quote the URL whole, which is how the signature
+    gets into them.
+    """
+    import requests
+
+    message = f"HTTPSConnectionPool: Max retries exceeded with url: {SIGNED_URL}"
+    if status is None:
+        def refuse(*args: object, **kwargs: object) -> object:
+            raise requests.ConnectionError(message)
+
+        return refuse
+
+    class Response:
+        status_code = status
+
+        def raise_for_status(self) -> None:
+            raise requests.HTTPError(
+                f"{status} Client Error for url: {SIGNED_URL}", response=self
+            )
+
+    def answer(*args: object, **kwargs: object) -> object:
+        return Response()
+
+    return answer
+
+
+def _assert_hidden(error: BaseException, expected: str) -> None:
+    rendered = _rendered(error)
+    assert SIGNED not in rendered, rendered
+    assert "EXAMPLESIGNATURE" not in rendered, rendered
+    # What a reader is left with instead, and needs.
+    assert expected in rendered, rendered
+
+
+def test_a_refused_read_keeps_the_signature_out_of_its_traceback(monkeypatch) -> None:
+    """The one place the account's signature must never reach is a log.
+
+    It travels in the URL, and a requests error's own message quotes that URL
+    whole. The operations log writes tracebacks with their causes - from both
+    excepthooks and from a worker thread that dies - so chaining the original
+    error would put the signature in the log by a path nobody would think to
+    look at. What is kept instead is the status, or the error's class.
+    """
+    import requests
+
+    monkeypatch.setattr(requests, "get", _refusing(status=None))
+    with pytest.raises(MxLiveReadError) as raised:
+        RequestsJsonTransport().get_json(
+            SIGNED_URL, timeout_seconds=1.0, ca_bundle=None
+        )
+    _assert_hidden(raised.value, "ConnectionError")
+
+
+def test_a_read_refused_with_a_status_keeps_the_signature_out_too(monkeypatch) -> None:
+    """The other half: an answer from the server, whose message also has it."""
+    import requests
+
+    monkeypatch.setattr(requests, "get", _refusing(status=404))
+    with pytest.raises(MxLiveReadError) as raised:
+        RequestsJsonTransport().get_json(
+            SIGNED_URL, timeout_seconds=1.0, ca_bundle=None
+        )
+    _assert_hidden(raised.value, "HTTP 404")
+
+
+def test_a_write_refused_outright_keeps_the_signature_out_of_its_traceback(
+    monkeypatch,
+) -> None:
+    """The write matters more: its body is the harvest, and 400 is definite.
+
+    A status under 500 is the branch that says nothing was stored, which is
+    the one a reader acts on, so it is the one checked here. The connection
+    error below is the other branch, where it is unknown.
+    """
+    import requests
+
+    from xtalflow.domain.mxlive import MxLiveUncertainWriteError
+
+    monkeypatch.setattr(requests, "post", _refusing(status=400))
+    with pytest.raises(MxLiveWriteError) as raised:
+        RequestsJsonTransport().post_msgpack(
+            SIGNED_URL, {"plate_well": "A01a"}, timeout_seconds=1.0, ca_bundle=None
+        )
+    assert not isinstance(raised.value, MxLiveUncertainWriteError)
+    _assert_hidden(raised.value, "HTTP 400")
+
+
+def test_a_write_of_unknown_outcome_keeps_the_signature_out_as_well(
+    monkeypatch,
+) -> None:
+    """An upload that may or may not have been stored says so, and no more."""
+    import requests
+
+    from xtalflow.domain.mxlive import MxLiveUncertainWriteError
+
+    monkeypatch.setattr(requests, "post", _refusing(status=None))
+    with pytest.raises(MxLiveUncertainWriteError) as raised:
+        RequestsJsonTransport().post_msgpack(
+            SIGNED_URL, {"plate_well": "A01a"}, timeout_seconds=1.0, ca_bundle=None
+        )
+    _assert_hidden(raised.value, "ConnectionError")

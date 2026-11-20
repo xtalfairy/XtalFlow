@@ -54,10 +54,16 @@ class RequestsJsonTransport:
         except requests.RequestException as error:
             status = error.response.status_code if error.response is not None else None
             detail = f"HTTP {status}" if status is not None else type(error).__name__
-            # Do not include the signed, short-lived authentication URL in errors.
-            raise MxLiveReadError(f"MxLive request failed ({detail})") from error
-        except ValueError as error:
-            raise MxLiveReadError("MxLive returned invalid JSON") from error
+            # Not from error: the account's signature is in the URL, and the
+            # message of a requests error carries that URL whole. Chaining it
+            # would keep it out of this message and put it in every traceback
+            # instead, which is the one place it must not be - the operations
+            # log writes tracebacks with their causes, from the excepthooks and
+            # from a worker thread that dies. The status or the error's class is
+            # kept above, which is what a reader needs.
+            raise MxLiveReadError(f"MxLive request failed ({detail})") from None
+        except ValueError:
+            raise MxLiveReadError("MxLive returned invalid JSON") from None
 
     def post_msgpack(
         self, url: str, payload: object, *, timeout_seconds: float,
@@ -79,15 +85,18 @@ class RequestsJsonTransport:
         except requests.RequestException as error:
             status = error.response.status_code if error.response is not None else None
             detail = f"HTTP {status}" if status is not None else type(error).__name__
+            # Not from error, for the reason given in get_json: the signed URL
+            # travels in a requests error's message. Severing it here also ends
+            # the chain that MxLivePartialWriteError would otherwise extend.
             if _write_may_have_been_stored(error, status):
                 raise MxLiveUncertainWriteError(
                     f"MxLive upload result is unknown ({detail})"
-                ) from error
-            raise MxLiveWriteError(f"MxLive upload failed ({detail})") from error
-        except ValueError as error:
+                ) from None
+            raise MxLiveWriteError(f"MxLive upload failed ({detail})") from None
+        except ValueError:
             raise MxLiveUncertainWriteError(
                 "MxLive returned invalid JSON after accepting the upload"
-            ) from error
+            ) from None
 
 
 def _write_may_have_been_stored(

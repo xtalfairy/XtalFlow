@@ -541,10 +541,21 @@ def harvest_payload(
       since 2022 does; leaving it out would make ours the only ones without
       it.
 
-    ``harvest_order`` is deliberately absent, and so becomes ``NULL``. Any
-    rank XtalFlow invented would have to stay stable across presses, and a
-    file read later with an earlier time would shift ranks already written -
-    which cannot be corrected.
+    ``harvest_order`` is deliberately absent, and so becomes ``NULL`` on a
+    record that had none. A record that has one is not written to at all -
+    it counts as harvested, like any of the five - so nothing is lost.
+
+    It could be filled. MxLive's own web path for a returned worksheet
+    (``lims/views.py``, ``LabworkShifterOut``) sets it from the instrument's
+    ``CrystalID``, dropping the ``XTal-`` in front, and that column is in the
+    file. XtalFlow does not, decided on 2026-11-20:
+
+    - the instrument numbers from 1 in each run, and a plate harvested in two
+      groups comes back as two files, so the ranks of the second would repeat
+      the first's. A rank that is not an order over the experiment is worse
+      than no rank;
+    - ``CrystalID`` is not read by this program at all, so sending it would
+      mean carrying a column through the parser for no use of our own.
 
     ``status`` and ``attachment`` come from ``original`` because MxLive does
     not return them at all; see ``WRITTEN_BLIND``.

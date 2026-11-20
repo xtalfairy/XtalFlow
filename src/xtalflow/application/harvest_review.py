@@ -60,6 +60,10 @@ class HarvestReview:
     # Files the audit named, and what became of each: read, unreadable, or
     # not one of this revision's worksheets.
     sources: tuple[tuple[str, str], ...] = ()
+    # Everything there is to tell somebody, in one list: what reading the
+    # files ran into, and the report's own notes, which are copied in here
+    # rather than shown from there. So a screen reads this and nothing else -
+    # reading both would say each of the report's notes twice.
     warnings: tuple[str, ...] = ()
     # Records MxLive holds under this experiment ID that the revision never
     # sent. Named rather than counted, because the first question is which.

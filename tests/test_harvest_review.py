@@ -503,3 +503,51 @@ def test_the_copy_nobody_worked_from_raises_no_warning_of_its_own() -> None:
     assert review.summary() == "2 harvests to record"
     assert dict(review.sources) == {"/s1/h.csv": "read", "/s2/h.csv": "read"}
     assert review.warnings == ()
+
+
+def test_three_harvest_groups_worked_from_one_station_warn_about_nothing() -> None:
+    """The plate the beamline was looking at when it said this was wrong.
+
+    Twenty wells in three harvest groups, every one of them picked at the
+    second station, and the first station's three copies still as they were
+    written. The table was right - it folds the stations together - while the
+    warnings counted each file on its own and said twelve, four and four rows
+    were not picked yet.
+    """
+    plan = _plan((0, 60, 960))
+    groups = shifter_worksheet_groups(plan)
+    files = {}
+    for index, (_label, rows) in enumerate(groups, start=1):
+        files[f"/s1/h{index}.csv"] = _returned(rows, picked=False)
+        files[f"/s2/h{index}.csv"] = _returned(rows)
+    store = _store(plan, paths=tuple(files))
+
+    review = _review(plan, store, files, _records(plan))
+
+    assert review.summary() == "3 harvests to record"
+    assert review.warnings == ()
+    assert set(dict(review.sources).values()) == {"read"}
+
+
+def test_a_plate_split_between_the_two_stations_is_folded_into_one_answer() -> None:
+    """One worksheet, one decision per well, either station.
+
+    A plate can be worked from both: the first group at one station while the
+    second is still soaking, the rest at the other. What is missing is what no
+    station reports, not what each one is missing on its own.
+    """
+    plan = _plan((0, 60))
+    groups = shifter_worksheet_groups(plan)
+    files = {
+        "/s1/h.csv": _returned(groups[0][1]) + _returned(groups[1][1], picked=False),
+        "/s2/h.csv": _returned(groups[0][1], picked=False) + _returned(groups[1][1]),
+    }
+    store = _store(plan, paths=tuple(files))
+
+    review = _review(plan, store, files, _records(plan))
+
+    assert [row.outcome for row in review.rows] == [
+        HarvestOutcome.WILL_RECORD, HarvestOutcome.WILL_RECORD,
+    ]
+    assert review.summary() == "2 harvests to record"
+    assert review.warnings == ()

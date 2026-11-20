@@ -1,6 +1,5 @@
 import getpass
 import os
-import sys
 
 # Decide the installation before anything imports xtalflow: settings read the
 # environment once, when the module is first imported. The operating server
@@ -57,49 +56,3 @@ def fixed_local_user(monkeypatch):
     researcher passes.
     """
     monkeypatch.setattr(getpass, "getuser", lambda: "tester")
-
-
-@pytest.fixture(autouse=True)
-def no_window_outlives_its_test():
-    """Delete every window a test leaves behind, here, on the main thread.
-
-    ``window.close()`` only hides a window. What a viewer test leaves is a
-    live window, owned by Python, with timers still running - remaining
-    times from tens of milliseconds to twelve seconds. It becomes
-    collectable a second or two later, once its short timers have fired and
-    some later test has pumped events twice.
-
-    By then the collector may reach it from a worker thread: this program
-    reads the image share and scores crystals off the interface thread, and
-    a full run sees five to twelve collections there, some of generation one
-    with thousands of objects. PyQt does not delete a C++ window from a
-    thread that does not own it, so what is left is a window still alive,
-    its timers still running, and its Python side cleared. The next timeout
-    then runs a slot whose closure has been emptied, and the interpreter
-    dereferences NULL: a segmentation fault inside another test's
-    processEvents, blamed on whichever test happened to be running.
-
-    That is what made the suite fail about one run in five while every test
-    in it was correct - and an intermittently lying suite is worse than a
-    failing one, because it is the only thing that says whether this program
-    may write to a beamline database.
-
-    Deleting here removes the condition rather than the symptom: there is
-    nothing left to collect, on any thread. Each window is found before any
-    is deleted, because deleting one destroys the menus and popups it owns
-    and asking a destroyed widget for its parent is itself fatal.
-    """
-    yield
-    widgets = sys.modules.get("PyQt5.QtWidgets")
-    if widgets is None or widgets.QApplication.instance() is None:
-        return
-    from PyQt5 import sip
-
-    left_behind = [
-        widget
-        for widget in widgets.QApplication.topLevelWidgets()
-        if widget.parent() is None
-    ]
-    for widget in left_behind:
-        if not sip.isdeleted(widget):
-            sip.delete(widget)

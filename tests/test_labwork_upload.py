@@ -1,8 +1,10 @@
+import json
 from dataclasses import replace
 from datetime import datetime, timezone
 
 from xtalflow.application.labwork_upload import (
     UploadAvailability,
+    records_not_stored,
     upload_lock_state,
     verified_upload_event,
 )
@@ -126,3 +128,75 @@ def test_upload_service_records_attempt_before_outcome(tmp_path) -> None:
         for experiment_id, lock in service.lock_states().items()
     } == {"RawCrystal-01": UploadAvailability.UPLOADED}
     store.close()
+
+
+def _addressed(experiment_id: str, plate: str, well: str) -> MxLiveLabwork:
+    return MxLiveLabwork.from_mapping({
+        "expri_id": experiment_id, "plate_code": plate, "plate_well": well,
+    })
+
+
+def _sent(*wells: str) -> str:
+    return json.dumps([
+        {"plate_code": "2069", "plate_well": well, "expri_id": "RawCrystal-01"}
+        for well in wells
+    ])
+
+
+def test_a_wrong_set_of_records_is_not_a_complete_upload() -> None:
+    """Counting let one missing and one stranger pass as two of two.
+
+    The attempt was then written down as succeeded, and after that its
+    payload is believed to be what MxLive holds - which is the only proof of
+    ownership a harvest write has.
+    """
+    event = replace(_event("unknown"), payload_json=_sent("A01a", "A02a"))
+
+    verified = verified_upload_event(event, "RawCrystal-01", (
+        _addressed("RawCrystal-01", "2069", "A01a"),
+        _addressed("RawCrystal-01", "2069", "H12d"),
+    ))
+
+    assert verified.status == "partial"
+    assert "missing 2069 A02a" in (verified.error_message or "")
+    assert "2069 H12d" in (verified.error_message or "")
+
+
+def test_an_upload_whose_records_are_all_there_is_complete() -> None:
+    event = replace(_event("unknown"), payload_json=_sent("A01a", "A02a"))
+
+    verified = verified_upload_event(event, "RawCrystal-01", (
+        _addressed("RawCrystal-01", "2069", "A01a"),
+        _addressed("RawCrystal-01", "2069", "A02a"),
+        _addressed("Other-02", "2069", "A03a"),
+    ))
+
+    assert verified.status == "succeeded"
+
+
+def test_which_records_are_missing_is_named_so_they_can_be_sent() -> None:
+    """One record per call, so an interrupted upload leaves particular wells.
+
+    Naming them is what lets the rest be finished without re-sending - and
+    re-sending is what would overwrite the records that did land.
+    """
+    event = replace(_event("partial"), payload_json=_sent("A01a", "A02a", "A03a"))
+
+    missing = records_not_stored(event, "RawCrystal-01", (
+        _addressed("RawCrystal-01", "2069", "A02a"),
+        _addressed("Other-02", "2069", "A01a"),
+    ))
+
+    assert [payload["plate_well"] for payload in missing] == ["A01a", "A03a"]
+
+
+def test_an_attempt_with_no_readable_payload_still_verifies_by_count() -> None:
+    """A corrupted audit row must not make an experiment unverifiable.
+
+    Which wells are missing cannot be worked out, so nothing is offered to
+    send - but the attempt can still be resolved.
+    """
+    event = replace(_event("unknown", record_count=2), payload_json="not json")
+
+    assert verified_upload_event(event, "RawCrystal-01", ()).status == "failed"
+    assert records_not_stored(event, "RawCrystal-01", ()) == ()

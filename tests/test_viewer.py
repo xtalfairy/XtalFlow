@@ -1016,7 +1016,9 @@ def test_only_finalized_raw_revision_can_be_uploaded_and_is_audited(
     app.processEvents()
 
 
-def _finalized_raw_upload_window(tmp_path: Path, monkeypatch):
+def _finalized_raw_upload_window(
+    tmp_path: Path, monkeypatch, wells: tuple[str, ...] = ("A01a",)
+):
     key = tmp_path / "keys.dsa"
     key.write_bytes(b"test-key-presence")
     settings = replace(
@@ -1029,13 +1031,19 @@ def _finalized_raw_upload_window(tmp_path: Path, monkeypatch):
     store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
     window = ViewerWindow(RockMakerImageRepository(tmp_path), store, settings=settings)
     monkeypatch.setattr("xtalflow.ui.experiment_coordinator.LegacyMxLiveReadClient", _FakeMxLiveReader)
-    crystal = SelectedCrystal(
-        "image-key", "1070", "A01a",
-        (CrystalTarget("target", Decimal(0), Decimal(0), datetime.now(timezone.utc)),),
-        SWISSCI_MIDI_3_LENS.id, "/rmserver/image.jpg",
+    crystals = tuple(
+        SelectedCrystal(
+            f"image-key-{well}", "1070", well,
+            (CrystalTarget(
+                f"target-{well}", Decimal(0), Decimal(0),
+                datetime.now(timezone.utc),
+            ),),
+            SWISSCI_MIDI_3_LENS.id, "/rmserver/image.jpg",
+        )
+        for well in wells
     )
-    editor = _start(window, PlanType.RAW_CRYSTAL, (crystal,))
-    editor.set_crystals((crystal,))
+    editor = _start(window, PlanType.RAW_CRYSTAL, crystals)
+    editor.set_crystals(crystals)
     editor.protein_input.setText("BRD4")
     dialogs = []
     for name in ("warning", "critical", "information"):
@@ -6648,5 +6656,138 @@ def test_a_split_plate_says_which_shipment_each_crystal_is_in(
     assert table.item(0, 0).text() == early.experiment_id
     assert table.item(1, 0).text() == late.experiment_id
     assert early.experiment_id != late.experiment_id
+    window.close()
+    app.processEvents()
+
+
+def _partly_uploaded(tmp_path: Path, monkeypatch):
+    """An upload that stored its first record and was cut off on the second.
+
+    One record per call is how MxLive's endpoint is written, so this is the
+    ordinary shape of a lost connection mid-upload, not an exotic one.
+    """
+    from xtalflow.domain.mxlive import MxLivePartialWriteError
+
+    window, store, editor, revision, dialogs = _finalized_raw_upload_window(
+        tmp_path, monkeypatch, ("A01a", "A02a", "A03a")
+    )
+    stored: list[MxLiveLabwork] = []
+
+    class Writer(_RecordingWriter):
+        posted = []
+        # The connection drops once, on the second record of the first
+        # attempt. A later send is an ordinary one, so that what is measured
+        # here is the recovery and not the fault.
+        breaks = True
+
+        def upload_labworks(self, records):
+            type(self).posted.append(tuple(records))
+            for index, record in enumerate(records):
+                if index == 1 and type(self).breaks:
+                    type(self).breaks = False
+                    raise MxLivePartialWriteError(
+                        index, len(records), "connection reset"
+                    )
+                stored.append(MxLiveLabwork.from_mapping({
+                    "expri_id": record["expri_id"],
+                    "protein_name": record["protein_name"],
+                    "plate_code": record["plate_code"],
+                    "plate_well": record["plate_well"],
+                }))
+            return {"created": len(records)}
+
+    class Reader:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def labworks(self, experiment_id):
+            return tuple(stored)
+
+    monkeypatch.setattr(
+        "xtalflow.ui.experiment_coordinator.LegacyMxLiveWriteClient", Writer
+    )
+    monkeypatch.setattr(
+        "xtalflow.ui.experiment_coordinator.LegacyMxLiveReadClient", Reader
+    )
+    window.experiments._upload_plan_labworks(editor)
+    assert [
+        event.status for event in store.audit.list_webdb_uploads(revision.id)
+    ] == ["partial"]
+    return window, store, editor, revision, dialogs, Writer, stored
+
+
+def test_an_interrupted_upload_is_finished_by_sending_only_what_is_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The records that landed are not sent again, so none is overwritten.
+
+    Before this there was no way out: verifying wrote the attempt down as
+    partial, which locks the experiment ID, and uploading again was refused
+    because MxLive already held records. The crystals that never arrived
+    could not be sent from XtalFlow at all, and a plate cannot ship until
+    its last decision is on MxLive.
+    """
+    app = QApplication.instance() or QApplication([])
+    window, store, editor, revision, dialogs, Writer, stored = _partly_uploaded(
+        tmp_path, monkeypatch
+    )
+    assert len(stored) == 1
+
+    # Pressing Upload is what the person does next: the button now reads
+    # Verify on MxLive, and finishing is offered from its answer.
+    window.experiments._upload_plan_labworks(editor)
+
+    sent_again = Writer.posted[-1]
+    assert [record["plate_well"] for record in sent_again] == ["A02a", "A03a"]
+    assert all(record["plate_well"] != "A01a" for record in sent_again)
+    assert [
+        event.status for event in store.audit.list_webdb_uploads(revision.id)
+    ] == ["succeeded"]
+    assert len({event.id for event in store.audit.list_webdb_uploads(revision.id)}) == 1
+    window.close()
+    app.processEvents()
+
+
+def test_the_payload_of_a_finished_upload_still_holds_every_record(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The harvest read takes it as the whole set of records it owns.
+
+    A second audit row holding only the records sent later would leave the
+    first ones with no payload, and a record with no payload cannot have a
+    harvest added to it - the payload is the only proof of ownership.
+    """
+    app = QApplication.instance() or QApplication([])
+    window, store, editor, revision, dialogs, _writer, _stored = _partly_uploaded(
+        tmp_path, monkeypatch
+    )
+
+    window.experiments._upload_plan_labworks(editor)
+
+    (event,) = store.audit.list_webdb_uploads(revision.id)
+    wells = [record["plate_well"] for record in json.loads(event.payload_json)]
+    assert wells == ["A01a", "A02a", "A03a"]
+    window.close()
+    app.processEvents()
+
+
+def test_declining_to_finish_an_upload_sends_nothing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    window, store, editor, revision, dialogs, Writer, _stored = _partly_uploaded(
+        tmp_path, monkeypatch
+    )
+    sent_before = len(Writer.posted)
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *args, **kwargs: QMessageBox.No
+    )
+
+    window.experiments._upload_plan_labworks(editor)
+
+    assert len(Writer.posted) == sent_before
+    assert [
+        event.status for event in store.audit.list_webdb_uploads(revision.id)
+    ] == ["partial"]
     window.close()
     app.processEvents()

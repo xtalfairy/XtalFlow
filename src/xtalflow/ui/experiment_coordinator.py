@@ -93,6 +93,7 @@ from xtalflow.application.labwork_upload import (
     LabworkUploadService,
     UploadAvailability,
     UploadLockState,
+    records_not_stored,
     send_labworks,
 )
 from xtalflow.application.beamline_history import past_experiments
@@ -2152,8 +2153,9 @@ class ExperimentCoordinator:
                 )
             else:
                 editor.webdb_upload_button.setToolTip(
-                    "This experiment ID is already in MxLive, which cannot update "
-                    "or delete labworks."
+                    "This experiment ID is already in MxLive. Uploading it again "
+                    "would overwrite those records and erase the harvest the "
+                    "beamline wrote on them."
                 )
             return
         if not self._revision_is_still_the_plan(editor):
@@ -2299,7 +2301,7 @@ class ExperimentCoordinator:
 
         Nothing is written locally, and that is deliberate twice over. A
         harvest write proves itself - the next read finds the values on
-        MxLive and the row says "already on MxLive" - which is a better
+        MxLive and the row says "harvest already recorded" - which is a better
         witness than a row in our own database saying we sent it. And an
         audit row would do active harm: it would become this experiment
         ID's newest successful upload, and the next read takes that one for
@@ -2773,8 +2775,10 @@ class ExperimentCoordinator:
         if not lock.can_upload:
             QMessageBox.information(
                 self.window, "Already uploaded",
-                f"{revision.experiment_id} is already in MxLive. MxLive cannot update "
-                "labworks, so it will not be uploaded again.",
+                f"{revision.experiment_id} is already in MxLive. Uploading it "
+                "again would overwrite those records and erase the harvest time "
+                "and the puck the beamline wrote on them, which MxLive cannot "
+                "undo, so it will not be uploaded again.",
             )
             self._sync_webdb_upload_state(editor)
             return
@@ -2899,8 +2903,20 @@ class ExperimentCoordinator:
         return sum(1 for item in labworks if item.experiment_id == experiment_id)
 
     def _verify_labworks_upload(
-        self, editor, experiment_id: str, event: WebDBUploadEvent
+        self,
+        editor,
+        experiment_id: str,
+        event: WebDBUploadEvent,
+        *,
+        offer_to_finish: bool = True,
     ) -> None:
+        """Ask MxLive what it holds for this attempt and write the answer down.
+
+        ``offer_to_finish`` is false when this is the reading that follows a
+        send, so that a still-incomplete result is reported rather than
+        offered again: the offer is what called the send, and an offer made
+        from inside its own answer would nest one dialog inside the next.
+        """
         account = self.mxlive_account
         if account is None or not account.upload_ready or self.upload_service is None:
             QMessageBox.warning(
@@ -2933,12 +2949,114 @@ class ExperimentCoordinator:
                 self.window, "Upload verified",
                 f"MxLive has all {event.record_count} records for {experiment_id}.",
             )
+        elif offer_to_finish:
+            self._offer_to_finish_upload(editor, experiment_id, verified, labworks)
         else:
             QMessageBox.critical(
-                self.window, "Upload incomplete on MxLive",
-                f"{verified.error_message}\n\nReview {experiment_id} in WebDB before "
-                "taking further action.",
+                self.window, "Upload still incomplete on MxLive",
+                f"{verified.error_message}\n\nReview {experiment_id} in WebDB "
+                "before taking further action.",
             )
+
+    def _offer_to_finish_upload(
+        self, editor, experiment_id: str, event: WebDBUploadEvent, labworks
+    ) -> None:
+        """Send the records of this attempt that MxLive does not hold.
+
+        An upload sends one record per call, so an interrupted one leaves a
+        particular set of wells unsent and the rest already stored. Until
+        now that was the end of the road: verifying wrote the attempt down as
+        partial, which locks the experiment ID, and uploading again was
+        refused because MxLive already held records - correctly, since
+        re-sending the whole set would overwrite them. So the crystals that
+        never arrived could not be sent from XtalFlow at all, and a plate
+        cannot ship until its last decision is on MxLive.
+
+        What is sent here is only the wells MxLive does not hold, so nothing
+        that is there is touched: this is a create, not a correction, and the
+        rule that a record already on MxLive is left alone holds.
+
+        Three things it does not do:
+
+        - it does not build the records from the plan as it stands. They come
+          from the attempt's own payload, because a plan re-finalized since
+          would name different wells and this is a continuation of that
+          attempt, not a new one;
+        - it does not record a second attempt. The harvest read takes the
+          newest successful upload's payload as the whole set of records it
+          owns, so a second event holding half of them would make the other
+          half unrecognised. The original attempt is verified again instead,
+          and becomes succeeded once MxLive holds all of it;
+        - it does not trust its own result. What landed is decided by reading
+          MxLive again, which also settles the record whose call was cut off.
+        """
+        account = self.mxlive_account
+        if account is None or self.upload_service is None:
+            return
+        missing = records_not_stored(event, experiment_id, labworks)
+        if not missing:
+            # Partial by count on an attempt whose payload cannot be read:
+            # which wells are missing is unknown, so there is nothing safe to
+            # offer and the server is the only place left to look.
+            QMessageBox.critical(
+                self.window, "Upload incomplete on MxLive",
+                f"{event.error_message}\n\nWhich records are missing cannot be "
+                f"worked out from this database, so review {experiment_id} in "
+                "WebDB before taking further action.",
+            )
+            return
+        wells = ", ".join(
+            f"{payload.get('plate_code')} {payload.get('plate_well')}"
+            for payload in missing[:6]
+        )
+        if len(missing) > 6:
+            wells += f", and {len(missing) - 6} more"
+        # Of this attempt's own records, not of everything the reader returned:
+        # MxLive matches an identifier as a substring, so the answer can hold
+        # records of other experiments entirely.
+        held = sum(1 for item in labworks if item.experiment_id == experiment_id)
+        answer = QMessageBox.question(
+            self.window,
+            "Finish this upload",
+            f"MxLive holds {held} of the {held + len(missing)} records of this "
+            f"upload of {experiment_id}.\n\n"
+            f"Send the {counted(len(missing), 'record')} it does not hold?\n"
+            f"{wells}\n\n"
+            "Nothing MxLive already holds is sent, so no record there is "
+            "changed.\n\n"
+            f"Account: {account.username}\n"
+            f"Endpoint: {labworks_endpoint(account.base_url, account.beamline)}",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        endpoint = labworks_endpoint(account.base_url, account.beamline)
+
+        def upload():
+            client = LegacyMxLiveWriteClient(
+                account.base_url, account.beamline, account.username,
+                account.key_path, ca_bundle=account.ca_bundle,
+                timeout_seconds=self.window.settings.mxlive_timeout_seconds,
+            )
+            return client.upload_labworks(missing)
+
+        self.window._run_in_background(
+            f"Sending {counted(len(missing), 'record')} to MxLive…",
+            lambda: send_labworks(upload),
+        )
+        operations_log.event(
+            "labworks-upload-finished",
+            experiment_id=experiment_id,
+            endpoint=endpoint,
+            records=len(missing),
+        )
+        # The outcome of the send is deliberately not acted on. Whether a
+        # record landed is a question only MxLive can answer, and asking it
+        # also settles the call that was cut off halfway.
+        self._verify_labworks_upload(
+            editor, experiment_id, event, offer_to_finish=False
+        )
 
     def _fragment_library_choices(
         self,

@@ -1,8 +1,17 @@
-"""Rules that keep MxLive labwork uploads from creating duplicate records.
+"""Rules that keep MxLive labwork uploads from destroying records.
 
-MxLive has no update or delete API for labworks, so an experiment ID may be
-uploaded only once.  Every attempt is recorded before it is sent; an attempt
-whose outcome is unknown stays locked until it is checked against MxLive.
+MxLive's write endpoint is an upsert, not a create: a call that matches no
+record makes one, and a call that matches a record overwrites every column it
+sends and nulls every column it does not.  There is no delete.  So uploading
+an experiment ID a second time does not fail and does not duplicate - it
+erases whatever has been written on those records since, the harvest time and
+the puck among it, and nothing can put them back.
+
+Hence an experiment ID is uploaded only once.  Every attempt is recorded
+before it is sent; an attempt whose outcome is unknown stays locked until it
+is checked against MxLive.  And the lock here is not the last word: it knows
+only the uploads made from this computer and this database, so the upload path
+asks MxLive itself whether it already holds the ID before anything is sent.
 """
 
 from __future__ import annotations
@@ -66,20 +75,113 @@ def upload_lock_state(events: Sequence[WebDBUploadEvent]) -> UploadLockState:
     return UploadLockState(UploadAvailability.AVAILABLE)
 
 
+def payloads_by_well(
+    payload_json: str,
+) -> dict[tuple[str, str], Mapping[str, Any]]:
+    """The records of one upload attempt, keyed by plate and well.
+
+    What was sent, not what the plan says now: a plan edited or re-finalized
+    since would name wells this attempt never carried. Anything that is not a
+    record with both halves of an address is left out rather than guessed at.
+    """
+    try:
+        payloads = json.loads(payload_json)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(payloads, list):
+        return {}
+    found: dict[tuple[str, str], Mapping[str, Any]] = {}
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        key = (
+            str(payload.get("plate_code") or ""),
+            str(payload.get("plate_well") or ""),
+        )
+        if all(key):
+            found[key] = payload
+    return found
+
+
+def records_not_stored(
+    event: WebDBUploadEvent,
+    experiment_id: str,
+    labworks: Sequence[MxLiveLabwork],
+) -> tuple[Mapping[str, Any], ...]:
+    """The records of this attempt that MxLive does not hold, in sent order.
+
+    By address rather than by count, because an upload sends one record per
+    call and the one that was interrupted is a particular well, not a number.
+    """
+    held = {
+        (item.plate_code or "", item.plate_well or "")
+        for item in labworks
+        if item.experiment_id == experiment_id
+    }
+    return tuple(
+        payload
+        for key, payload in payloads_by_well(event.payload_json).items()
+        if key not in held
+    )
+
+
 def verified_upload_event(
     event: WebDBUploadEvent,
     experiment_id: str,
     labworks: Sequence[MxLiveLabwork],
 ) -> WebDBUploadEvent:
-    """Resolve an uncertain attempt from the records MxLive actually holds."""
-    stored = sum(1 for item in labworks if item.experiment_id == experiment_id)
-    note = f"Verified on MxLive: {stored} of {event.record_count} records found"
-    if stored == 0:
+    """Resolve an uncertain attempt from the records MxLive actually holds.
+
+    By address, not by count. Counting let a wrong set pass as a right one:
+    one record missing and one record there that this attempt never sent came
+    to the same number, and the attempt was then written down as succeeded -
+    after which its payload is believed to be what MxLive holds, which is the
+    only proof of ownership a harvest write has.
+
+    A record under this ID that the attempt did not send does not make the
+    attempt incomplete; it is said, and left to the harvest read, which
+    refuses the experiment over it. What makes it incomplete is one of ours
+    missing.
+    """
+    sent = payloads_by_well(event.payload_json)
+    held = {
+        (item.plate_code or "", item.plate_well or "")
+        for item in labworks
+        if item.experiment_id == experiment_id
+    }
+    if not sent:
+        # An attempt whose payload cannot be read any more. Nothing to compare
+        # addresses against, so this falls back to counting - which is what
+        # this did for every attempt, and is kept here unchanged rather than
+        # made stricter, because a corrupted audit row is not the thing being
+        # fixed and an experiment must not become unverifiable over it.
+        stored = sum(1 for item in labworks if item.experiment_id == experiment_id)
+        note = f"Verified on MxLive: {stored} of {event.record_count} records found"
+        if stored == 0:
+            status = FAILED
+        elif stored >= event.record_count:
+            status = SUCCEEDED
+        else:
+            status = PARTIAL
+        message = f"{event.error_message}; {note}" if event.error_message else note
+        return replace(event, status=status, error_message=message)
+    missing = [key for key in sent if key not in held]
+    strays = sorted(held - set(sent))
+    note = (
+        f"Verified on MxLive: {len(sent) - len(missing)} of {len(sent)} "
+        f"records found"
+    )
+    if len(missing) == len(sent):
         status = FAILED
-    elif stored == event.record_count:
-        status = SUCCEEDED
-    else:
+    elif missing:
         status = PARTIAL
+        note += "; missing " + ", ".join(f"{plate} {well}" for plate, well in missing)
+    else:
+        status = SUCCEEDED
+    if strays:
+        note += "; MxLive also holds " + ", ".join(
+            f"{plate} {well}" for plate, well in strays
+        ) + ", which this upload did not send"
     message = f"{event.error_message}; {note}" if event.error_message else note
     return replace(event, status=status, error_message=message)
 

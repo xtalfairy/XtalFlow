@@ -353,7 +353,19 @@ class StatusMessageLabel(QLabel):
         self.setFixedWidth(width)
         self._clear_timer = QTimer(self)
         self._clear_timer.setSingleShot(True)
-        self._clear_timer.timeout.connect(lambda: self.show_message(""))
+        # A bound method, not a lambda. PyQt proxies a bound method of a
+        # QObject through a weak reference and drops the connection when the
+        # receiver dies; a lambda it keeps alive for as long as the sender.
+        # That mattered: a closed window collected on a worker thread leaves
+        # its C++ side alive with this timer still running while the garbage
+        # collector clears the lambda's closure, so the slot fires with no
+        # cells to read and the interpreter dereferences NULL. The crash is a
+        # segmentation fault inside processEvents, with no line number to
+        # resolve because the frame dies before its first instruction.
+        self._clear_timer.timeout.connect(self._clear_message)
+
+    def _clear_message(self) -> None:
+        self.show_message("")
 
     def message(self) -> str:
         """What was said, which is not always what fits.

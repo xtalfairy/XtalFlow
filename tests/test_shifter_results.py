@@ -236,10 +236,16 @@ def test_nothing_harvested_cannot_be_recorded() -> None:
 def test_one_well_address_on_two_plates_refuses_the_whole_recording() -> None:
     """MxLive's update filter leaves the plate out, so writing one writes both.
 
-    Its AddLabwork view finds a record by project, experiment, protein, plate
-    and well, then applies the update filtered on everything but the plate. A
-    harvest written onto one of two records sharing a well address lands on
-    both, putting the wrong crystal in that puck position.
+    Read from the installed source, remote/views.py 686-701: AddLabwork finds
+    a record by project, experiment, protein, plate and well, then applies the
+    update filtered on everything but the plate - and the dict it applies
+    holds every column, the plate code among them.
+
+    So a harvest written onto one of two records sharing a well address does
+    not merely land on both. The other record is overwritten with this one,
+    its own plate code included, until the two rows are identical and the
+    five-column lookup cannot tell them apart again. There is no delete, so
+    whichever plate that was is gone.
     """
     expected = _expected(("A01a",)) + _expected(("A01a", "A02a"), plate="2070")
     picked = _row("A01a", time="2026-11-17 09:12:05.0", puck="ISA-003", position="1")

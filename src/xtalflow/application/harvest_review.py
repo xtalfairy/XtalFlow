@@ -83,10 +83,12 @@ class HarvestReview:
         back.
 
         A stray record on MxLive stops it for a further reason: MxLive's
-        update filter leaves out ``plate_code``, so a record we did not send
-        that shares a well address with one we did is written by the call
-        that writes ours - and no per-well check can see it, because it is
-        not one of our wells.
+        update filter leaves out ``plate_code`` while the dict it applies
+        carries it, so a record we did not send that shares a well address
+        with one we did is not merely written by the call that writes ours -
+        it is replaced by it, column for column, until the two are the same
+        row. No per-well check can see that, because it is not one of our
+        wells, and MxLive has no delete to undo it with.
         """
         return (
             bool(self.sendable)

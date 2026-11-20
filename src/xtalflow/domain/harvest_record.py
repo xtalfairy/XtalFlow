@@ -344,6 +344,22 @@ long as the column and is how the sent value begins.
 where a value cut short is a different record rather than a shortened one.
 """
 
+SIGNIFICANT_DIGITS_KEPT = 12
+TRUNCATED_TO_SIGNIFICANT_DIGITS = ("plate_x", "plate_y")
+"""Columns MxLive keeps to twelve significant digits.
+
+They are numbers in a text column, and MxLive runs on Python 2, whose
+``str(float)`` gives twelve significant digits and not the seventeen that
+reproduce the value. So a crystal's position arrives rounded: measured on
+every fragment-screen record at this beamline, ``float("%.12g" % sent)``
+equals what comes back, and the full value never does.
+
+This is not somebody's change and it is not ours to correct - it is what the
+record has held since the upload. Without this the crystal positions of every
+fragment screen would differ from the payload forever, and no harvest on
+those plates could ever be recorded.
+"""
+
 TRUNCATED_TO_INTEGER = ("soak_vol",)
 """Columns MxLive stores as whole numbers and returns as floats.
 
@@ -400,6 +416,11 @@ def _same_value(column: str, ours: Any, theirs: Any) -> bool:
         ours = _whole_number(ours)
     mine, yours = _as_number(ours), _as_number(theirs)
     if mine is not None and yours is not None:
+        if column in TRUNCATED_TO_SIGNIFICANT_DIGITS:
+            # Both sides, so that a value already rounded compares equal to
+            # itself and the rule does not depend on which side it is read
+            # from.
+            return _significant_digits(mine) == _significant_digits(yours)
         return mine == yours
     mine, yours = str(ours if ours is not None else "").strip(), str(
         theirs if theirs is not None else ""
@@ -423,6 +444,14 @@ def _as_number(value: Any) -> Decimal | None:
         return Decimal(str(value).strip())
     except (ArithmeticError, ValueError):
         return None
+
+
+def _significant_digits(value: Decimal) -> Decimal:
+    """The value as MxLive's Python 2 would have written it into its column."""
+    try:
+        return Decimal(f"%.{SIGNIFICANT_DIGITS_KEPT}g" % float(value))
+    except (ArithmeticError, OverflowError, ValueError):
+        return value
 
 
 def _whole_number(value: Any) -> Any:

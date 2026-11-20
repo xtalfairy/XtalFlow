@@ -657,3 +657,51 @@ def test_a_column_empty_on_both_sides_is_not_a_change() -> None:
     row = _one_row({"soak_smile": None}, {"soak_smile": ""})
 
     assert row.outcome is HarvestOutcome.WILL_RECORD
+
+
+def test_a_crystal_position_mxlive_rounded_to_twelve_digits_is_not_a_change() -> None:
+    """Measured on every fragment-screen record at this beamline.
+
+    The column is text and MxLive runs on Python 2, whose str(float) gives
+    twelve significant digits rather than the seventeen that reproduce the
+    value. Without this the positions of every fragment screen would differ
+    from the payload forever and no harvest on those plates could be
+    recorded - the one difference that would have blocked real work.
+    """
+    sent = 12.345678901234567
+    stored = "%.12g" % sent
+    assert stored != repr(sent)
+
+    assert _one_row(
+        {"plate_x": stored, "plate_y": stored},
+        {"plate_x": sent, "plate_y": sent},
+    ).outcome is HarvestOutcome.WILL_RECORD
+
+
+def test_a_crystal_position_somebody_moved_is_still_a_change() -> None:
+    """Rounding is forgiven to twelve digits and not beyond."""
+    row = _one_row({"plate_x": "12.3456789013"}, {"plate_x": 12.345678901234567})
+
+    assert row.outcome is HarvestOutcome.CHANGED_ON_MXLIVE
+    assert "plate_x" in row.detail
+
+
+def test_the_shapes_the_beamline_s_own_records_came_back_in_are_all_agreed() -> None:
+    """The 27 records of the two experiments on MxLive, by difference kind.
+
+    Read back on 2026-11-20: a position rounded to twelve digits, a float
+    where an int was sent, text where a number was sent. None of them is a
+    change, and the plates must not be refused over any of them.
+    """
+    row = _one_row(
+        {
+            "plate_x": "0.0", "plate_y": "0.0", "soak_vol": 33.0,
+            "crystal_no": 4, "soak_id": "DMSO_13p-0min",
+        },
+        {
+            "plate_x": 0.0, "plate_y": 0.0, "soak_vol": 33,
+            "crystal_no": 4, "soak_id": "DMSO_13p-0min",
+        },
+    )
+
+    assert row.outcome is HarvestOutcome.WILL_RECORD

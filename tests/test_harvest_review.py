@@ -436,3 +436,40 @@ def test_only_the_account_that_uploaded_may_add_to_its_records() -> None:
 
     assert "gistjwk" in str(raised.value)
     assert "only that account" in str(raised.value)
+
+
+def test_a_record_on_mxlive_the_revision_never_sent_stops_the_whole_experiment() -> None:
+    """No per-well check can see it, which is why it stops everything.
+
+    MxLive's update filter leaves out ``plate_code``, so the call that writes
+    our A01a writes any record sharing that address - and a record of another
+    plate under the same experiment ID is not one of our wells, so nothing
+    asks about it. Whose it is does not matter: this experiment ID is then
+    not the set of records this revision uploaded.
+    """
+    plan = _plan()
+    groups = shifter_worksheet_groups(plan)
+    files = {"/s1/h1.csv": _returned(groups[0][1])}
+    store = _store(plan, paths=tuple(files))
+    stray = MxLiveLabwork.from_mapping({
+        "expri_id": EXPID, "protein_name": "BRD4",
+        "plate_code": "2070", "plate_well": "A01a",
+        "harvest_time": None, "puck_name": None, "puck_nohole": None,
+    })
+
+    review = _review(plan, store, files, (*_records(plan), stray))
+
+    assert review.strays == ("2070 A01a",)
+    assert review.sendable and not review.can_record
+    assert any("never sent" in note for note in review.warnings)
+
+
+def test_the_records_the_revision_did_send_are_not_strays() -> None:
+    plan = _plan()
+    groups = shifter_worksheet_groups(plan)
+    files = {"/s1/h1.csv": _returned(groups[0][1])}
+    store = _store(plan, paths=tuple(files))
+
+    review = _review(plan, store, files, _records(plan))
+
+    assert review.strays == () and review.can_record

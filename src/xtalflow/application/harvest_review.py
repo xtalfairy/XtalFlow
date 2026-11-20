@@ -12,14 +12,19 @@ has the last word on what is already recorded.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from ..text import counted
 from .labwork_upload import SUCCEEDED as UPLOAD_SUCCEEDED
+from .labwork_upload import payloads_by_well
 from .worksheet_export import SUCCEEDED as EXPORT_SUCCEEDED
-from ..domain.harvest_record import HarvestOutcome, HarvestRow, plan_harvest_records
+from ..domain.harvest_record import (
+    HarvestOutcome,
+    HarvestRow,
+    plan_harvest_records,
+    stray_records,
+)
 from ..domain.mxlive import MxLiveLabwork
 from ..domain.plan_lifecycle import WebDBUploadEvent, WorksheetExportEvent
 from ..domain.shifter_results import (
@@ -56,6 +61,9 @@ class HarvestReview:
     # not one of this revision's worksheets.
     sources: tuple[tuple[str, str], ...] = ()
     warnings: tuple[str, ...] = ()
+    # Records MxLive holds under this experiment ID that the revision never
+    # sent. Named rather than counted, because the first question is which.
+    strays: tuple[str, ...] = ()
 
     @property
     def sendable(self) -> tuple[HarvestRow, ...]:
@@ -69,8 +77,18 @@ class HarvestReview:
         whole experiment, not just its own row: partial sending would leave
         somebody to work out which half went, and MxLive cannot take a record
         back.
+
+        A stray record on MxLive stops it for a further reason: MxLive's
+        update filter leaves out ``plate_code``, so a record we did not send
+        that shares a well address with one we did is written by the call
+        that writes ours - and no per-well check can see it, because it is
+        not one of our wells.
         """
-        return bool(self.sendable) and self.report.can_be_recorded
+        return (
+            bool(self.sendable)
+            and self.report.can_be_recorded
+            and not self.strays
+        )
 
     def count(self, outcome: HarvestOutcome) -> int:
         return sum(1 for row in self.rows if row.outcome is outcome)
@@ -215,9 +233,19 @@ def read_harvest(
     rows = plan_harvest_records(
         sources.expected, report, records, sources.payloads
     )
+    strays = stray_records(sources.expected, records)
+    if strays:
+        warnings.append(
+            f"MxLive holds {counted(len(strays), 'record')} under "
+            f"{sources.experiment_id} that this revision never sent "
+            f"({', '.join(strays)}). Nothing will be recorded until it is "
+            f"clear what they are: writing one of our wells writes any "
+            f"record sharing its address."
+        )
     return HarvestReview(
         sources.experiment_id, sources.revision_id, sources.account_username,
         rows, report, tuple(read_states), tuple(warnings) + report.notes,
+        strays,
     )
 
 
@@ -272,21 +300,13 @@ def _payloads_by_well(
     held. MxLive's write endpoint nulls every column it is not sent and
     validates nothing, so a harvest write that invented them would be
     accepted.
+
+    The same reading as the one the upload's own verification uses, and
+    deliberately the same function: if these two ever disagreed about which
+    wells an attempt sent, an attempt could be called complete on one
+    reading while the harvest was judged on another.
     """
-    try:
-        payloads = json.loads(upload.payload_json)
-    except (TypeError, ValueError):
-        return {}
-    if not isinstance(payloads, list):
-        return {}
-    found: dict[tuple[str, str], Mapping[str, Any]] = {}
-    for payload in payloads:
-        if not isinstance(payload, dict):
-            continue
-        key = (str(payload.get("plate_code") or ""), str(payload.get("plate_well") or ""))
-        if all(key):
-            found[key] = payload
-    return found
+    return payloads_by_well(upload.payload_json)
 
 
 def _whole_worksheet(plan: Any):

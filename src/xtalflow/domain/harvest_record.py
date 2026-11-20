@@ -33,7 +33,9 @@ from .mxlive import MxLiveLabwork
 from .shifter_results import HarvestReport, HarvestedCrystal
 
 __all__ = [
+    "HARVEST_COLUMNS",
     "HARVEST_MARK",
+    "IDENTITY_COLUMNS",
     "STAFF_COMMENTS_LIMIT",
     "harvest_payload",
     "harvest_writes",
@@ -42,10 +44,41 @@ __all__ = [
     "HarvestRow",
     "PUCK_NAME_LIMIT",
     "plan_harvest_records",
+    "stray_records",
 ]
 
 PUCK_NAME_LIMIT = 10
 """MxLive's ``Labwork.puck_name`` is ``CharField(max_length=10)``."""
+
+HARVEST_COLUMNS = (
+    "harvest_time",
+    "puck_name",
+    "puck_nohole",
+    "harvest_comment",
+    "harvest_order",
+)
+"""The columns a harvest lives in - all five, not the two we write.
+
+A record is "already harvested" if any of them is filled. Asking only about
+``harvest_time`` and ``puck_name`` left three ways for a record to be read as
+empty while somebody had already written on it: a ``harvest_comment`` saying
+what went wrong with a crystal, a ``puck_nohole`` from a half-finished entry,
+or a ``harvest_order`` the beamline set for its own run. Each of those was
+then overwritten or nulled by a write that believed the record untouched.
+
+This is the one check that needs nothing of how MxLive formats a value: it
+asks whether a column holds anything, not what it holds.
+"""
+
+IDENTITY_COLUMNS = ("expri_id", "protein_name", "plate_code", "plate_well")
+"""The columns MxLive finds a record by.
+
+Its write endpoint is an upsert whose lookup is made of these, so sending a
+stale one does not correct a record - it misses, and ``get_or_create`` makes
+a second record that nobody can delete. A well whose record was renamed on
+MxLive is therefore refused rather than written to, and these compare as
+exact text because text is what they are.
+"""
 
 STAFF_COMMENTS_LIMIT = 256
 """MxLive's ``Labwork.staff_comments`` is ``CharField(max_length=256)``."""
@@ -88,6 +121,7 @@ class HarvestOutcome(Enum):
     WILL_RECORD = "harvest will be recorded"
     ALREADY_RECORDED = "harvest already recorded"
     DIFFERS_ON_MXLIVE = "a different harvest on MxLive; not changed"
+    CHANGED_ON_MXLIVE = "changed on MxLive since the upload; not touched"
     NOT_PICKED = "not picked yet"
     PICK_FAILED = "pick failed; not sent"
     FILES_DISAGREE = "the returned files disagree about this well"
@@ -174,7 +208,7 @@ def plan_harvest_records(
             str(payloads.get(key, {}).get("soak_id") or ""),
             harvest,
             found[0] if len(found) == 1 else None,
-            _detail(key, harvest, attempted, found),
+            _detail(key, harvest, attempted, found, payloads),
         ))
     return tuple(rows)
 
@@ -206,6 +240,8 @@ def _outcome(
         return HarvestOutcome.DIFFERS_ON_MXLIVE
     if key not in payloads:
         return HarvestOutcome.NO_PAYLOAD
+    if _changed_since_upload(payloads[key], record):
+        return HarvestOutcome.CHANGED_ON_MXLIVE
     if len(harvest.puck_name) > PUCK_NAME_LIMIT:
         return HarvestOutcome.PUCK_NAME_TOO_LONG
     if not _position_number(harvest.puck_position):
@@ -227,13 +263,87 @@ def _position_number(text: str) -> int | None:
 
 
 def _has_harvest(record: MxLiveLabwork) -> bool:
-    """Whether MxLive already holds a harvest for this record.
+    """Whether anybody has already written in this record's harvest columns.
 
-    An unharvested record comes back with these as ``null``, not as empty
-    text, and a record with a time but no puck would be a half-written one
-    somebody needs to look at, so either counts as filled.
+    An unharvested record comes back with all five as ``null``, not as empty
+    text, so anything in any of them means somebody has been here. A record
+    with a time but no puck is a half-written one that needs looking at, and
+    so is one with only a comment or only an order - and the write would
+    destroy exactly those, because what it does not carry forward becomes
+    ``NULL``.
+
+    Asked of ``record.raw`` for the three columns the read model does not
+    name, and of the fields for the two it does.
     """
-    return bool(record.harvest_time) or bool(record.puck_name)
+    return (
+        _filled(record.harvest_time)
+        or _filled(record.puck_name)
+        or any(
+            _filled(record.raw.get(column))
+            for column in ("puck_nohole", "harvest_comment", "harvest_order")
+        )
+    )
+
+
+def _filled(value: Any) -> bool:
+    """Whether a column holds anything at all.
+
+    ``0`` is a value: ``puck_nohole`` is an integer column and position 0 is
+    still somebody's entry, so emptiness is asked of the text, not of the
+    truth of the value.
+    """
+    return value is not None and str(value).strip() != ""
+
+
+def _changed_since_upload(
+    original: Mapping[str, Any], record: MxLiveLabwork
+) -> tuple[str, ...]:
+    """Which columns MxLive disagrees with the uploaded payload about.
+
+    Only the columns a record is found by, for now. The remaining sixteen are
+    re-sent from the payload unchecked, which silently reverts a correction
+    made on MxLive since the upload; checking them needs to know how MxLive
+    formats each one on the way back - whether ``33`` returns as ``33``,
+    ``33.0`` or ``"33"`` - and nobody has read a fresh record back yet. A
+    comparison guessed wrong would refuse every healthy row, so that half
+    waits for the measurement.
+
+    These four do not wait, because getting them wrong is worse than a
+    revert: they are the upsert's lookup, so a stale one creates a second
+    record instead of writing to the one in front of us. A column missing
+    from the payload counts as changed when MxLive holds a value for it,
+    since sending that payload would null it.
+    """
+    changed: list[str] = []
+    for column in IDENTITY_COLUMNS:
+        ours = str(original.get(column) or "").strip()
+        theirs = str(record.raw.get(column) or "").strip()
+        if ours != theirs:
+            changed.append(column)
+    return tuple(changed)
+
+
+def stray_records(
+    expected: Sequence[tuple[str, str]], records: Sequence[MxLiveLabwork]
+) -> tuple[str, ...]:
+    """Records MxLive holds under this experiment that the revision never sent.
+
+    Not rows, because there is no well of ours to put them against - which is
+    the danger. MxLive's update filter leaves out ``plate_code``, so a record
+    sharing a well address with one of ours is written by the same call that
+    writes ours, and a stray one is invisible to every per-well check: it is
+    not in ``expected``, so nothing asks about it.
+
+    Whose they are does not matter. That they are there means this experiment
+    ID on MxLive is not the set of records this revision uploaded, and the
+    only safe answer is to send nothing until somebody has looked.
+    """
+    sent = set(expected)
+    return tuple(
+        f"{record.plate_code or '?'} {record.plate_well or '?'}"
+        for record in records
+        if (record.plate_code or "", record.plate_well or "") not in sent
+    )
 
 
 def _same_harvest(record: MxLiveLabwork, harvest: HarvestedCrystal) -> bool:
@@ -262,6 +372,7 @@ def _detail(
     harvest: HarvestedCrystal | None,
     attempted: Mapping[tuple[str, str], HarvestedCrystal],
     found: Sequence[MxLiveLabwork],
+    payloads: Mapping[tuple[str, str], Mapping[str, Any]],
 ) -> str:
     if harvest is None:
         failed = attempted.get(key)
@@ -269,6 +380,18 @@ def _detail(
         return failed.comment if failed else ""
     if len(found) > 1:
         return f"{len(found)} records share this well address"
+    if len(found) == 1 and key in payloads:
+        # Both values, because a refusal nobody can act on is only a dead
+        # end: whoever reads this has to be able to see which of the two is
+        # right and fix it where it is wrong.
+        changed = _changed_since_upload(payloads[key], found[0])
+        if changed:
+            return "; ".join(
+                f"{column}: MxLive has "
+                f"{str(found[0].raw.get(column) or '')!r}, "
+                f"the upload sent {str(payloads[key].get(column) or '')!r}"
+                for column in changed
+            )
     if len(harvest.puck_name) > PUCK_NAME_LIMIT:
         return f"{harvest.puck_name!r} is {len(harvest.puck_name)} characters"
     return ""
@@ -362,7 +485,19 @@ def harvest_writes(
             raise ValueError(
                 f"{row.describe()} is missing what it would have to be sent with"
             )
-        writes.append(harvest_payload(original, row.on_mxlive, row.harvest))
+        write = harvest_payload(original, row.on_mxlive, row.harvest)
+        # Asked again of the record about to go out, not of the payload it was
+        # built from. The outcome was decided when the preview was drawn and
+        # the whole point of these columns is that getting them wrong creates
+        # a record instead of writing to one, so the last word belongs to the
+        # thing actually being sent.
+        changed = _changed_since_upload(write, row.on_mxlive)
+        if changed:
+            raise ValueError(
+                f"{row.describe()} would be sent with "
+                f"{', '.join(changed)} that MxLive does not agree with"
+            )
+        writes.append(write)
     return tuple(writes)
 
 

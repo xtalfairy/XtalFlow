@@ -12,6 +12,7 @@ from xtalflow.domain.harvest_record import (
     HarvestOutcome,
     harvest_writes,
     plan_harvest_records,
+    stray_records,
 )
 from xtalflow.domain.mxlive import MxLiveLabwork
 from xtalflow.domain.shifter_results import (
@@ -41,7 +42,16 @@ def _record(well: str, **raw: Any) -> MxLiveLabwork:
 
 
 def _payloads(*wells: str) -> Mapping[tuple[str, str], Mapping[str, Any]]:
-    return {("2069", well): {"plate_well": well} for well in wells}
+    # The columns a record is found by are all here, because a payload that
+    # is missing one of them would null it on MxLive - which is a refusal,
+    # not a fixture detail. ``_record`` holds the same four.
+    return {
+        ("2069", well): {
+            "expri_id": "PreTest-202611-BRD4-01", "protein_name": "BRD4",
+            "plate_code": "2069", "plate_well": well,
+        }
+        for well in wells
+    }
 
 
 def test_a_well_with_a_harvest_and_an_empty_record_will_be_recorded() -> None:
@@ -461,3 +471,98 @@ def test_the_staff_comment_comes_from_what_mxlive_holds_now() -> None:
     (write,) = harvest_writes(rows, _payloads("A01a"))
 
     assert write["staff_comments"].startswith("looked cracked under the loop")
+
+
+def test_a_record_holding_only_a_comment_is_not_an_empty_one() -> None:
+    """The one column a harvest write would overwrite with instrument text.
+
+    Somebody writes "do not shoot" against a crystal; the write carries the
+    SHIFTER's own words into the same column. Asking only about the time and
+    the puck called this record unharvested, so the warning went.
+    """
+    rows = plan_harvest_records(
+        (("2069", "A01a"),),
+        HarvestReport(harvested=(_crystal("A01a"),)),
+        (_record("A01a", harvest_comment="cracked under the loop, do not shoot"),),
+        _payloads("A01a"),
+    )
+
+    assert rows[0].outcome is not HarvestOutcome.WILL_RECORD
+    with pytest.raises(ValueError, match="must not be sent"):
+        harvest_writes(rows, _payloads("A01a"))
+
+
+def test_a_record_holding_only_an_order_is_not_an_empty_one() -> None:
+    """``harvest_order`` is the beamline's, and the write does not carry it.
+
+    So a record with an order and nothing else was read as empty and the
+    order became NULL - not a correction of ours that could be taken back,
+    but the loss of somebody else's value.
+    """
+    rows = plan_harvest_records(
+        (("2069", "A01a"),),
+        HarvestReport(harvested=(_crystal("A01a"),)),
+        (_record("A01a", harvest_order=4),),
+        _payloads("A01a"),
+    )
+
+    assert rows[0].outcome is not HarvestOutcome.WILL_RECORD
+    with pytest.raises(ValueError, match="must not be sent"):
+        harvest_writes(rows, _payloads("A01a"))
+
+
+def test_a_record_renamed_on_mxlive_is_refused_and_names_both_values() -> None:
+    """The protein name is part of the upsert's lookup.
+
+    Sending the old one would not correct the record: it would miss it and
+    create a second one, and MxLive has no delete. Both values are shown
+    because a refusal nobody can act on is only a dead end.
+    """
+    rows = plan_harvest_records(
+        (("2069", "A01a"),),
+        HarvestReport(harvested=(_crystal("A01a"),)),
+        (_record("A01a", protein_name="BRD4-BD1"),),
+        _payloads("A01a"),
+    )
+
+    assert rows[0].outcome is HarvestOutcome.CHANGED_ON_MXLIVE
+    assert "protein_name" in rows[0].detail
+    assert "'BRD4-BD1'" in rows[0].detail and "'BRD4'" in rows[0].detail
+    with pytest.raises(ValueError, match="must not be sent"):
+        harvest_writes(rows, _payloads("A01a"))
+
+
+def test_the_record_about_to_be_sent_is_checked_and_not_only_the_judgment() -> None:
+    """The outcome was decided when the preview was drawn.
+
+    What goes out is built again at the send, from the payloads handed in
+    then. If those disagree with MxLive the write would create a record
+    rather than add to one, whatever the row says.
+    """
+    rows = plan_harvest_records(
+        (("2069", "A01a"),),
+        HarvestReport(harvested=(_crystal("A01a"),)),
+        (_record("A01a"),),
+        _payloads("A01a"),
+    )
+    assert rows[0].outcome is HarvestOutcome.WILL_RECORD
+
+    renamed = {
+        key: {**payload, "protein_name": "BRD4-BD1"}
+        for key, payload in _payloads("A01a").items()
+    }
+    with pytest.raises(ValueError, match="protein_name"):
+        harvest_writes(rows, renamed)
+
+
+def test_a_record_the_revision_never_sent_is_named_as_a_stray() -> None:
+    """Invisible to every per-well check, because it is nobody's well here.
+
+    MxLive's update filter leaves out ``plate_code``, so writing our A01a
+    writes any record that shares the address - including one of another
+    plate that we never sent and cannot see.
+    """
+    records = (_record("A01a"), _record("A01a", plate_code="2070"))
+
+    assert stray_records((("2069", "A01a"),), records) == ("2070 A01a",)
+    assert stray_records((("2069", "A01a"), ("2070", "A01a")), records) == ()

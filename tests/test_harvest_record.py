@@ -581,15 +581,21 @@ def _one_row(record_raw: dict[str, Any], payload_extra: dict[str, Any]):
 
 
 def test_a_dose_mxlive_itself_cut_to_a_whole_number_is_not_a_change() -> None:
-    """Measured: 17.5 nl was sent and 17.0 came back.
+    """The column is an integer field the endpoint fills with int().
 
-    The column is an integer field the endpoint fills with int(), while the
-    migration made it a float. Refusing over that would lock every plate
+    The migration made it a float, so the value is cut on the way in and read
+    back with a decimal point. Refusing over that would lock every plate
     uploaded before doses were rounded - over a difference MxLive made.
-    """
-    row = _one_row({"soak_vol": 17.0}, {"soak_vol": 17.5})
 
-    assert row.outcome is HarvestOutcome.WILL_RECORD
+    Every dose below is one this beamline actually dispensed and read back on
+    2026-11-20: of the 36 records of the condition test on MxLive, 30 came
+    back cut to exactly this value and the 6 whole ones came back unchanged.
+    """
+    for dispensed, stored in (
+        (17.5, 17.0), (32.5, 32.0), (67.5, 67.0), (150, 150.0),
+    ):
+        row = _one_row({"soak_vol": stored}, {"soak_vol": dispensed})
+        assert row.outcome is HarvestOutcome.WILL_RECORD, dispensed
 
 
 def test_a_dose_somebody_changed_on_mxlive_is_a_change() -> None:

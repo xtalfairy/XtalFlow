@@ -26,6 +26,7 @@ from its source on 2026-11-17:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import Enum
 from typing import Any, Mapping, Sequence
 
@@ -34,6 +35,8 @@ from .shifter_results import HarvestReport, HarvestedCrystal
 
 __all__ = [
     "HARVEST_COLUMNS",
+    "NOT_COMPARED",
+    "TEXT_COLUMN_LIMITS",
     "HARVEST_MARK",
     "IDENTITY_COLUMNS",
     "STAFF_COMMENTS_LIMIT",
@@ -68,6 +71,30 @@ then overwritten or nulled by a write that believed the record untouched.
 
 This is the one check that needs nothing of how MxLive formats a value: it
 asks whether a column holds anything, not what it holds.
+"""
+
+NOT_COMPARED = (
+    # Sent and never returned, so there is nothing to compare them with.
+    # Measured against MxLive's read on 2026-11-20: it returns 21 columns and
+    # these three are not among them. ``status`` and ``attachment`` are
+    # ``WRITTEN_BLIND``; ``project_id`` is the account that owns the record,
+    # which is constant for an experiment and is what signs the request.
+    "status",
+    "attachment",
+    "project_id",
+    # Deliberately taken from what MxLive holds now rather than from the
+    # upload, so a difference here is the point and not a drift.
+    "staff_comments",
+    # Read-only to us. Whether they are empty is asked separately, and if any
+    # of them holds anything the record is not written to at all.
+    *HARVEST_COLUMNS,
+)
+"""Columns a harvest write cannot or must not compare.
+
+What is left is the sixteen a record is made of, and they are compared one by
+one before anything is sent. The sum is exact: the sixteen plus the five
+harvest columns are the twenty-one MxLive returns, and the sixteen plus these
+three write-only ones are the nineteen XtalFlow sends.
 """
 
 IDENTITY_COLUMNS = ("expri_id", "protein_name", "plate_code", "plate_well")
@@ -295,32 +322,112 @@ def _filled(value: Any) -> bool:
     return value is not None and str(value).strip() != ""
 
 
+TEXT_COLUMN_LIMITS = {
+    "name": 60,
+    "plate_type": 30,
+    "plate_imgpath": 512,
+    "soak_well": 3,
+    "soak_id": 60,
+    "soak_smile": 128,
+}
+"""How long MxLive's text columns are, from its model on 2026-11-20.
+
+Its database is MySQL and, outside strict mode, a value too long for its
+column is cut without a word - MxLive's write endpoint bypasses the model's
+validation, so nothing stops it. A value that comes back cut is therefore not
+a change somebody made; it is what this record has held since the upload, and
+the comparison has to say so or a long condition label would refuse its own
+plate forever. It counts as the same only when what came back is exactly as
+long as the column and is how the sent value begins.
+
+``plate_well`` has a limit too and is not listed: it is part of the lookup,
+where a value cut short is a different record rather than a shortened one.
+"""
+
+TRUNCATED_TO_INTEGER = ("soak_vol",)
+"""Columns MxLive stores as whole numbers and returns as floats.
+
+Measured: 17.5 nl was sent and 17.0 came back, 32.5 came back 32.0. The
+column is an ``IntegerField`` that the endpoint fills with ``int()`` while
+the migration made it a float, so the value is truncated on the way in and
+read back with a decimal point. Uploads since 947205f round before sending,
+but the records of earlier ones still hold what was dispensed, and they must
+not be refused over a difference MxLive itself made.
+"""
+
+
 def _changed_since_upload(
     original: Mapping[str, Any], record: MxLiveLabwork
 ) -> tuple[str, ...]:
     """Which columns MxLive disagrees with the uploaded payload about.
 
-    Only the columns a record is found by, for now. The remaining sixteen are
-    re-sent from the payload unchecked, which silently reverts a correction
-    made on MxLive since the upload; checking them needs to know how MxLive
-    formats each one on the way back - whether ``33`` returns as ``33``,
-    ``33.0`` or ``"33"`` - and nobody has read a fresh record back yet. A
-    comparison guessed wrong would refuse every healthy row, so that half
-    waits for the measurement.
+    A harvest write has to send the record back whole, because MxLive nulls
+    every column it is not sent. Whole means from the payload the experiment
+    was uploaded with - and anything changed on MxLive since would be put
+    back as it was, with nothing said. So each column is compared before
+    anything is sent, and one disagreement refuses the row.
 
-    These four do not wait, because getting them wrong is worse than a
-    revert: they are the upsert's lookup, so a stale one creates a second
-    record instead of writing to the one in front of us. A column missing
-    from the payload counts as changed when MxLive holds a value for it,
-    since sending that payload would null it.
+    Asked of the columns MxLive returns, not of the ones we hold: a column it
+    does not return cannot be compared, and those are exactly the three
+    write-only ones. A column it returns that the payload has nothing for
+    counts as changed when it holds anything, which is how a column added to
+    MxLive later is refused rather than nulled.
+
+    The comparison is as forgiving as the measurement says to be and no more:
+    a number equals the same number written differently, a value cut by the
+    column's own length is not a change, and ``None`` is the empty value -
+    MxLive returns ``null`` and never an empty string.
     """
     changed: list[str] = []
     for column in IDENTITY_COLUMNS:
+        # Exact text, because these are the upsert's lookup: not a revert if
+        # they are wrong, but a second record that nobody can delete.
         ours = str(original.get(column) or "").strip()
         theirs = str(record.raw.get(column) or "").strip()
         if ours != theirs:
             changed.append(column)
+    for column in record.raw:
+        if column in NOT_COMPARED or column in IDENTITY_COLUMNS:
+            continue
+        if not _same_value(column, original.get(column), record.raw.get(column)):
+            changed.append(column)
     return tuple(changed)
+
+
+def _same_value(column: str, ours: Any, theirs: Any) -> bool:
+    """Whether one column still holds what the upload put in it."""
+    if column in TRUNCATED_TO_INTEGER:
+        ours = _whole_number(ours)
+    mine, yours = _as_number(ours), _as_number(theirs)
+    if mine is not None and yours is not None:
+        return mine == yours
+    mine, yours = str(ours if ours is not None else "").strip(), str(
+        theirs if theirs is not None else ""
+    ).strip()
+    if mine == yours:
+        return True
+    limit = TEXT_COLUMN_LIMITS.get(column)
+    return bool(limit) and len(yours) == limit and mine.startswith(yours)
+
+
+def _as_number(value: Any) -> Decimal | None:
+    """The value as a number, or ``None`` if it is not one.
+
+    So that ``33``, ``33.0`` and ``"33"`` are one value: MxLive returns
+    ``soak_vol`` as a float and ``plate_x`` as text, and both were sent as
+    numbers.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return Decimal(str(value).strip())
+    except (ArithmeticError, ValueError):
+        return None
+
+
+def _whole_number(value: Any) -> Any:
+    number = _as_number(value)
+    return value if number is None else int(number)
 
 
 def stray_records(

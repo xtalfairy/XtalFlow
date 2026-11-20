@@ -566,3 +566,94 @@ def test_a_record_the_revision_never_sent_is_named_as_a_stray() -> None:
 
     assert stray_records((("2069", "A01a"),), records) == ("2070 A01a",)
     assert stray_records((("2069", "A01a"), ("2070", "A01a")), records) == ()
+
+
+def _one_row(record_raw: dict[str, Any], payload_extra: dict[str, Any]):
+    payloads = {
+        ("2069", "A01a"): {**_payloads("A01a")[("2069", "A01a")], **payload_extra}
+    }
+    return plan_harvest_records(
+        (("2069", "A01a"),),
+        HarvestReport(harvested=(_crystal("A01a"),)),
+        (_record("A01a", **record_raw),),
+        payloads,
+    )[0]
+
+
+def test_a_dose_mxlive_itself_cut_to_a_whole_number_is_not_a_change() -> None:
+    """Measured: 17.5 nl was sent and 17.0 came back.
+
+    The column is an integer field the endpoint fills with int(), while the
+    migration made it a float. Refusing over that would lock every plate
+    uploaded before doses were rounded - over a difference MxLive made.
+    """
+    row = _one_row({"soak_vol": 17.0}, {"soak_vol": 17.5})
+
+    assert row.outcome is HarvestOutcome.WILL_RECORD
+
+
+def test_a_dose_somebody_changed_on_mxlive_is_a_change() -> None:
+    row = _one_row({"soak_vol": 38.0}, {"soak_vol": 33})
+
+    assert row.outcome is HarvestOutcome.CHANGED_ON_MXLIVE
+    assert "soak_vol" in row.detail
+
+
+def test_the_same_number_written_differently_is_the_same_number() -> None:
+    """``plate_x`` is sent as a float and stored as text.
+
+    A 2025 record reads back "0", a record XtalFlow uploaded reads back
+    "0.0", and ``crystal_no`` reads back as an integer. Comparing the text
+    would have called all of those changed.
+    """
+    assert _one_row(
+        {"plate_x": "0.0", "crystal_no": 7}, {"plate_x": 0.0, "crystal_no": 7},
+    ).outcome is HarvestOutcome.WILL_RECORD
+    assert _one_row(
+        {"plate_x": "0", "crystal_no": 7}, {"plate_x": 0.0, "crystal_no": 7},
+    ).outcome is HarvestOutcome.WILL_RECORD
+
+
+def test_a_label_mysql_cut_to_fit_its_column_is_not_a_change() -> None:
+    """``soak_id`` holds 60 characters and the write bypasses validation.
+
+    A condition label built from several steps goes over, MySQL cuts it
+    without a word, and what comes back is the record as it has been since
+    the upload. It counts as the same only when it is exactly as long as the
+    column and is how the sent value begins.
+    """
+    label = "DMSO_13p-0min_" + "x" * 60
+    cut = label[:60]
+
+    assert _one_row({"soak_id": cut}, {"soak_id": label}).outcome is (
+        HarvestOutcome.WILL_RECORD
+    )
+    assert _one_row({"soak_id": cut[:-1]}, {"soak_id": label}).outcome is (
+        HarvestOutcome.CHANGED_ON_MXLIVE
+    )
+
+
+def test_a_condition_renamed_on_mxlive_is_refused() -> None:
+    row = _one_row({"soak_id": "DMSO_15p-0min"}, {"soak_id": "DMSO_13p-0min"})
+
+    assert row.outcome is HarvestOutcome.CHANGED_ON_MXLIVE
+    assert "'DMSO_15p-0min'" in row.detail and "'DMSO_13p-0min'" in row.detail
+
+
+def test_a_column_the_upload_knows_nothing_about_is_refused() -> None:
+    """A column added to MxLive after this payload was sent.
+
+    Sending the payload would null it, and nulling what we never knew about
+    is the same loss as reverting what we did.
+    """
+    row = _one_row({"plate_type": "SwissCI-MRC-3d"}, {})
+
+    assert row.outcome is HarvestOutcome.CHANGED_ON_MXLIVE
+    assert "plate_type" in row.detail
+
+
+def test_a_column_empty_on_both_sides_is_not_a_change() -> None:
+    """MxLive returns null, never an empty string."""
+    row = _one_row({"soak_smile": None}, {"soak_smile": ""})
+
+    assert row.outcome is HarvestOutcome.WILL_RECORD

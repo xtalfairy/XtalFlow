@@ -130,7 +130,10 @@ def test_the_file_the_shifter_returns_is_read_without_its_header() -> None:
     assert first.source.endswith("FragSC.csv")
     # Started and not finished is not a harvest, and not a failed pick either.
     assert [crystal.well_address for crystal in read.attempted] == []
-    assert read.notes == ("FragSC.csv: 2 rows not picked yet.",)
+    # Unpicked rows are kept and not said: the same worksheet goes to both
+    # stations, and the copy nobody worked from reports every well this way.
+    assert read.unpicked == (("2184", "B01a"), ("2184", "C01a"))
+    assert read.notes == ()
 
     # A header, when there is one, is read and not taken for data.
     with_header = _file(REAL_PICKED, REAL_UNPICKED)
@@ -366,7 +369,8 @@ def test_a_row_that_stops_after_the_columns_we_write_is_read_as_not_picked() -> 
 
     assert [(row.plate_code, row.well_address, row.puck_name, row.puck_position)
             for row in read.harvested] == [("768", "A02c", "5C-0006", "1")]
-    assert read.notes == ("legacy: 1 row not picked yet.",)
+    assert read.unpicked == (("768", "A01a"),)
+    assert read.notes == ()
 
 
 def test_a_row_wider_than_the_header_refuses_the_file() -> None:

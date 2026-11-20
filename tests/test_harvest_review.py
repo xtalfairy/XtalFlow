@@ -473,3 +473,33 @@ def test_the_records_the_revision_did_send_are_not_strays() -> None:
     review = _review(plan, store, files, _records(plan))
 
     assert review.strays == () and review.can_record
+
+
+def test_the_copy_nobody_worked_from_raises_no_warning_of_its_own() -> None:
+    """The same worksheet goes to both stations, and only one is worked from.
+
+    The other copy comes back as it was written, so it reports every well as
+    unpicked. Said per file, that put a warning on a plate harvested to the
+    last crystal - telling somebody nobody had reached a well while the row
+    above said which puck it was in. Which wells no copy reports as picked is
+    counted once, over all of them, and each says so in its own row.
+    """
+    plan = _plan()
+    groups = shifter_worksheet_groups(plan)
+    worked_from = "\r\n".join(
+        _returned(group[1]).strip() for group in groups
+    ) + "\r\n"
+    untouched = "\r\n".join(
+        _returned(group[1], picked=False).strip() for group in groups
+    ) + "\r\n"
+    files = {"/s1/h.csv": untouched, "/s2/h.csv": worked_from}
+    store = _store(plan, paths=tuple(files))
+
+    review = _review(plan, store, files, _records(plan))
+
+    assert [row.outcome for row in review.rows] == [
+        HarvestOutcome.WILL_RECORD, HarvestOutcome.WILL_RECORD,
+    ]
+    assert review.summary() == "2 harvests to record"
+    assert dict(review.sources) == {"/s1/h.csv": "read", "/s2/h.csv": "read"}
+    assert review.warnings == ()

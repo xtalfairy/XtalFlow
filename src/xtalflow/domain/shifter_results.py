@@ -238,6 +238,11 @@ class ShifterFile:
     # record that the crystal was reached and lost.
     attempted: tuple[HarvestedCrystal, ...] = ()
     notes: tuple[str, ...] = field(default=())
+    # Neither a time nor a puck: nobody has reached these yet, as far as this
+    # one file knows. Kept rather than said, because the same worksheet goes
+    # to both stations and the copy nobody worked from reports every well as
+    # unpicked - which is not news about the plate, only about the copy.
+    unpicked: tuple[tuple[str, str], ...] = ()
 
 
 def read_shifter_results(text: str, source: str = "") -> ShifterFile:
@@ -252,7 +257,7 @@ def read_shifter_results(text: str, source: str = "") -> ShifterFile:
     attempted: list[HarvestedCrystal] = []
     notes: list[str] = []
     read = _rows(text)
-    unpicked = 0
+    unpicked: list[tuple[str, str]] = []
     for number, row in enumerate(read.rows, start=read.first_line):
         well = _well_address(row)
         if well is None:
@@ -265,7 +270,7 @@ def read_shifter_results(text: str, source: str = "") -> ShifterFile:
         time = _cell(row, TIME_COLUMN)
         puck = _cell(row, PUCK_COLUMN)
         if not time and not puck:
-            unpicked += 1
+            unpicked.append((_cell(row, "PlateID"), well))
             continue
         crystal = HarvestedCrystal(
             _cell(row, "PlateID"), well, time, puck,
@@ -273,14 +278,11 @@ def read_shifter_results(text: str, source: str = "") -> ShifterFile:
             _cell(row, ARRIVAL_COLUMN), source,
         )
         (harvested if time and puck else attempted).append(crystal)
-    if unpicked:
-        notes.append(
-            f"{_where(source)}{unpicked} "
-            f"{'row' if unpicked == 1 else 'rows'} not picked yet."
-        )
     if not read.rows:
         notes.append(f"{_where(source)}not a worksheet XtalFlow wrote.")
-    return ShifterFile(tuple(harvested), tuple(attempted), tuple(notes))
+    return ShifterFile(
+        tuple(harvested), tuple(attempted), tuple(notes), tuple(unpicked),
+    )
 
 
 def collect_harvest(
@@ -293,6 +295,14 @@ def collect_harvest(
     (source, text) for each returned worksheet. The same worksheet goes to both
     stations and again on every save, so a well may be reported several times:
     agreeing rows are one harvest, disagreeing ones are a conflict.
+
+    That is also why nothing here says how many rows of a file are unpicked.
+    The copy nobody worked from reports every well as unpicked, so a plate
+    harvested to the last crystal raised a warning for each of its harvest
+    groups on each station - saying of a well that nobody has reached it while
+    the row above said it was in a puck. Which wells no copy reports as picked
+    is ``not_harvested``, counted once over all of them, and each one says so
+    in its own row.
     """
     wanted = dict.fromkeys(expected)
     seen: dict[tuple[str, str], HarvestedCrystal] = {}

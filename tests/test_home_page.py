@@ -170,3 +170,105 @@ def test_a_long_stage_story_is_broken_into_readable_lines():
     assert " ".join(wrapped(detail).split()) == " ".join(detail.split())
     page.close()
     app.processEvents()
+
+
+def _lamp_rows(sidebar):
+    """What the panel drew, row by row, as a reader would see it."""
+    grid = sidebar.shares_grid
+    rows: dict[int, list] = {}
+    for index in range(grid.count()):
+        row, column, _, _ = grid.getItemPosition(index)
+        rows.setdefault(row, []).append((column, grid.itemAt(index).widget().text()))
+    return [
+        [text for _, text in sorted(rows[row])] for row in sorted(rows)
+    ]
+
+
+def test_the_lamps_group_by_kind_and_keep_the_stations_on_one_row():
+    """Five lamps in a 250px panel, which two fixed columns could not hold.
+
+    Poured into two columns in arrival order, three harvesting stations broke
+    across two rows and the third sat alone beside an empty cell - invisible
+    while there were two stations, and the first thing a person said about
+    the panel when there were three.
+
+    So the kind decides the row. The stations do not fit a 250px row at their
+    full names, so the names are shortened from the middle, which keeps the
+    number: it is the only part that says which station this is. The full
+    name stays in the tooltip, and nothing is shortened where there is room.
+    """
+    from xtalflow.infrastructure.mounts import ShareState
+    from pathlib import Path
+
+    app = QApplication.instance() or QApplication([])
+    states = tuple(
+        ShareState(key, label, Path("/smbmount") / key, True, "mounted", group=group)
+        for key, label, group in (
+            ("rmserver", "RMServer", "image"),
+            ("echo650", "ECHO 650", "echo"),
+            ("shifter0", "SHIFTER 0", "shifter"),
+            ("shifter1", "SHIFTER 1", "shifter"),
+            ("shifter2", "SHIFTER 2", "shifter"),
+        )
+    )
+
+    sidebar = WorkspaceSidebar()
+    assert sidebar.width() == 250, "the panel this had to fit"
+    sidebar.show_share_states(states)
+    rows = _lamp_rows(sidebar)
+
+    assert len(rows) == 2, "the image share rides with the ECHO, as it always did"
+    assert rows[0] == ["RMServer", "ECHO 650"]
+    assert len(rows[1]) == 3, "the three stations read as one set"
+    # Shortened, and shortened in the middle: every one still ends in its own
+    # number, and none of them is merely "SHIF…".
+    assert [text[-1] for text in rows[1]] == ["0", "1", "2"]
+    assert all(text.startswith("S") and "…" in text for text in rows[1])
+    assert sidebar.share_buttons["shifter0"].toolTip().startswith("SHIFTER 0 · ")
+    assert (
+        sidebar.share_buttons["shifter0"].accessibleName() == "SHIFTER 0: mounted"
+    )
+
+    # Given room, nothing is shortened - which is every panel drawn before a
+    # third station arrived.
+    wider = WorkspaceSidebar()
+    wider.setFixedWidth(320)
+    wider.show_share_states(states)
+    assert _lamp_rows(wider) == [
+        ["RMServer", "ECHO 650"], ["SHIFTER 0", "SHIFTER 1", "SHIFTER 2"]
+    ]
+
+    # A fourth station follows the same rule rather than a written-down
+    # count, and the rule prefers two rows of two over three and a stray one
+    # - which was the complaint about the old layout. With the room that
+    # gives them, their names are not shortened at all.
+    with_fourth = states + (
+        ShareState(
+            "shifter3", "SHIFTER 3", Path("/smbmount/shifter3"), True, "mounted",
+            group="shifter",
+        ),
+    )
+    panel = WorkspaceSidebar()
+    panel.show_share_states(with_fourth)
+    assert _lamp_rows(panel) == [
+        ["RMServer", "ECHO 650"],
+        ["SHIFTER 0", "SHIFTER 1"],
+        ["SHIFTER 2", "SHIFTER 3"],
+    ]
+
+    # However they are split, one kind is shortened the same way throughout:
+    # a name spelled out on one line and cut on the next reads as a mistake.
+    panel = WorkspaceSidebar()
+    panel.show_share_states(
+        states
+        + tuple(
+            ShareState(
+                f"shifter{n}", f"SHIFTER {n}", Path(f"/smbmount/shifter{n}"),
+                True, "mounted", group="shifter",
+            )
+            for n in (3, 4)
+        )
+    )
+    stations = [text for row in _lamp_rows(panel)[1:] for text in row]
+    assert [text[-1] for text in stations] == ["0", "1", "2", "3", "4"]
+    assert len({text[:-1] for text in stations}) == 1, "shortened the same way"

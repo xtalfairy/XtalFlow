@@ -66,6 +66,13 @@ QLabel#SharesLooking {{ color: {theme.TEXT_TERTIARY}; font-size: 11px; }}
 # the screen, so it survives being unable to tell the two colours apart.
 SHARE_LAMPS = {"ok": (True, theme.OK), "error": (False, theme.ERROR)}
 LAMP_SIZE = 14
+# The narrowest a name may be shortened to and still say which lamp this is:
+# an initial, the ellipsis, and a two-figure number. Measured in the panel's
+# own font rather than written down in pixels, because the font is the thing
+# that decides and it is not the same on every machine. Below this a name
+# shortens to "…" alone, which is the one outcome worth avoiding - a lamp
+# that cannot say which station it belongs to.
+NARROWEST_NAME = "W… 00"
 
 
 class _CountDelegate(QStyledItemDelegate):
@@ -254,6 +261,7 @@ class WorkspaceSidebar(QWidget):
         )
         self.hidden_list.customContextMenuRequested.connect(self._show_hidden_menu)
         self._counts: dict[str | None, int] = {}
+        self._shares_rows: list[list] = []
         self.show_workspaces((), None, {})
 
     def show_share_states(self, states: tuple, checking: bool = False) -> None:
@@ -265,7 +273,11 @@ class WorkspaceSidebar(QWidget):
         for index, state in enumerate(states):
             button = self.share_buttons.get(state.key)
             if button is None:
-                button = QPushButton()
+                # Parented here rather than by the grid, because how wide a
+                # lamp wants to be decides how many fit in a row, and an
+                # unparented button is measured without this panel's
+                # stylesheet - wider, and wrong by enough to lose a column.
+                button = QPushButton(self)
                 button.setObjectName("ShareButton")
                 button.setCursor(Qt.PointingHandCursor)
                 button.setIconSize(QSize(LAMP_SIZE, LAMP_SIZE))
@@ -273,8 +285,8 @@ class WorkspaceSidebar(QWidget):
                 button.clicked.connect(
                     lambda _checked=False, key=state.key: self.share_check_requested.emit(key)
                 )
+                button.ensurePolished()
                 self.share_buttons[state.key] = button
-                self.shares_grid.addWidget(button, index // 2, index % 2)
             self._share_states[state.key] = state
             lit, colour = SHARE_LAMPS[state.state]
             button.setIcon(QIcon(icons.lamp_pixmap(lit, LAMP_SIZE, colour)))
@@ -287,6 +299,7 @@ class WorkspaceSidebar(QWidget):
                 "Click to look again"
             )
             button.setAccessibleName(f"{state.label}: {state.detail}")
+        self._lay_out_shares(states)
         # The buttons carry the names, so the line under them only counts:
         # it is there to be caught by the eye, not read twice.
         away = sum(1 for state in states if state.state != "ok")
@@ -294,6 +307,109 @@ class WorkspaceSidebar(QWidget):
         self.shares_looking.setText("Looking…" if checking else "")
         self.shares_status.setText(summary)
         self.shares_status.setVisible(bool(summary))
+
+    def _lay_out_shares(self, states: tuple) -> None:
+        """One row per kind of share, filled as wide as the panel allows.
+
+        The lamps used to be poured into two fixed columns in arrival order,
+        which was invisible while there were four of them and exactly wrong
+        at five: the three harvesting stations broke across two rows and the
+        last one sat alone beside an empty cell. Reading which station is
+        down meant reading a ragged grid.
+
+        So the kind decides the row and the width decides the columns. Three
+        stations sit in a row where there is room for three and in two rows
+        where there is room for two, which is the same rule either way and
+        not a count written down here. A fourth station would follow it too.
+
+        Recomputed on every reading and on resize, and cheap: a handful of
+        widgets whose positions are set again.
+        """
+        if not states:
+            return
+        rows: list[list] = []
+        for state in states:
+            kind = state.group or state.key
+            if rows and (rows[-1][0].group or rows[-1][0].key) == kind:
+                rows[-1].append(state)
+            else:
+                rows.append([state])
+        # The image share is one lamp of its own kind and would hold a row by
+        # itself, so it joins the row below it - which is how it has always
+        # been drawn, beside the first instrument rather than above it.
+        if len(rows) > 1 and len(rows[0]) == 1 and rows[0][0].group == "image":
+            rows[1] = rows[0] + rows[1]
+            rows.pop(0)
+        self._shares_rows = rows
+
+        spacing = self.shares_grid.horizontalSpacing()
+        floor = self._narrowest_lamp()
+        usable = max(self.width() - 12, floor)
+        fits = max(1, (usable + spacing) // (floor + spacing))
+
+        while self.shares_grid.count():
+            self.shares_grid.takeAt(0)
+        for column in range(self.shares_grid.columnCount()):
+            self.shares_grid.setColumnStretch(column, 0)
+        line = 0
+        columns = 1
+        for row in rows:
+            # Spread evenly rather than filling each row and leaving a
+            # remainder: four stations in a panel that holds three to a row
+            # read better as two and two than as three and a stray one. That
+            # was the complaint about the old layout in the first place.
+            lines = -(-len(row) // fits)
+            each = -(-len(row) // lines)
+            # One width for the whole kind, taken from the fullest row, so
+            # that a name is not spelled out on one line and shortened on the
+            # line below it.
+            width = (usable - spacing * (each - 1)) // each
+            for start in range(0, len(row), each):
+                part = row[start : start + each]
+                for column, state in enumerate(part):
+                    button = self.share_buttons.get(state.key)
+                    if button is None:
+                        continue
+                    self.shares_grid.addWidget(button, line, column)
+                    self._fit_label(button, state.label, width)
+                columns = max(columns, len(part))
+                line += 1
+        for column in range(columns):
+            self.shares_grid.setColumnStretch(column, 1)
+
+    def _narrowest_lamp(self) -> int:
+        """How little room a lamp can be given, in this panel's own font."""
+        button = next(iter(self.share_buttons.values()), None)
+        if button is None:
+            return 1
+        metrics = button.fontMetrics()
+        overhead = button.minimumSizeHint().width() - metrics.width(button.text())
+        return overhead + metrics.width(NARROWEST_NAME)
+
+    def _fit_label(self, button, label: str, width: int) -> None:
+        """The longest form of the name that fits the lamp's share of the row.
+
+        Shortened from the middle, never the end: the end is the only part
+        that says which station this is, so "SHIFTER 0" becomes "SH… 0" and
+        not "SHIF…". Qt does the shortening, so a name this file has never
+        seen - whatever the site file calls an instrument - is handled the
+        same way.
+
+        Where there is room nothing is shortened, which is every panel that
+        was drawn before a third station arrived. The full name stays in the
+        tooltip and in the accessible name, both set by the caller.
+        """
+        metrics = button.fontMetrics()
+        overhead = button.minimumSizeHint().width() - metrics.width(button.text())
+        button.setText(metrics.elidedText(label, Qt.ElideMiddle, max(width - overhead, 1)))
+
+    def resizeEvent(self, event) -> None:
+        """A narrower panel means fewer lamps to a row, not a cut-off row."""
+        super().resizeEvent(event)
+        if getattr(self, "_shares_rows", None):
+            self._lay_out_shares(
+                tuple(state for row in self._shares_rows for state in row)
+            )
 
     def share_state_detail(self, key: str) -> str:
         """What the last reading said about one share, for the status bar."""

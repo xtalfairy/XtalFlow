@@ -110,6 +110,12 @@ class ShareState:
     # local is unusable only where a mounted share is required, and the two
     # cannot be told apart from ``mounted`` alone.
     exists: bool = True
+    # What kind of share this is, for a panel that would otherwise lay the
+    # lamps out in the order they arrive and split the harvesting stations
+    # across two rows. "image" for the image server, and otherwise the
+    # worksheet kind, so a station the site file adds is grouped with the
+    # stations without anything being told about it.
+    group: str = ""
 
     @property
     def state(self) -> str:
@@ -117,7 +123,9 @@ class ShareState:
         return "ok" if self.mounted else "error"
 
 
-def share_state(key: str, label: str, path: Path, mount_table=None) -> ShareState:
+def share_state(
+    key: str, label: str, path: Path, mount_table=None, group: str = ""
+) -> ShareState:
     """Look at one share. Slow enough on a dropped mount to belong off the GUI thread.
 
     ``mount_table`` is a holder for the system's mount list, shared by a whole
@@ -127,7 +135,8 @@ def share_state(key: str, label: str, path: Path, mount_table=None) -> ShareStat
     try:
         if not path.is_dir():
             return ShareState(
-                key, label, path, False, "the folder is not there", exists=False
+                key, label, path, False, "the folder is not there",
+                exists=False, group=group,
             )
         if mount_table is None:
             mounted = is_network_mount(path)
@@ -139,10 +148,13 @@ def share_state(key: str, label: str, path: Path, mount_table=None) -> ShareStat
             text = mount_table.text()
             mounted = text is not None and is_network_mount(path, text)
     except OSError as error:
-        return ShareState(key, label, path, False, str(error), exists=False)
+        return ShareState(
+            key, label, path, False, str(error), exists=False, group=group
+        )
     return ShareState(
         key, label, path, mounted,
         "mounted" if mounted else "a local folder, not a mounted share",
+        group=group,
     )
 
 
@@ -151,9 +163,9 @@ LOOK_DEADLINE_SECONDS = 5.0
 
 
 def _shares_wanted(settings):
-    wanted = [(IMAGE_SHARE, IMAGE_SHARE_LABEL, settings.rmserver_root)]
+    wanted = [(IMAGE_SHARE, IMAGE_SHARE_LABEL, settings.rmserver_root, "image")]
     wanted.extend(
-        (item.instrument, item.label, item.output_directory)
+        (item.instrument, item.label, item.output_directory, item.worksheet.value)
         for item in settings.instruments
     )
     return wanted
@@ -168,8 +180,8 @@ def share_states(settings) -> tuple[ShareState, ...]:
     """
     table = _MountTable()
     return tuple(
-        share_state(key, label, path, table)
-        for key, label, path in _shares_wanted(settings)
+        share_state(key, label, path, table, group=group)
+        for key, label, path, group in _shares_wanted(settings)
     )
 
 
@@ -204,14 +216,14 @@ class ShareReader:
         wanted = _shares_wanted(settings)
         table = _MountTable()
         started = []
-        for key, label, path in wanted:
+        for key, label, path, group in wanted:
             looking = self._looking.get(key)
             if looking is not None and looking.is_alive():
                 continue
             with self._lock:
                 self._answers.pop(key, None)
             thread = threading.Thread(
-                target=self._look, args=(key, label, path, table),
+                target=self._look, args=(key, label, path, table, group),
                 name=f"xtalflow-share-{key}", daemon=True,
             )
             self._looking[key] = thread
@@ -223,12 +235,17 @@ class ShareReader:
         with self._lock:
             return tuple(
                 self._answers.get(key)
-                or ShareState(key, label, path, False, NOT_ANSWERING, exists=False)
-                for key, label, path in wanted
+                or ShareState(
+                    key, label, path, False, NOT_ANSWERING,
+                    exists=False, group=group,
+                )
+                for key, label, path, group in wanted
             )
 
-    def _look(self, key: str, label: str, path: Path, table) -> None:
-        state = share_state(key, label, path, table)
+    def _look(
+        self, key: str, label: str, path: Path, table, group: str = ""
+    ) -> None:
+        state = share_state(key, label, path, table, group=group)
         with self._lock:
             self._answers[key] = state
 

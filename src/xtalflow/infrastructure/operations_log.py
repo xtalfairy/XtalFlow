@@ -251,34 +251,19 @@ def _rendered(fields: dict[str, Any]) -> str:
 
 
 def commit_hash(root: Path | None = None) -> str:
-    """Which build this is, read from .git without running git.
+    """Which build this is - the same answer the title bar gives.
 
-    The installation is a checkout that the server fast-forwards, so the
-    ref files are there. Read directly: a subprocess at startup is a
-    freeze waiting to happen on a machine where git is slow or missing,
-    and this has to work before anything else does.
+    Delegates to ``xtalflow.build``, which reads it from the files at import.
+    This used to read it again on every call, twelve characters where the
+    title said seven and "unknown" where the title said nothing, and it could
+    not read a worktree at all. Worse, reading per call meant a diagnostics
+    report written after the server fast-forwarded the install named a commit
+    this process was not running.
     """
-    base = root or Path(__file__).resolve().parents[3]
-    head = base / ".git" / "HEAD"
-    try:
-        text = head.read_text(encoding="utf-8").strip()
-    except OSError:
-        return "unknown"
-    if not text.startswith("ref:"):
-        return text[:12] if text else "unknown"
-    reference = text.split(" ", 1)[1].strip()
-    try:
-        return (base / ".git" / reference).read_text(encoding="utf-8").strip()[:12]
-    except OSError:
-        pass
-    try:
-        packed = (base / ".git" / "packed-refs").read_text(encoding="utf-8")
-    except OSError:
-        return "unknown"
-    for line in packed.splitlines():
-        if line.endswith(f" {reference}"):
-            return line.split(" ", 1)[0][:12]
-    return "unknown"
+    from xtalflow.build import BUILD, read_build
+
+    build = read_build(root) if root is not None else BUILD
+    return build.for_log
 
 
 def record_startup(settings: Any, profile: str | None = None) -> None:
@@ -289,13 +274,28 @@ def record_startup(settings: Any, profile: str | None = None) -> None:
     folders and the operating ones refuse to, and the same symptom means
     different things under each.
     """
+    from xtalflow import __version__
+    from xtalflow.build import BUILD, UNREADABLE
+
     event(
         "startup",
-        commit=commit_hash(),
+        # The version and the folder as well as the commit. Several versions
+        # are installed beside one another sharing one config file, so which
+        # directory this came from is the most direct answer to "which
+        # installation is this" - and the only one that shows a version
+        # number that disagrees with the folder holding it.
+        version=__version__,
+        commit=BUILD.for_log,
+        root=BUILD.root,
         profile=profile or os.environ.get("XTALFLOW_SETTINGS") or "development",
         python=f"{sys.version_info.major}.{sys.version_info.minor}",
         log=_current_path(),
     )
+    if BUILD.state == UNREADABLE:
+        # Said here and not at import, which is before this log exists. A
+        # checkout whose commit cannot be read would otherwise look like an
+        # install from a tarball, which has no commit to read.
+        problem("build-not-read", root=BUILD.root, reason=BUILD.detail)
     for name in (
         "create_missing_instrument_roots",
         "require_network_instrument_mounts",

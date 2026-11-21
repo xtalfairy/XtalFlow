@@ -615,7 +615,7 @@ class ViewerWindow(QMainWindow):
         by hand, badly, under time pressure.
         """
         lines = [
-            f"XtalFlow {operations_log.commit_hash()}",
+            f"{APP_WINDOW_TITLE} ({operations_log.commit_hash()})",
             f"profile {os.environ.get('XTALFLOW_SETTINGS') or 'development'}",
             f"log {operations_log.log_directory() or 'none'}",
             "",
@@ -2845,7 +2845,14 @@ class ViewerWindow(QMainWindow):
             try:
                 self.error_log_path.parent.mkdir(parents=True, exist_ok=True)
                 with self.error_log_path.open("a", encoding="utf-8") as stream:
-                    stream.write(f"{datetime.now(timezone.utc).isoformat()}\n{details}\n")
+                    # The build beside the time: a traceback in this file is
+                    # read days later, and the install is a checkout that has
+                    # moved on since. Without it nobody can tell which code
+                    # the line numbers in the traceback belong to.
+                    stream.write(
+                        f"{datetime.now(timezone.utc).isoformat()}"
+                        f" {APP_WINDOW_TITLE}\n{details}\n"
+                    )
             except OSError:
                 pass
         if self._handling_unexpected_error:

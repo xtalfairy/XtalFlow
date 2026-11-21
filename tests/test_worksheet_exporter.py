@@ -889,12 +889,22 @@ def test_a_station_the_site_file_adds_is_guarded_like_the_rest(
     from xtalflow.domain.instruments import WorksheetKind
     from xtalflow.settings import InstrumentDestination
 
+    # Built the way the site file builds it, station first among the
+    # stations, rather than appended - the guard does not care about order
+    # but a test that reads differently from the real thing invites a reader
+    # to conclude the wrong thing about it.
     instruments = (
-        *standard_instruments(
-            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
+        InstrumentDestination(
+            "echo650", WorksheetKind.ECHO, tmp_path / "echo650", "ECHO 650"
         ),
         InstrumentDestination(
             "shifter0", WorksheetKind.SHIFTER, tmp_path / "shifter0", "SHIFTER 0"
+        ),
+        InstrumentDestination(
+            "shifter1", WorksheetKind.SHIFTER, tmp_path / "shifter1", "SHIFTER 1"
+        ),
+        InstrumentDestination(
+            "shifter2", WorksheetKind.SHIFTER, tmp_path / "shifter2", "SHIFTER 2"
         ),
     )
     settings = replace(

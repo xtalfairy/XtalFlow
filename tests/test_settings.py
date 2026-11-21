@@ -259,64 +259,50 @@ def test_the_operating_preset_holds_the_stations_the_beamline_has() -> None:
     ], "a station missing from INSTRUMENT_LABELS is drawn by its id"
 
 
-def test_the_site_file_can_name_the_stations_the_beamline_will_name(
-    tmp_path: Path,
-) -> None:
-    """The four tables that are going into the beamline's own file.
+def test_the_example_site_file_names_the_instruments_the_preset_holds() -> None:
+    """The file staff copy, read as the loader reads it.
 
-    Checked here because nothing else reads them: the presets are held by
-    tests, and the site file is not in this repository. Three things about it
-    can be wrong without failing - a missing echo650, an id that does not
-    contain "shifter", and a renamed station - and all three are quiet.
+    The first version of this test wrote its own TOML and compared that to
+    the preset, which cannot fail: it was checking a string against the
+    string beside it. Meanwhile the file people actually copy still listed
+    two stations, and copying it would have replaced the built-in set with a
+    smaller one - the quiet failure this whole change exists to prevent.
+
+    So the example file is the fixture now. If it and the preset ever
+    disagree about which instruments exist, where they are, or what they are
+    called, this fails, and whoever changed one has to change the other or
+    say why.
     """
     from xtalflow.domain.instruments import WorksheetKind
     from xtalflow.infrastructure.instrument_config import (
         load_instrument_destinations,
     )
+    from xtalflow.settings import OPERATING_SERVER_SETTINGS, PROJECT_ROOT
 
-    site = tmp_path / "xtalflow.toml"
-    site.write_text(
-        '[mxlive]\nkey_directory = "/tmp/keys"\n\n'
-        + "".join(
-            f'[[instruments]]\nid = "{name}"\nworksheet = "{kind}"\n'
-            f'directory = "/smbmount/{name}"\nlabel = "{label}"\n\n'
-            for name, kind, label in (
-                ("echo650", "echo", "ECHO 650"),
-                ("shifter0", "shifter", "SHIFTER 0"),
-                ("shifter1", "shifter", "SHIFTER 1"),
-                ("shifter2", "shifter", "SHIFTER 2"),
-            )
-        ),
-        encoding="utf-8",
-    )
-    destinations = load_instrument_destinations(site)
-    assert destinations is not None
+    example = PROJECT_ROOT / "xtalflow.example.toml"
+    destinations = load_instrument_destinations(example)
+    assert destinations is not None, "the example has to carry [[instruments]]"
 
-    # The same set the operating preset holds, in the same order, because the
-    # file replaces the preset rather than adding to it.
-    from xtalflow.settings import OPERATING_SERVER_SETTINGS
+    def described(items):
+        return [
+            (item.instrument, str(item.output_directory), item.label)
+            for item in items
+        ]
 
-    assert [item.instrument for item in destinations] == [
-        item.instrument for item in OPERATING_SERVER_SETTINGS.instruments
-    ]
-    assert [item.output_directory for item in destinations] == [
-        item.output_directory for item in OPERATING_SERVER_SETTINGS.instruments
-    ]
-    assert [item.label for item in destinations] == [
-        item.label for item in OPERATING_SERVER_SETTINGS.instruments
-    ]
+    assert described(destinations) == described(OPERATING_SERVER_SETTINGS.instruments)
 
-    # An ECHO destination has to be among them. Without one, saving a
-    # fragment plan is refused outright, and the version installed beside
-    # this one asks for "echo650" by name.
+    # An ECHO destination has to be among them, named exactly "echo650":
+    # without one, saving a fragment plan is refused outright, and the
+    # version installed beside this one asks for that id by name.
     echo = [item for item in destinations if item.worksheet is WorksheetKind.ECHO]
     assert [item.instrument for item in echo] == ["echo650"]
 
-    # And every harvesting station's id has to contain "shifter": the harvest
-    # review picks the worksheets to read back by that substring, not by the
-    # worksheet kind, so a station named otherwise would be written to and
-    # then never read from.
+    # And every station's id has to contain "shifter", because the harvest
+    # picks the worksheets to read back by that substring rather than by the
+    # worksheet kind. A station named otherwise would be written to and then
+    # never read from, which nothing would report.
     stations = [
         item for item in destinations if item.worksheet is WorksheetKind.SHIFTER
     ]
-    assert stations and all("shifter" in item.instrument for item in stations)
+    assert len(stations) == 3
+    assert all("shifter" in item.instrument for item in stations)

@@ -21,13 +21,29 @@ key_path = "/data/users/local_user/.config/mxdc/keys.dsa"
 
 # Instruments that receive worksheets. Each entry reads one worksheet kind:
 # "echo" (ECHO dispensing) or "shifter" (SHIFTER harvesting). Every worksheet a
-# plan produces is delivered to all instruments of that kind. Omit this section
-# to use the built-in ECHO 650, SHIFTER 1, and SHIFTER 2 folders below.
+# plan produces is delivered to all instruments of that kind.
+#
+# This section REPLACES the built-in set rather than adding to it, so it has
+# to name every instrument, not only a new one. Naming one station here would
+# leave the ECHO and the other stations out, and that failure is quiet: the
+# lamps are green for what is listed, saving succeeds, and the worksheets for
+# everything left out are simply never written. There must be an "echo" entry
+# whose id is exactly "echo650", and every harvesting station's id has to
+# contain "shifter" - the harvest reads its worksheets back by that.
+#
+# Omitting the whole section uses the built-in folders below, which are the
+# same four.
 [[instruments]]
 id = "echo650"
 worksheet = "echo"
 directory = "/smbmount/echo650"
 label = "ECHO 650"
+
+[[instruments]]
+id = "shifter0"
+worksheet = "shifter"
+directory = "/smbmount/shifter0"
+label = "SHIFTER 0"
 
 [[instruments]]
 id = "shifter1"

@@ -177,3 +177,53 @@ def test_a_share_that_never_answers_does_not_stop_the_others(monkeypatch) -> Non
         )
     finally:
         forever.set()
+
+
+def test_a_third_station_gets_its_own_lamp_and_its_own_reason(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The panel shows what it is given, which is the whole point.
+
+    Nothing in the panel or in this reading names a station, so a station the
+    site file introduces is shown without either being told about it. Held
+    here because the request that brought SHIFTER 0 asked for its connection
+    to be visible, and because the station a lamp would be missing for is the
+    one nobody has the habit of checking yet.
+
+    The reason matters as much as the lamp. An instrument mountpoint is a
+    writable directory when nothing is mounted on it, and the beamline's
+    third station is mounted by a script rather than from fstab, so "there
+    but not a share" is its likely way of being wrong - and it looks exactly
+    like being fine until the reason is read.
+    """
+    from dataclasses import replace
+
+    from xtalflow.settings import DEFAULT_SETTINGS, standard_instruments
+
+    mounted = tmp_path / "mounted"
+    mounted.mkdir()
+    unmounted = tmp_path / "shifter0"
+    unmounted.mkdir()
+    monkeypatch.setattr(
+        mounts, "is_network_mount", lambda path, table=None: path != unmounted
+    )
+    settings = replace(
+        DEFAULT_SETTINGS,
+        rmserver_root=mounted,
+        instruments=standard_instruments(
+            mounted, mounted, mounted, shifter0_directory=unmounted
+        ),
+    )
+
+    states = mounts.share_states(settings)
+
+    assert [state.key for state in states] == [
+        "rmserver", "echo650", "shifter0", "shifter1", "shifter2"
+    ], "one lamp per share, in the order the instruments are configured"
+    by_key = {state.key: state for state in states}
+    assert by_key["shifter0"].label == "SHIFTER 0", "the lamp is labelled, not idd"
+    assert by_key["shifter0"].state == "error"
+    assert "not a mounted share" in by_key["shifter0"].detail
+    # The stations that answered are not dragged down with it.
+    assert by_key["shifter1"].state == "ok"
+    assert by_key["shifter2"].state == "ok"

@@ -126,7 +126,7 @@ xtalflow-viewer
 버전끼리는 **같은 리뷰 데이터베이스를 공유합니다.** 그래서 어느 버전도 그
 스키마를 바꾸지 않습니다 — 0.9에서 찍은 position을 1.0이 읽고, 그 반대도
 됩니다.
-운영 설정은 이미지 공유, 장비 폴더 세 곳, worksheet 임시 폴더, MxLive 주소,
+운영 설정은 이미지 공유, 장비 폴더 네 곳, worksheet 임시 폴더, MxLive 주소,
 그리고 설치 폴더 옆의 `xtalflow.toml`을 가리킵니다.
 
 환경변수를 쓰지 않으면 다음과 같이 운영 경로를 하나씩 명시해야 합니다.
@@ -136,6 +136,7 @@ xtalflow-viewer \
   --root /smbmount/rmserver/RockMakerStorage/WellImages \
   --library-dir /usr/local/fbdd_apps/XtalViewer/2.0/chems \
   --echo-dir /smbmount/echo650 \
+  --shifter0-dir /smbmount/shifter0 \
   --shifter1-dir /smbmount/shifter1 \
   --shifter2-dir /smbmount/shifter2
 ```
@@ -158,9 +159,11 @@ worksheet는 같은 종류의 모든 장비 폴더에 저장됩니다. 예를 �
 연결하려면 `worksheet = "shifter"` 항목을 추가합니다. 예시는
 [`xtalflow.example.toml`](./xtalflow.example.toml)에 있습니다.
 
-`[[instruments]]`가 없으면 ECHO 650, SHIFTER 1, SHIFTER 2 기본 구성을 사용합니다.
-`--echo-dir`, `--shifter1-dir`, `--shifter2-dir`는 설정된 `echo650`, `shifter1`,
-`shifter2` 장비의 폴더만 바꿉니다.
+`[[instruments]]`가 없으면 ECHO 650, SHIFTER 0, SHIFTER 1, SHIFTER 2 기본 구성을
+사용합니다. 있으면 그 구성을 **대체**하므로 새 장비 하나만 적으면 나머지가 빠지고,
+빠진 장비의 worksheet는 조용히 쓰이지 않습니다 — 전부 적어야 합니다.
+`--echo-dir`, `--shifter0-dir`, `--shifter1-dir`, `--shifter2-dir`는 설정된
+`echo650`, `shifter0`, `shifter1`, `shifter2` 장비의 폴더만 바꿉니다.
 
 ECHO/SHIFTER 경로가 저장소 밖에 있으면 XtalFlow은 해당 폴더가 실제로 마운트된
 네트워크 공유(cifs, smb3, nfs)인지 확인합니다. 공유가 마운트되지 않아 빈

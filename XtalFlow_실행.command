@@ -22,7 +22,8 @@ if [ ! -f "$VENV/bin/activate" ]; then
 fi
 
 source "$VENV/bin/activate"
-mkdir -p "$DATA/staging" "$DATA/echo650" "$DATA/shifter1" "$DATA/shifter2" || exit 1
+mkdir -p "$DATA/staging" "$DATA/echo650" \
+  "$DATA/shifter0" "$DATA/shifter1" "$DATA/shifter2" || exit 1
 
 echo "=============================================="
 echo " XtalFlow (연습용)"
@@ -37,6 +38,7 @@ exec xtalflow-viewer \
   --library-dir chems \
   --worksheet-dir "$DATA/staging" \
   --echo-dir "$DATA/echo650" \
+  --shifter0-dir "$DATA/shifter0" \
   --shifter1-dir "$DATA/shifter1" \
   --shifter2-dir "$DATA/shifter2" \
   --allow-local-instrument-dirs

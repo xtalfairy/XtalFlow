@@ -276,7 +276,7 @@ def _shifter_paths(
 ) -> tuple[str, ...]:
     """Every SHIFTER file these revisions were saved to, newest save first.
 
-    Both stations are listed, and every save of them, because the operator
+    Every station is listed, and every save of them, because the operator
     loads whichever one is in front of them and a second save is a legitimate
     copy of the same worksheet. Which file was used is answered by its
     contents, not by its name or its age.

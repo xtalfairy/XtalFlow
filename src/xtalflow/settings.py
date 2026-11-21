@@ -58,16 +58,22 @@ def standard_instruments(
     echo_directory: Path,
     shifter1_directory: Path,
     shifter2_directory: Path,
+    *,
     shifter0_directory: Path | None = None,
 ) -> tuple[InstrumentDestination, ...]:
     """The BL-5C set: one ECHO 650 and the SHIFTER harvesting stations.
 
     A third station arrived in November 2026 and is numbered 0, so it is
-    given last here and placed first among the stations - the order of this
-    tuple is the order of the lamps, of the Worksheets table, and of the
-    output rows a save records, and a numbered set reads from 0. Passing it
-    is optional because the development fixtures hold two station folders;
-    the operating preset passes all three.
+    placed first among the stations: the order of this tuple is the order of
+    the lamps, of the Worksheets table, and of the output rows a save
+    records, and a numbered set reads from 0.
+
+    It is taken last and by keyword only, for two reasons. Positionally it
+    would read as the fourth station while being returned as the first, and
+    the forty-odd calls in the tests pass three directories and say nothing
+    about a third station, so a required argument would mean editing all of
+    them to say what they do not care about. Every caller that describes the
+    real beamline passes it.
     """
     stations = [] if shifter0_directory is None else [
         InstrumentDestination(SHIFTER_0, WorksheetKind.SHIFTER, shifter0_directory)
@@ -160,6 +166,12 @@ DEVELOPMENT_SETTINGS = ApplicationSettings(
         PROJECT_ROOT / "tests" / "runtime" / "smbmount" / "echo650",
         PROJECT_ROOT / "tests" / "runtime" / "smbmount" / "shifter1",
         PROJECT_ROOT / "tests" / "runtime" / "smbmount" / "shifter2",
+        # Three here as well, so that practising on a laptop and running the
+        # beamline are the same shape. These folders are made on the way up
+        # rather than kept in the repository, so a third costs nothing.
+        shifter0_directory=(
+            PROJECT_ROOT / "tests" / "runtime" / "smbmount" / "shifter0"
+        ),
     ),
     create_missing_instrument_roots=True,
     source_plate_record_directory=PROJECT_ROOT / "tests" / "runtime" / "source-plates",
@@ -184,7 +196,7 @@ OPERATING_SERVER_SETTINGS = ApplicationSettings(
         Path("/smbmount/echo650"),
         Path("/smbmount/shifter1"),
         Path("/smbmount/shifter2"),
-        Path("/smbmount/shifter0"),
+        shifter0_directory=Path("/smbmount/shifter0"),
     ),
     create_missing_instrument_roots=False,
     # Installed beside the versions, like the config file, so a new version

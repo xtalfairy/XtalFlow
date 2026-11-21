@@ -171,6 +171,21 @@ class WorksheetExporter:
         on the instruments that are up. Nothing is ever written to an empty
         mountpoint: the file would vanish behind the share when it returns.
         """
+        # The experiment id becomes the file's name, so it is checked the way
+        # the username is - that one becomes a folder. Measured on this
+        # beamline: two files named exactly ".csv" sit in the SHIFTER folders
+        # from 2021, a header line and no rows, saved by something with an
+        # empty experiment name. A file named that way is not a file somebody
+        # finds: Path(".csv").suffix is "", a *.csv listing skips it, and two
+        # of them from different experiments are one name. Nothing in this
+        # program refused to make one until here.
+        if (
+            not experiment_id.strip()
+            or "/" in experiment_id
+            or "\\" in experiment_id
+            or experiment_id.startswith(".")
+        ):
+            raise ValueError(f"invalid worksheet experiment id: {experiment_id!r}")
         worksheets = worksheets_for(plan)
         destinations = self._destinations_for(worksheets, instruments)
         if alternate_root is None:

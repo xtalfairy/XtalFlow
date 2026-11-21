@@ -826,3 +826,37 @@ def test_a_held_worksheet_does_not_take_a_name_an_earlier_save_used(
         ("shifter2", f"{experiment_id}_01.csv"),
     }
 
+
+
+def test_an_experiment_id_that_cannot_be_a_filename_is_refused(tmp_path: Path) -> None:
+    """Measured on this beamline: two files named exactly ".csv", from 2021.
+
+    A header line, no rows, saved into both SHIFTER folders by something with
+    an empty experiment name. Nothing in this program refused to make one:
+    the stem is the experiment id, so an empty id writes ".csv" onto a shared
+    instrument mountpoint.
+
+    That is not a file anybody finds again. ``Path(".csv").suffix`` is "", a
+    ``*.csv`` listing skips it - the beamline's own sweep of those folders
+    missed exactly these two for that reason - and two of them from different
+    experiments are one name. The username is checked this way already, and
+    for the same reason: it becomes a folder.
+    """
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        instruments=standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2",
+        ),
+        create_missing_instrument_roots=True,
+    )
+    exporter = WorksheetExporter(settings, "scientist")
+
+    for refused in ("", "   ", ".csv", ".hidden", "a/b", "a\\b"):
+        with pytest.raises(ValueError, match="invalid worksheet experiment id"):
+            exporter.export(fragment_plan(), refused)
+
+    # Nothing was written while being refused, and a real id still works.
+    assert not list((tmp_path / "shifter1").rglob("*"))
+    written = exporter.export(fragment_plan(), "FragSC-202607-BRD4-01")
+    assert written.path_for("shifter1").name == "FragSC-202607-BRD4-01.csv"

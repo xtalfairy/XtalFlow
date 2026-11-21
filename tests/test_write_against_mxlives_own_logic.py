@@ -153,13 +153,16 @@ def _client(view: AddLabwork, tmp_path: Path) -> LegacyMxLiveWriteClient:
 
 
 EXPERIMENT = "FragSC-202607-TEST-02"
+UPLOAD_COMMENT = "Uploaded by XtalFlow · Fragment Screening"
 
 
 def _uploaded(well: str = "A01a", plate: str = "2069") -> dict[str, Any]:
     """One record as the sample list upload sends it: nineteen columns."""
     return {
         "name": f"test {plate} {well}",
-        "staff_comments": "",
+        # What a real upload puts there: labwork.py sets it, and the history
+        # page recognises our records by this prefix.
+        "staff_comments": UPLOAD_COMMENT,
         "status": "Active",
         "attachment": "",
         "expri_id": EXPERIMENT,
@@ -216,7 +219,11 @@ def test_a_harvest_write_fills_the_harvest_and_leaves_every_other_column(
     assert stored["harvest_comment"] == ""
     # Not sent, so NULL - which is what this program intends for it.
     assert stored["harvest_order"] is None
-    # Every readable column that is not a harvest column is as uploaded.
+    # The mark is appended, not written over: the words that were there stay,
+    # and the prefix the history page looks for survives.
+    assert stored["staff_comments"] == f"{UPLOAD_COMMENT} · Harvest by XtalFlow"
+    assert stored["staff_comments"].startswith("Uploaded by XtalFlow")
+    # Every other readable column is exactly as uploaded.
     for column in READ_COLUMNS:
         if column.startswith("harvest") or column.startswith("puck"):
             continue
@@ -336,3 +343,63 @@ def test_the_answer_cannot_tell_an_update_from_a_create(tmp_path: Path) -> None:
     assert view.answers == [{"id": PROJECT_PK}, {"id": PROJECT_PK}]
     assert created["responses"] == updated["responses"]
     assert len(view.rows) == 1
+
+
+def test_a_comment_too_long_to_mark_keeps_its_words_through_the_view(
+    tmp_path: Path,
+) -> None:
+    """Somebody's own words are worth more than our mark.
+
+    The column holds 256 characters and MySQL is not strict here, so the
+    database would cut whatever is over - silently, and from the end, which is
+    where our mark would be. A comment long enough that the mark will not fit
+    is therefore sent back as it was found, unmarked, rather than cut.
+
+    Written as a comment the staff added after the upload, because that is how
+    a long one gets there, and because the harvest write takes this column
+    from what MxLive holds now rather than from what was uploaded.
+    """
+    view = AddLabwork()
+    client = _client(view, tmp_path)
+    original = _uploaded()
+    client.upload_labworks((original,))
+
+    # Stripped here because the write strips it too: the one change this
+    # column sees is its surrounding whitespace, which we did not author.
+    theirs = (
+        "crystals drifted overnight; " + "see the log of 2026-11-20. " * 8
+    ).strip()
+    assert len(theirs) > 234  # Long enough that the mark would not fit.
+    view.rows[0]["staff_comments"] = theirs
+
+    read_back = view.read(EXPERIMENT)[0]
+    client.upload_labworks((harvest_payload(original, read_back, _harvest()),))
+
+    stored = view.read(EXPERIMENT)[0].raw
+    assert stored["staff_comments"] == theirs
+    assert "Harvest by XtalFlow" not in stored["staff_comments"]
+    # The harvest itself still went in; only the mark was given up.
+    assert stored["puck_name"] == "ISA-003"
+    assert len(view.read(EXPERIMENT)) == 1
+
+
+def test_the_mark_is_not_added_twice(tmp_path: Path) -> None:
+    """A record written once and read back already carries it.
+
+    This flow refuses a record that reads as harvested, so a second write
+    should not arise - but the column is read from MxLive each time, and a
+    mark appended on every pass would eat the 256 characters it shares with
+    whatever the staff wrote.
+    """
+    view = AddLabwork()
+    client = _client(view, tmp_path)
+    original = _uploaded()
+    client.upload_labworks((original,))
+
+    for _ in range(3):
+        read_back = view.read(EXPERIMENT)[0]
+        client.upload_labworks((harvest_payload(original, read_back, _harvest()),))
+
+    stored = view.read(EXPERIMENT)[0].raw
+    assert stored["staff_comments"] == f"{UPLOAD_COMMENT} · Harvest by XtalFlow"
+    assert stored["staff_comments"].count("Harvest by XtalFlow") == 1

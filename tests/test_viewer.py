@@ -3927,7 +3927,9 @@ def test_every_window_title_carries_the_version(tmp_path: Path) -> None:
     """Several versions are installed side by side; a window must say which it is."""
     import tomllib
 
-    from xtalflow import APP_TITLE, __version__
+    from xtalflow import (
+        APP_TITLE, APP_WINDOW_TITLE, INSTALLED_BUILD, __version__,
+    )
 
     app = QApplication.instance() or QApplication([])
     # The number people type is the installed folder's name, so the number in
@@ -3937,13 +3939,19 @@ def test_every_window_title_carries_the_version(tmp_path: Path) -> None:
     )
     assert packaged["project"]["version"] == __version__
     assert APP_TITLE == f"XtalFlow {__version__}"
+    # And the commit beside it, because one version number covers every commit
+    # the beamline's checkout is moved to: 1.1.0 was two builds that differed
+    # in what they refuse. This suite runs from a checkout, so it is here.
+    assert INSTALLED_BUILD, "a checkout must be able to say which commit it is"
+    assert APP_WINDOW_TITLE == f"{APP_TITLE} · {INSTALLED_BUILD}"
 
     window = ViewerWindow(RockMakerImageRepository(FIXTURE_ROOT))
-    assert window.windowTitle() == APP_TITLE
+    assert window.windowTitle() == APP_WINDOW_TITLE
 
     # And it survives moving around: the title is rewritten on several screens.
     window.experiments.show_home()
     assert __version__ in window.windowTitle()
+    assert INSTALLED_BUILD in window.windowTitle()
     window.close()
     app.processEvents()
 
@@ -6855,3 +6863,90 @@ def test_a_harvest_written_while_the_question_stood_open_is_not_overwritten(
     assert "different harvest" in step.harvest_table.item(0, 8).text()
     window.close()
     app.processEvents()
+
+
+def test_a_copy_with_no_git_directory_says_the_version_alone() -> None:
+    """An install from a tarball has no commit to name, and must not say one.
+
+    Every way of failing to read it ends here: no .git, a HEAD that is not
+    there, a ref that is neither loose nor packed, a file that is not text.
+    The title is then the version on its own, which is what it always was.
+    """
+    import xtalflow
+
+    read = xtalflow._installed_build
+    assert read(), "this checkout should report a commit"
+
+    # Point it at a directory that is not a checkout, the way an installed
+    # package under site-packages is not one.
+    original = xtalflow.__file__
+    try:
+        xtalflow.__file__ = "/nonexistent/site-packages/xtalflow/__init__.py"
+        assert read() == ""
+    finally:
+        xtalflow.__file__ = original
+    assert read(), "and it reads again once the path is back"
+
+
+def test_the_commit_is_found_in_each_shape_a_checkout_keeps_it(tmp_path: Path) -> None:
+    """Four shapes, and this repository is only ever one of them.
+
+    A fresh clone keeps its refs packed until something writes one, and a
+    fresh clone is what the beamline makes to test a commit - so the packed
+    case is the one that matters most and the one a test here cannot reach by
+    accident. A worktree keeps .git as a file naming the real directory, and
+    a checkout of a commit rather than a branch has the commit in HEAD.
+    """
+    import xtalflow
+
+    sha = "0123456789abcdef0123456789abcdef01234567"
+
+    def build_at(root: Path) -> str:
+        original = xtalflow.__file__
+        try:
+            xtalflow.__file__ = str(root / "src" / "xtalflow" / "__init__.py")
+            return xtalflow._installed_build()
+        finally:
+            xtalflow.__file__ = original
+
+    # A loose ref, which is what a checkout has once it commits.
+    loose = tmp_path / "loose"
+    (loose / ".git" / "refs" / "heads").mkdir(parents=True)
+    (loose / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (loose / ".git" / "refs" / "heads" / "main").write_text(f"{sha}\n", encoding="utf-8")
+    assert build_at(loose) == sha[:7]
+
+    # Packed, which is what a fresh clone has.
+    packed = tmp_path / "packed"
+    (packed / ".git").mkdir(parents=True)
+    (packed / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (packed / ".git" / "packed-refs").write_text(
+        "# pack-refs with: peeled fully-peeled sorted \n"
+        f"{sha} refs/heads/main\n"
+        f"{'f' * 40} refs/remotes/origin/other\n",
+        encoding="utf-8",
+    )
+    assert build_at(packed) == sha[:7]
+
+    # Detached: HEAD is the commit itself.
+    detached = tmp_path / "detached"
+    (detached / ".git").mkdir(parents=True)
+    (detached / ".git" / "HEAD").write_text(f"{sha}\n", encoding="utf-8")
+    assert build_at(detached) == sha[:7]
+
+    # A worktree, whose .git is a file - named relative, as git writes it.
+    real = tmp_path / "elsewhere"
+    (real / "refs" / "heads").mkdir(parents=True)
+    (real / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (real / "refs" / "heads" / "main").write_text(f"{sha}\n", encoding="utf-8")
+    tree = tmp_path / "worktree"
+    tree.mkdir()
+    (tree / ".git").write_text("gitdir: ../elsewhere\n", encoding="utf-8")
+    assert build_at(tree) == sha[:7]
+
+    # And a ref that is in neither place says nothing rather than guessing.
+    empty = tmp_path / "empty"
+    (empty / ".git").mkdir(parents=True)
+    (empty / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (empty / ".git" / "packed-refs").write_text("# none\n", encoding="utf-8")
+    assert build_at(empty) == ""

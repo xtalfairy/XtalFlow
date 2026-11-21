@@ -68,7 +68,7 @@ from xtalflow.application import (
     TargetValidationIssue,
     WellCalibrationService,
 )
-from xtalflow import APP_TITLE
+from xtalflow import APP_TITLE, APP_WINDOW_TITLE
 from xtalflow.domain import (
     PLATE_FORMATS,
     CalibrationMethod,
@@ -199,7 +199,7 @@ class ViewerWindow(QMainWindow):
         # The other half of this window: the experiments and their steps.
         self.experiments = ExperimentCoordinator(self)
         self.setStyleSheet(theme.APPLICATION_STYLE_SHEET)
-        self.setWindowTitle(APP_TITLE)
+        self.setWindowTitle(APP_WINDOW_TITLE)
         self.resize(1440, 900)
         self.setMinimumSize(1100, 700)
 
@@ -2796,7 +2796,7 @@ class ViewerWindow(QMainWindow):
         # set below is never shown there, which left a small nameless box with
         # a striped bar as the only thing on screen while a share was slow.
         progress = QProgressDialog(f"{APP_TITLE}\n\n{message}", None, 0, 0, self)
-        progress.setWindowTitle(APP_TITLE)
+        progress.setWindowTitle(APP_WINDOW_TITLE)
         progress.setWindowModality(Qt.WindowModal)
         # QProgressDialog's own delayed show ignores later setMinimumDuration
         # calls, so reveal it explicitly only when the work is not instant.

@@ -26,7 +26,7 @@ from PyQt5.QtWidgets import QFileDialog, QMessageBox, QWidget
 
 from xtalflow.application import ReviewPersistenceError
 from xtalflow.application.project_controller import TargetValidationIssue
-from xtalflow import APP_TITLE
+from xtalflow import APP_WINDOW_TITLE
 from xtalflow.domain.plate_format import plate_format_by_id
 from xtalflow.domain import (
     CrystalSelection,
@@ -496,7 +496,7 @@ class ExperimentCoordinator:
         self.window.home_page.show_recent_work(recent)
         self.window._refresh_home_workspaces(recent)
         self.window.pages.setCurrentWidget(self.window.home_page)
-        self.window.setWindowTitle(APP_TITLE)
+        self.window.setWindowTitle(APP_WINDOW_TITLE)
         self._check_beamline()
 
     def _recent_experiments(self) -> tuple[RecentExperiment, ...]:
@@ -629,7 +629,7 @@ class ExperimentCoordinator:
             account.beamline if account else "",
         )
         self.window.pages.setCurrentWidget(page)
-        self.window.setWindowTitle(f"{APP_TITLE} · MxLive history")
+        self.window.setWindowTitle(f"{APP_WINDOW_TITLE} · MxLive history")
         self._show_history()
         if account is None or not account.upload_ready:
             page.show_status(
@@ -1258,7 +1258,7 @@ class ExperimentCoordinator:
         # The panel highlights the folder this experiment belongs to.
         self.window._home_workspace_id = editor.project_id
         self.window._refresh_home_workspaces()
-        self.window.setWindowTitle(f"{editor.plan_name} · {APP_TITLE}")
+        self.window.setWindowTitle(f"{editor.plan_name} · {APP_WINDOW_TITLE}")
         self._sync_editor_selection(editor)
         self._show_plan_status(
             editor,
@@ -1459,7 +1459,7 @@ class ExperimentCoordinator:
             return
         editor.plan_name = name
         if editor is self.current_editor:
-            self.window.setWindowTitle(f"{name} · {APP_TITLE}")
+            self.window.setWindowTitle(f"{name} · {APP_WINDOW_TITLE}")
 
     def _instruments_for(self, plan_type: PlanType):
         kinds = {WorksheetKind.SHIFTER}

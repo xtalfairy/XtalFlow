@@ -3931,8 +3931,10 @@ def test_every_window_title_carries_the_version(tmp_path: Path) -> None:
     from xtalflow.build import BUILD, READ
 
     app = QApplication.instance() or QApplication([])
-    # The number people type is the installed folder's name, so the number in
-    # the code has to be the same one. It said 0.1.0 for three months.
+    # What this holds together is the code and the packaging, which is worth
+    # holding: this said 0.1.0 for three months, and the install in the folder
+    # named 0.9 still does. It is not the folder's name - that is a deployment
+    # slot, and 1.1.0 lives in the one called 1.0.
     packaged = tomllib.loads(
         (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text()
     )

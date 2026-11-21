@@ -11,12 +11,22 @@
 # today - a launcher called xtalflow-test stops being true the moment the
 # version it starts becomes the one everybody uses.
 #
-#   /usr/local/bin/xtalflow      VERSION=0.9   what people type; unchanged
-#   /usr/local/bin/xtalflow09    VERSION=0.9   the same, said explicitly
-#   /usr/local/bin/xtalflow10    VERSION=1.0   the new one
+#   /usr/local/bin/xtalflow      VERSION=1.0   what people type
+#   /usr/local/bin/xtalflow09    VERSION=0.9   the old one, said explicitly
+#   /usr/local/bin/xtalflow10    VERSION=1.0   the same as xtalflow today
 #
-# Promoting a version then means editing one line of /usr/local/bin/xtalflow,
-# and the numbered launchers go on meaning exactly what they say.
+# Promoting a version means editing one line of /usr/local/bin/xtalflow, and
+# the numbered launchers go on meaning exactly what they say. 1.0 has been
+# promoted, so the plain name and xtalflow10 now start the same version; this
+# block said 0.9 and "unchanged" until somebody read the installed copy and
+# found the comment disagreeing with the VERSION two dozen lines below it.
+#
+# The folder is a slot, not a version number. 0.9 holds the build whose own
+# __version__ is 0.1.0 and 1.0 holds 1.1.0, deliberately: the name is what
+# somebody types, and renaming it would break every launcher and the muscle
+# memory of everybody who starts this program. Which installation a running
+# window came from is answered by the root in its startup log, not by its
+# version.
 #
 #   install -m 755 xtalflow-launcher.example.sh /usr/local/bin/xtalflow10
 #   # then set VERSION below

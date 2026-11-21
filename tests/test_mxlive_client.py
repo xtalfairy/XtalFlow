@@ -428,3 +428,67 @@ def test_a_write_of_unknown_outcome_keeps_the_signature_out_as_well(
             SIGNED_URL, {"plate_well": "A01a"}, timeout_seconds=1.0, ca_bundle=None
         )
     _assert_hidden(raised.value, "ConnectionError")
+
+
+def _answering_with_html(*, raising: bool = True):
+    """A 2xx whose body is not JSON: a proxy or a login page in the way.
+
+    requests raises its own JSONDecodeError for this, which subclasses both
+    RequestException and ValueError. The handler for RequestException comes
+    first, so without care this reads as a request that failed.
+    """
+    import requests
+
+    class Response:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> object:
+            if raising:
+                raise requests.exceptions.JSONDecodeError(
+                    "Expecting value", "<html>Sign in</html>", 0
+                )
+            return {"id": 1}
+
+    def answer(*args: object, **kwargs: object) -> object:
+        return Response()
+
+    return answer
+
+
+def test_a_body_that_is_not_json_is_said_to_be_that(monkeypatch) -> None:
+    """Rather than reported as a failed request, which it was not."""
+    import requests
+
+    monkeypatch.setattr(requests, "get", _answering_with_html())
+    with pytest.raises(MxLiveReadError, match="invalid JSON"):
+        RequestsJsonTransport().get_json(
+            "https://mxlive.example/x", timeout_seconds=1.0, ca_bundle=None
+        )
+
+
+def test_an_upload_answered_with_a_non_json_body_is_uncertain_not_failed(
+    monkeypatch,
+) -> None:
+    """The one classification that decides what may be done next.
+
+    MxLive answered, so the record is very likely stored. Calling that a
+    write which definitely did not happen is the dangerous direction: the
+    upload would be recorded as failed while MxLive holds the records, and
+    then nothing could be added to them - a harvest needs an upload that
+    succeeded, and a second attempt is refused because the records are
+    already there. Uncertain instead sends it to the path that reads MxLive
+    back and settles what really happened.
+    """
+    import requests
+
+    from xtalflow.domain.mxlive import MxLiveUncertainWriteError
+
+    monkeypatch.setattr(requests, "post", _answering_with_html())
+    with pytest.raises(MxLiveUncertainWriteError, match="invalid JSON"):
+        RequestsJsonTransport().post_msgpack(
+            "https://mxlive.example/x", {"plate_well": "A01a"},
+            timeout_seconds=1.0, ca_bundle=None,
+        )

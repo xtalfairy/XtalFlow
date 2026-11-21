@@ -52,6 +52,13 @@ class RequestsJsonTransport:
                 "Python SSL support is unavailable; use a Python build with the ssl module"
             ) from error
         except requests.RequestException as error:
+            if isinstance(error, ValueError):
+                # requests raises a JSON error that is both a RequestException
+                # and a ValueError, and this handler is ahead of the one for
+                # ValueError, so it would otherwise read as a failed request.
+                # raise_for_status has already let the status through, so what
+                # failed is reading a body that did arrive.
+                raise MxLiveReadError("MxLive returned invalid JSON") from None
             status = error.response.status_code if error.response is not None else None
             detail = f"HTTP {status}" if status is not None else type(error).__name__
             # Not from error: the account's signature is in the URL, and the
@@ -83,6 +90,15 @@ class RequestsJsonTransport:
                 "Python SSL support is unavailable; use a Python build with the ssl module"
             ) from error
         except requests.RequestException as error:
+            if isinstance(error, ValueError):
+                # The same overlap as in get_json, and here it decides what
+                # may be done next. raise_for_status let the status through,
+                # so the request arrived and MxLive answered: the record is
+                # very likely stored, and this must not be reported as a
+                # write that definitely did not happen.
+                raise MxLiveUncertainWriteError(
+                    "MxLive returned invalid JSON after accepting the upload"
+                ) from None
             status = error.response.status_code if error.response is not None else None
             detail = f"HTTP {status}" if status is not None else type(error).__name__
             # Not from error, for the reason given in get_json: the signed URL

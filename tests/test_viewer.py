@@ -2027,11 +2027,25 @@ def test_unexpected_slot_error_saves_current_targets_and_reports(
     monkeypatch.setattr(
         QMessageBox, "critical", lambda *args, **kwargs: messages.append(args[2])
     )
+    # An excepthook is called outside sys.exc_info(), so a logging call that
+    # takes the traceback from there recorded "NoneType: None" and nothing
+    # else. What goes in the operations log is this one grepable line.
+    from xtalflow.infrastructure import operations_log
+
+    recorded: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        operations_log, "problem",
+        lambda name, **fields: recorded.append((name, fields)),
+    )
 
     try:
         raise OSError(112, "Host is down")
     except OSError as error:
         window.handle_unexpected_error(type(error), error, error.__traceback__)
+
+    assert recorded and recorded[0][0] == "unhandled-exception"
+    assert recorded[0][1]["outcome"] == "OSError"
+    assert "Host is down" in recorded[0][1]["reason"]
 
     image_set = window.project_controller.active_image_set
     assert len(store.workspace.scoped_to(image_set.id).load_images((image.image_key,))) == 1

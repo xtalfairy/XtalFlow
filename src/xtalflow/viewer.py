@@ -2828,7 +2828,18 @@ class ViewerWindow(QMainWindow):
         details = "".join(
             traceback.format_exception(error_type, error, error_traceback)
         )
-        operations_log.exception("unhandled-exception", thread="qt-slot")
+        # Not operations_log.exception: logging takes the traceback from
+        # sys.exc_info(), which an excepthook is called outside of, so that
+        # recorded the words "NoneType: None" and nothing else. The traceback
+        # goes to stderr and to the error log below; what belongs in the
+        # operations log is the one line that can be grepped for, without a
+        # cause chain that could carry a signed URL into it.
+        operations_log.problem(
+            "unhandled-exception",
+            thread="qt-slot",
+            outcome=error_type.__name__,
+            reason=str(error),
+        )
         print(details, file=sys.stderr)
         if self.error_log_path is not None:
             try:

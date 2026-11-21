@@ -65,6 +65,40 @@ WRITTEN_COLUMNS = (
 LOOKUP = ("project_id", "expri_id", "protein_name", "plate_well", "plate_code")
 UPDATE_FILTER = ("project_id", "expri_id", "protein_name", "plate_well")
 
+# Below the view sits the storage, and it changes values. The endpoint writes
+# through update(), which bypasses the model, so what the column can hold is
+# the database's problem - and what comes back is not always what went in.
+# Each of these was measured against the real server; the comparison in
+# _changed_since_upload forgives exactly these and nothing else, so a
+# stand-in without them would never exercise that forgiveness.
+INTEGER_COLUMNS = ("status", "crystal_no", "soak_vol", "harvest_order", "puck_nohole")
+# Text in a Python 2 CharField: str(float) there keeps 12 significant digits.
+AS_TEXT_12_DIGITS = ("plate_x", "plate_y")
+# MySQL is not strict here, so anything longer is cut rather than refused.
+TEXT_LIMITS = {
+    "name": 60, "plate_type": 30, "plate_imgpath": 512, "soak_well": 3,
+    "soak_id": 60, "soak_smile": 128, "staff_comments": 256,
+}
+
+
+def _as_stored(details: Mapping[str, Any]) -> dict[str, Any]:
+    stored = dict(details)
+    for column in INTEGER_COLUMNS:
+        if stored.get(column) is not None:
+            stored[column] = int(stored[column])
+    if stored.get("soak_vol") is not None:
+        # An IntegerField the migration left as a float: truncated on the way
+        # in, read back with a decimal point. 17.5 was sent and 17.0 came back.
+        stored["soak_vol"] = float(stored["soak_vol"])
+    for column in AS_TEXT_12_DIGITS:
+        if stored.get(column) is not None:
+            stored[column] = "%.12g" % float(stored[column])
+    for column, limit in TEXT_LIMITS.items():
+        value = stored.get(column)
+        if isinstance(value, str) and len(value) > limit:
+            stored[column] = value[:limit]
+    return stored
+
 
 class AddLabwork:
     """views.py 642-707, as a table in memory."""
@@ -78,14 +112,15 @@ class AddLabwork:
         details["project_id"] = PROJECT_PK
 
         found = self._first(self._matching(details, LOOKUP))
+        stored = _as_stored(details)
         if found is not None:
             # The plate is not in this filter, and details carries it.
             for row in self._matching(details, UPDATE_FILTER):
-                row.update(details)
+                row.update(stored)
         else:
             # get_or_create over every column: nothing ever matches all of
             # them, so this is a create.
-            self.rows.append(dict(details))
+            self.rows.append(dict(stored))
 
         answer = {"id": PROJECT_PK}
         self.answers.append(answer)
@@ -94,9 +129,10 @@ class AddLabwork:
     def _matching(
         self, details: Mapping[str, Any], columns: tuple[str, ...]
     ) -> list[dict[str, Any]]:
+        wanted = _as_stored(details)
         return [
             row for row in self.rows
-            if all(row.get(column) == details.get(column) for column in columns)
+            if all(row.get(column) == wanted.get(column) for column in columns)
         ]
 
     @staticmethod
@@ -163,20 +199,24 @@ def _uploaded(well: str = "A01a", plate: str = "2069") -> dict[str, Any]:
         # What a real upload puts there: labwork.py sets it, and the history
         # page recognises our records by this prefix.
         "staff_comments": UPLOAD_COMMENT,
-        "status": "Active",
-        "attachment": "",
+        # The values labwork.py really sends, not the words they suggest.
+        "status": 5,
+        "attachment": "null",
         "expri_id": EXPERIMENT,
         "protein_name": "test",
         "plate_type": "SwissCI-MRC-3d",
         "plate_code": plate,
         "plate_imgpath": f"/share/{plate}/{well}.jpg",
         "plate_well": well,
-        "plate_x": "0.123456789012",
-        "plate_y": "1.5",
+        # Floats, as labwork.py sends them, with more digits than MxLive
+        # keeps - so the 12-digit rule is exercised rather than assumed.
+        "plate_x": 0.123456789012345,
+        "plate_y": 1.5,
         "crystal_no": 1,
         "soak_plate": "384PP_DMSO2",
         "soak_well": "A1",
-        "soak_vol": 17.5,
+        # Whole nanolitres: mxlive_soak_volume rounds before sending.
+        "soak_vol": 17,
         "soak_id": "LDV-1",
         "soak_smile": "CS(=O)C",
         "project_id": "jjh",
@@ -205,6 +245,11 @@ def test_a_harvest_write_fills_the_harvest_and_leaves_every_other_column(
     before = view.read(EXPERIMENT)
     assert len(before) == 1
     assert before[0].harvest_time is None and before[0].puck_name is None
+    # What MxLive holds after the upload, which is what the harvest write must
+    # leave alone. Compared against this rather than against the payload,
+    # because the storage already changed some of it on the way in - a float
+    # coordinate is text now, and a dose is a whole number.
+    was = dict(before[0].raw)
 
     write = harvest_payload(original, before[0], _harvest())
     client.upload_labworks((write,))
@@ -223,13 +268,17 @@ def test_a_harvest_write_fills_the_harvest_and_leaves_every_other_column(
     # and the prefix the history page looks for survives.
     assert stored["staff_comments"] == f"{UPLOAD_COMMENT} · Harvest by XtalFlow"
     assert stored["staff_comments"].startswith("Uploaded by XtalFlow")
-    # Every other readable column is exactly as uploaded.
+    # Every other readable column is exactly as MxLive already held it.
     for column in READ_COLUMNS:
         if column.startswith("harvest") or column.startswith("puck"):
             continue
         if column == "staff_comments":
             continue
-        assert stored[column] == original[column], column
+        assert stored[column] == was[column], column
+    # And the storage really did change two of them on the way in, so the
+    # comparison above is not passing by having nothing to compare.
+    assert was["soak_vol"] == 17.0 and original["soak_vol"] == 17
+    assert was["plate_x"] == "0.123456789012" and original["plate_x"] != was["plate_x"]
 
 
 def test_leaving_a_column_out_is_the_same_as_sending_it_empty(
@@ -403,3 +452,63 @@ def test_the_mark_is_not_added_twice(tmp_path: Path) -> None:
     stored = view.read(EXPERIMENT)[0].raw
     assert stored["staff_comments"] == f"{UPLOAD_COMMENT} · Harvest by XtalFlow"
     assert stored["staff_comments"].count("Harvest by XtalFlow") == 1
+
+
+def test_the_comparison_forgives_what_the_storage_did_and_no_more(
+    tmp_path: Path,
+) -> None:
+    """The post-check inside harvest_writes, against a real round trip.
+
+    ``_changed_since_upload`` runs twice on every harvest: once to decide the
+    outcome, and once on the dict about to be sent. It compares the stored
+    payload against what MxLive returns, so every difference the storage makes
+    has to be forgiven or no plate could ever be recorded - and nothing beyond
+    that, or a record changed on MxLive would be overwritten. Both halves are
+    checked here through the stand-in rather than against hand-written values.
+
+    The dose is the case that bites hardest: uploads before 947205f sent half
+    nanolitres, which the integer column truncated, so the records of real
+    fragment screens hold a number this program never sent.
+    """
+    from xtalflow.domain.harvest_record import (
+        HarvestOutcome, HarvestRow, harvest_writes,
+    )
+
+    view = AddLabwork()
+    client = _client(view, tmp_path)
+    # An older upload: the dose as it was dispensed, before rounding.
+    original = {**_uploaded(), "soak_vol": 17.5}
+    client.upload_labworks((original,))
+    read_back = view.read(EXPERIMENT)[0]
+    assert read_back.raw["soak_vol"] == 17.0  # Truncated, as measured.
+
+    row = HarvestRow(
+        "2069", "A01a", HarvestOutcome.WILL_RECORD,
+        harvest=_harvest(), on_mxlive=read_back,
+    )
+    # Must not raise: every difference here was made by MxLive, not by anybody.
+    writes = harvest_writes((row,), {("2069", "A01a"): original})
+    assert len(writes) == 1 and writes[0]["harvest_time"] == _harvest().harvest_time
+
+    # And the other direction: a column somebody really changed is refused.
+    moved = MxLiveLabwork.from_mapping({**read_back.raw, "plate_x": "9.5"})
+    refused = HarvestRow(
+        "2069", "A01a", HarvestOutcome.WILL_RECORD,
+        harvest=_harvest(), on_mxlive=moved,
+    )
+    with pytest.raises(ValueError, match="plate_x"):
+        harvest_writes((refused,), {("2069", "A01a"): original})
+
+
+def test_the_stand_ins_text_limits_are_the_ones_the_comparison_uses() -> None:
+    """Two records of the same column widths, kept from drifting apart.
+
+    The comparison forgives a returned value that is exactly its column's
+    length and a prefix of ours, because MySQL cut it. If these numbers
+    disagreed, the stand-in would cut at one length while the comparison
+    forgave another, and the tests above would pass on a fiction.
+    """
+    from xtalflow.domain.harvest_record import TEXT_COLUMN_LIMITS
+
+    for column, limit in TEXT_COLUMN_LIMITS.items():
+        assert TEXT_LIMITS[column] == limit, column

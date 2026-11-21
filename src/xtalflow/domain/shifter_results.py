@@ -394,7 +394,15 @@ def _rows(text: str) -> _Read:
     rows = [row for row in reader if any(cell.strip() for cell in row)]
     if not rows:
         return _Read([])
-    if [cell.strip().lstrip(";") for cell in rows[0]][: len(names)] == names:
+    # Folded, because the instrument writes the header both ways: files on
+    # this beamline carry PositionSubWell and PositionSubwell, mixed. The
+    # column order is the same in both, so a row read positionally still lands
+    # correctly and no harvest was ever lost to this - but the header line was
+    # then read as data and reported as a line that "is not a well address",
+    # and a note that cries wolf about the header teaches somebody to stop
+    # reading the notes.
+    folded = [name.casefold() for name in names]
+    if [cell.strip().lstrip(";").casefold() for cell in rows[0]][: len(names)] == folded:
         return _Read([_named(names, row) for row in rows[1:]], 2)
     if all(authored <= len(row) <= len(names) for row in rows):
         return _Read([_named(names, row) for row in rows])

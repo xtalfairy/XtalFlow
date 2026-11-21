@@ -461,3 +461,49 @@ def test_the_column_we_fill_for_ourselves_is_not_read_as_data() -> None:
     )
 
     assert with_marker == without
+
+
+def test_the_header_is_recognised_whichever_way_the_instrument_spells_it() -> None:
+    """Measured on this beamline: both PositionSubWell and PositionSubwell.
+
+    Of 502 result files, 288 carry a header line and the two spellings are
+    mixed among them. The column order is identical, so a header the match
+    missed was read as a data row and every harvest still landed in the right
+    place - nothing was ever lost to this. What it produced was a note saying
+    the header "is not a well address", on a line that is the header, and the
+    notes are the only place somebody looks to decide whether a harvest needs
+    attention. One that cries wolf costs more than it looks.
+    """
+    header = ";" + ",".join(SHIFTER_HEADER)
+    row = "SwissCI-MRC-3d,2069,AM,A,1,a,OK,,arrived,departed,5,5C-0001,1,,"
+    for spelling in (
+        header,
+        header.replace("SubWell", "Subwell"),
+        header.upper(),
+    ):
+        report = collect_harvest(
+            (("2069", "A01a"),), (("shifter2/x.csv", f"{spelling}\n{row}"),)
+        )
+        assert len(report.harvested) == 1, spelling
+        assert report.notes == (), spelling
+        assert report.harvested[0].comment == "OK"
+
+
+def test_a_file_with_no_header_at_all_is_still_read() -> None:
+    """214 of the 502 files on this beamline have none, and that is not new.
+
+    Kept beside the test above because the two cases are read by the same
+    branch for different reasons: a missing header means every line is data,
+    while a header spelled another way used to mean the first line was data
+    too. Only one of those was ever correct.
+    """
+    report = collect_harvest(
+        (("2069", "A01a"),),
+        ((
+            "shifter2/x.csv",
+            "SwissCI-MRC-3d,2069,AM,A,1,a,OK,,arrived,departed,5,5C-0001,1,,",
+        ),),
+    )
+
+    assert len(report.harvested) == 1
+    assert report.notes == ()

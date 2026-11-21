@@ -75,24 +75,46 @@ INTEGER_COLUMNS = ("status", "crystal_no", "soak_vol", "harvest_order", "puck_no
 # Text in a Python 2 CharField: str(float) there keeps 12 significant digits.
 AS_TEXT_12_DIGITS = ("plate_x", "plate_y")
 # MySQL is not strict here, so anything longer is cut rather than refused.
+# None of the five lookup columns is here, which is deliberate: their widths
+# belong in this table too, and until they are known a long value in one of
+# them is not something this stand-in can show.
 TEXT_LIMITS = {
     "name": 60, "plate_type": 30, "plate_imgpath": 512, "soak_well": 3,
     "soak_id": 60, "soak_smile": 128, "staff_comments": 256,
 }
 
 
-def _as_stored(details: Mapping[str, Any]) -> dict[str, Any]:
-    stored = dict(details)
+def _as_compared(details: Mapping[str, Any]) -> dict[str, Any]:
+    """The conversions Django applies to a value, wherever it is used.
+
+    ``get_prep_value`` runs on a filter's value as well as on one being
+    written, so a lookup is made with the converted value too.
+    """
+    prepared = dict(details)
     for column in INTEGER_COLUMNS:
-        if stored.get(column) is not None:
-            stored[column] = int(stored[column])
-    if stored.get("soak_vol") is not None:
+        if prepared.get(column) is not None:
+            prepared[column] = int(prepared[column])
+    if prepared.get("soak_vol") is not None:
         # An IntegerField the migration left as a float: truncated on the way
         # in, read back with a decimal point. 17.5 was sent and 17.0 came back.
-        stored["soak_vol"] = float(stored["soak_vol"])
+        prepared["soak_vol"] = float(prepared["soak_vol"])
     for column in AS_TEXT_12_DIGITS:
-        if stored.get(column) is not None:
-            stored[column] = "%.12g" % float(stored[column])
+        if prepared.get(column) is not None:
+            prepared[column] = "%.12g" % float(prepared[column])
+    return prepared
+
+
+def _as_stored(details: Mapping[str, Any]) -> dict[str, Any]:
+    """And then what the column itself does, which only happens on the way in.
+
+    Cutting belongs here and not in ``_as_compared``: MySQL truncates a value
+    being stored, never one in a WHERE clause. So a value longer than its
+    column is cut once and every later lookup made with the whole value misses
+    the cut one - which for a lookup column means a second record each time,
+    and is why the identity check compares exactly. Keeping the cut out of the
+    filter is what lets this stand-in show that instead of hiding it.
+    """
+    stored = _as_compared(details)
     for column, limit in TEXT_LIMITS.items():
         value = stored.get(column)
         if isinstance(value, str) and len(value) > limit:
@@ -129,7 +151,7 @@ class AddLabwork:
     def _matching(
         self, details: Mapping[str, Any], columns: tuple[str, ...]
     ) -> list[dict[str, Any]]:
-        wanted = _as_stored(details)
+        wanted = _as_compared(details)
         return [
             row for row in self.rows
             if all(row.get(column) == wanted.get(column) for column in columns)

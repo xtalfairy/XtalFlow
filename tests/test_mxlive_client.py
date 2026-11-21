@@ -492,3 +492,65 @@ def test_an_upload_answered_with_a_non_json_body_is_uncertain_not_failed(
             "https://mxlive.example/x", {"plate_well": "A01a"},
             timeout_seconds=1.0, ca_bundle=None,
         )
+
+
+def _raising(error_name: str):
+    import requests
+
+    def refuse(*args: object, **kwargs: object) -> object:
+        raise getattr(requests.exceptions, error_name)("refused")
+
+    return refuse
+
+
+def test_a_url_requests_refused_to_build_is_a_write_that_did_not_happen(
+    monkeypatch,
+) -> None:
+    """Nothing left this machine, so nothing is stored and saying so is right.
+
+    These are also ValueError subclasses, so while the body was read inside
+    the same try block they arrived as "MxLive returned invalid JSON after
+    accepting the upload" - a sentence claiming MxLive had answered when no
+    request had been sent.
+    """
+    import requests
+
+    from xtalflow.domain.mxlive import MxLiveUncertainWriteError
+
+    for name in (
+        "MissingSchema", "InvalidSchema", "InvalidURL", "InvalidProxyURL",
+        "InvalidHeader",
+    ):
+        monkeypatch.setattr(requests, "post", _raising(name))
+        with pytest.raises(MxLiveWriteError) as raised:
+            RequestsJsonTransport().post_msgpack(
+                "https://mxlive.example/x", {"plate_well": "A01a"},
+                timeout_seconds=1.0, ca_bundle=None,
+            )
+        assert not isinstance(raised.value, MxLiveUncertainWriteError), name
+        assert "invalid JSON" not in str(raised.value), name
+        assert name in str(raised.value), name
+
+
+def test_a_reply_that_broke_while_arriving_leaves_the_outcome_unknown(
+    monkeypatch,
+) -> None:
+    """The server had the request, so it may have stored the record.
+
+    Both of these are raised while reading the reply, and both were called
+    definite failures by a rule that listed what it knew to be safe and
+    assumed the rest. For an endpoint with no delete the assumption has to go
+    the other way.
+    """
+    import requests
+
+    from xtalflow.domain.mxlive import MxLiveUncertainWriteError
+
+    for name in ("ChunkedEncodingError", "ContentDecodingError"):
+        monkeypatch.setattr(requests, "post", _raising(name))
+        with pytest.raises(MxLiveUncertainWriteError) as raised:
+            RequestsJsonTransport().post_msgpack(
+                "https://mxlive.example/x", {"plate_well": "A01a"},
+                timeout_seconds=1.0, ca_bundle=None,
+            )
+        assert name in str(raised.value), name

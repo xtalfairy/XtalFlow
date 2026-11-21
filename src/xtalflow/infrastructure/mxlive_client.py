@@ -39,6 +39,12 @@ class RequestsJsonTransport:
     def get_json(
         self, url: str, *, timeout_seconds: float, ca_bundle: Path | None
     ) -> object:
+        # Two try blocks, because requests raises its JSON error as both a
+        # RequestException and a ValueError. Under one block the handler for
+        # the first would take it, and reading a body would be reported as a
+        # request that failed. Separating them also means the body is only
+        # ever read after a response exists, whatever requests calls the
+        # error, and in whichever version.
         try:
             response = requests.get(
                 url,
@@ -46,19 +52,11 @@ class RequestsJsonTransport:
                 verify=str(ca_bundle) if ca_bundle is not None else True,
             )
             response.raise_for_status()
-            return response.json()
         except ImportError as error:
             raise MxLiveReadError(
                 "Python SSL support is unavailable; use a Python build with the ssl module"
             ) from error
         except requests.RequestException as error:
-            if isinstance(error, ValueError):
-                # requests raises a JSON error that is both a RequestException
-                # and a ValueError, and this handler is ahead of the one for
-                # ValueError, so it would otherwise read as a failed request.
-                # raise_for_status has already let the status through, so what
-                # failed is reading a body that did arrive.
-                raise MxLiveReadError("MxLive returned invalid JSON") from None
             status = error.response.status_code if error.response is not None else None
             detail = f"HTTP {status}" if status is not None else type(error).__name__
             # Not from error: the account's signature is in the URL, and the
@@ -69,6 +67,8 @@ class RequestsJsonTransport:
             # from a worker thread that dies. The status or the error's class is
             # kept above, which is what a reader needs.
             raise MxLiveReadError(f"MxLive request failed ({detail})") from None
+        try:
+            return response.json()
         except ValueError:
             raise MxLiveReadError("MxLive returned invalid JSON") from None
 
@@ -76,6 +76,10 @@ class RequestsJsonTransport:
         self, url: str, payload: object, *, timeout_seconds: float,
         ca_bundle: Path | None,
     ) -> object:
+        # Split for the reason given in get_json, and here it decides what may
+        # be done next: a body that cannot be read is a record MxLive answered
+        # for, while a URL requests refused to build is a record never sent.
+        # Under one block both arrived as the same ValueError.
         try:
             response = requests.post(
                 url,
@@ -84,21 +88,11 @@ class RequestsJsonTransport:
                 verify=str(ca_bundle) if ca_bundle is not None else True,
             )
             response.raise_for_status()
-            return response.json()
         except ImportError as error:
             raise MxLiveWriteError(
                 "Python SSL support is unavailable; use a Python build with the ssl module"
             ) from error
         except requests.RequestException as error:
-            if isinstance(error, ValueError):
-                # The same overlap as in get_json, and here it decides what
-                # may be done next. raise_for_status let the status through,
-                # so the request arrived and MxLive answered: the record is
-                # very likely stored, and this must not be reported as a
-                # write that definitely did not happen.
-                raise MxLiveUncertainWriteError(
-                    "MxLive returned invalid JSON after accepting the upload"
-                ) from None
             status = error.response.status_code if error.response is not None else None
             detail = f"HTTP {status}" if status is not None else type(error).__name__
             # Not from error, for the reason given in get_json: the signed URL
@@ -109,6 +103,8 @@ class RequestsJsonTransport:
                     f"MxLive upload result is unknown ({detail})"
                 ) from None
             raise MxLiveWriteError(f"MxLive upload failed ({detail})") from None
+        try:
+            return response.json()
         except ValueError:
             raise MxLiveUncertainWriteError(
                 "MxLive returned invalid JSON after accepting the upload"
@@ -118,16 +114,32 @@ class RequestsJsonTransport:
 def _write_may_have_been_stored(
     error: requests.RequestException, status: int | None
 ) -> bool:
-    """Only errors raised before the request reached the server are safe to retry."""
+    """Only errors raised before the request reached the server are safe to retry.
+
+    Named the other way round on purpose. MxLive has no delete, so a write
+    reported as one that definitely did not happen is the costly mistake: the
+    local audit then disagrees with MxLive for good, a second attempt is
+    refused because the records are there, and a harvest needs an upload that
+    succeeded. Being told the outcome is unknown costs one more read, which
+    the verification path already does and which settles it.
+
+    So the list below is of the cases where nothing can have left this
+    machine, and everything else is unknown. ``ChunkedEncodingError`` and
+    ``ContentDecodingError`` are why: both are raised while reading a reply,
+    so the server had the request and may well have stored it, and both were
+    being called definite failures by a rule that only named what it knew.
+    """
     if status is not None:
+        # The server answered. Its own error is final; ours is not.
         return status >= 500
-    if isinstance(
+    exceptions = requests.exceptions
+    return not isinstance(
         error,
-        (requests.ConnectTimeout, requests.exceptions.SSLError,
-         requests.exceptions.ProxyError, requests.exceptions.InvalidURL),
-    ):
-        return False
-    return isinstance(error, (requests.Timeout, requests.ConnectionError))
+        (requests.ConnectTimeout, exceptions.SSLError, exceptions.ProxyError,
+         exceptions.InvalidURL, exceptions.InvalidProxyURL,
+         exceptions.InvalidSchema, exceptions.MissingSchema,
+         exceptions.InvalidHeader),
+    )
 
 
 class DsaUrlSigner:

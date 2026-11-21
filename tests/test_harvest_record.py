@@ -711,3 +711,67 @@ def test_the_shapes_the_beamline_s_own_records_came_back_in_are_all_agreed() -> 
     )
 
     assert row.outcome is HarvestOutcome.WILL_RECORD
+
+
+def test_a_comment_too_long_for_mxlive_holds_the_row_back() -> None:
+    """Rather than letting MySQL cut it and reading the result as recorded.
+
+    Nothing compares comments afterwards, so a cut one comes back looking
+    like a harvest that was recorded in full. The words would be gone from
+    MxLive, which has no delete and which this program does not correct. A
+    row held back can still be recorded once somebody shortens the comment,
+    and the SHIFTER file keeps the whole of it either way.
+    """
+    from xtalflow.domain.harvest_record import HARVEST_COMMENT_LIMIT
+
+    def outcome_for(comment: str):
+        rows = plan_harvest_records(
+            (("2069", "A01a"),),
+            HarvestReport(harvested=(_crystal("A01a", comment=comment),)),
+            (_record("A01a"),),
+            _payloads("A01a"),
+        )
+        return rows[0]
+
+    at_the_limit = outcome_for("x" * HARVEST_COMMENT_LIMIT)
+    assert at_the_limit.outcome is HarvestOutcome.WILL_RECORD
+    one_over = outcome_for("x" * (HARVEST_COMMENT_LIMIT + 1))
+    assert one_over.outcome is HarvestOutcome.HARVEST_COMMENT_TOO_LONG
+    assert one_over.detail == f"the comment is 257 characters, and MxLive keeps 256"
+    assert HarvestOutcome.HARVEST_COMMENT_TOO_LONG.needs_attention
+    assert not HarvestOutcome.HARVEST_COMMENT_TOO_LONG.is_sendable
+
+
+def test_the_comment_limit_is_the_shorter_of_mxlives_two_declarations() -> None:
+    """256 from the model, not 512 from the one migration that survives.
+
+    The install's source disagrees with itself and no later migration exists
+    to settle which width the database took, so the number that cannot cut
+    anybody's words is the one to refuse on.
+    """
+    from xtalflow.domain.harvest_record import HARVEST_COMMENT_LIMIT
+
+    assert HARVEST_COMMENT_LIMIT == 256
+
+
+def test_a_well_address_can_never_be_cut_by_the_column_it_is_looked_up_by() -> None:
+    """The tightest column in the lookup, and the one that cannot reach it.
+
+    plate_well is CharField(max_length=4). A value too long for a lookup
+    column is cut on the way in while every later lookup is made with the
+    whole value, so it matches nothing and MxLive creates another record,
+    every time. This one is safe by construction rather than by luck:
+    WellAddress renders a row letter, two digits and a lens letter, and
+    validates all three.
+    """
+    from xtalflow.domain.harvest_record import LOOKUP_COLUMN_LIMITS
+    from xtalflow.domain.plate_format import WellAddress
+
+    every = [
+        str(WellAddress(row, column, lens))
+        for row in "ABCDEFGH"
+        for column in range(1, 13)
+        for lens in "acd"
+    ]
+    assert len(every) == 288
+    assert {len(address) for address in every} == {LOOKUP_COLUMN_LIMITS["plate_well"]}

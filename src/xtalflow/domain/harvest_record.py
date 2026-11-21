@@ -46,6 +46,8 @@ __all__ = [
     "WRITTEN_BLIND",
     "HarvestRow",
     "PUCK_NAME_LIMIT",
+    "HARVEST_COMMENT_LIMIT",
+    "LOOKUP_COLUMN_LIMITS",
     "plan_harvest_records",
     "stray_records",
 ]
@@ -108,7 +110,33 @@ exact text because text is what they are.
 """
 
 STAFF_COMMENTS_LIMIT = 256
-"""MxLive's ``Labwork.staff_comments`` is ``CharField(max_length=256)``."""
+"""A limit of ours, not the column's.
+
+Read from the installed source on 2026-11-21: ``Labwork.staff_comments`` is a
+``TextField``, on the model and on its base class, so it is almost certainly
+TEXT in the database and this cap gives up the harvest mark on a long comment
+for no reason the column requires. It is kept because the source tree cannot
+settle it: the same read found ``harvest_comment`` declared 256 on the model
+and 512 in the one migration that exists, so a field's declaration here is
+not proof of the live column. Giving up the mark costs a reader one hint;
+a comment cut by MySQL would cost somebody their own words.
+
+Earlier this said the column was ``CharField(max_length=256)``. That was
+written before the source could be read, and it was wrong.
+"""
+
+HARVEST_COMMENT_LIMIT = 256
+"""MxLive's ``Labwork.harvest_comment``, at the shorter of two declarations.
+
+The model says ``CharField(max_length=256)`` and ``0001_initial`` says 512,
+and no later migration survives in the install to say which the database took.
+A comment longer than the column is cut without a word, and ``_same_harvest``
+does not compare comments, so the cut record would read as already recorded
+and the words would be gone - MxLive has no delete and this program does not
+correct a record it has written. So the shorter number is the one to refuse
+on: a row held back can still be recorded once somebody shortens the comment,
+and the whole comment stays in the SHIFTER file either way.
+"""
 
 WRITTEN_BLIND = (
     "MxLive never returns a record's status, so recording a harvest sets it "
@@ -156,6 +184,7 @@ class HarvestOutcome(Enum):
     SEVERAL_RECORDS = "more than one record on MxLive"
     NO_PAYLOAD = "this experiment's upload is not in the local audit"
     PUCK_NAME_TOO_LONG = "the puck name is too long for MxLive"
+    HARVEST_COMMENT_TOO_LONG = "the harvest comment is too long for MxLive"
     PUCK_POSITION_NOT_A_NUMBER = "the puck position is not a number"
 
     @property
@@ -271,6 +300,8 @@ def _outcome(
         return HarvestOutcome.CHANGED_ON_MXLIVE
     if len(harvest.puck_name) > PUCK_NAME_LIMIT:
         return HarvestOutcome.PUCK_NAME_TOO_LONG
+    if len(harvest.comment) > HARVEST_COMMENT_LIMIT:
+        return HarvestOutcome.HARVEST_COMMENT_TOO_LONG
     if not _position_number(harvest.puck_position):
         return HarvestOutcome.PUCK_POSITION_NOT_A_NUMBER
     return HarvestOutcome.WILL_RECORD
@@ -340,8 +371,30 @@ the comparison has to say so or a long condition label would refuse its own
 plate forever. It counts as the same only when what came back is exactly as
 long as the column and is how the sent value begins.
 
-``plate_well`` has a limit too and is not listed: it is part of the lookup,
-where a value cut short is a different record rather than a shortened one.
+The lookup columns have limits too and are not listed: there a value cut
+short is a different record rather than a shortened one, so it is refused
+rather than forgiven. ``LOOKUP_COLUMN_LIMITS`` holds those.
+"""
+
+LOOKUP_COLUMN_LIMITS = {
+    "expri_id": 256,
+    "protein_name": 128,
+    "plate_well": 4,
+    "plate_code": 60,
+}
+"""The widths of the columns MxLive finds a record by, read on 2026-11-21.
+
+Not forgiven the way the columns above are, and not for a different kind of
+mistake: a value too long for one of these is cut when it is stored, while a
+later lookup is made with the whole value and so matches nothing. MxLive then
+creates another record, every time, and has no delete.
+
+``plate_well`` is the tightest at 4 and cannot reach it: ``WellAddress``
+renders one row letter, two digits and one lens letter, and validates all
+three, so a well address is exactly 4 characters and never 5. The others are
+wide enough that nothing this program builds approaches them, which is a
+measurement and not a guarantee - so they are written down here, where a
+future identifier long enough to be cut can be checked against them.
 """
 
 SIGNIFICANT_DIGITS_KEPT = 12
@@ -530,6 +583,11 @@ def _detail(
             )
     if len(harvest.puck_name) > PUCK_NAME_LIMIT:
         return f"{harvest.puck_name!r} is {len(harvest.puck_name)} characters"
+    if len(harvest.comment) > HARVEST_COMMENT_LIMIT:
+        return (
+            f"the comment is {len(harvest.comment)} characters, "
+            f"and MxLive keeps {HARVEST_COMMENT_LIMIT}"
+        )
     return ""
 
 

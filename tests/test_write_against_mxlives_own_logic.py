@@ -75,12 +75,17 @@ INTEGER_COLUMNS = ("status", "crystal_no", "soak_vol", "harvest_order", "puck_no
 # Text in a Python 2 CharField: str(float) there keeps 12 significant digits.
 AS_TEXT_12_DIGITS = ("plate_x", "plate_y")
 # MySQL is not strict here, so anything longer is cut rather than refused.
-# None of the five lookup columns is here, which is deliberate: their widths
-# belong in this table too, and until they are known a long value in one of
-# them is not something this stand-in can show.
+# The lookup columns are in here now, their widths read from the install on
+# 2026-11-21, because a value cut in one of those is the worst case this
+# stand-in exists to show: cut once on the way in, missed by every later
+# lookup made with the whole value, and so another record each time.
+# staff_comments is deliberately absent - the same read found it declared a
+# TextField, so it is not cut at 256 or at anything else we know of.
 TEXT_LIMITS = {
     "name": 60, "plate_type": 30, "plate_imgpath": 512, "soak_well": 3,
-    "soak_id": 60, "soak_smile": 128, "staff_comments": 256,
+    "soak_id": 60, "soak_smile": 128,
+    "expri_id": 256, "protein_name": 128, "plate_well": 4, "plate_code": 60,
+    "harvest_comment": 256, "harvest_time": 128, "puck_name": 10,
 }
 
 
@@ -530,7 +535,51 @@ def test_the_stand_ins_text_limits_are_the_ones_the_comparison_uses() -> None:
     disagreed, the stand-in would cut at one length while the comparison
     forgave another, and the tests above would pass on a fiction.
     """
-    from xtalflow.domain.harvest_record import TEXT_COLUMN_LIMITS
+    from xtalflow.domain.harvest_record import (
+        LOOKUP_COLUMN_LIMITS, TEXT_COLUMN_LIMITS,
+    )
 
     for column, limit in TEXT_COLUMN_LIMITS.items():
         assert TEXT_LIMITS[column] == limit, column
+    for column, limit in LOOKUP_COLUMN_LIMITS.items():
+        assert TEXT_LIMITS[column] == limit, column
+    # And the one the domain used to claim a width for. The install declares
+    # it a TextField, so nothing here may cut it.
+    assert "staff_comments" not in TEXT_LIMITS
+
+
+def test_a_protein_name_too_long_for_its_column_makes_a_record_every_time(
+    tmp_path: Path,
+) -> None:
+    """The failure the lookup widths were read for, driven through the view.
+
+    protein_name is CharField(max_length=128) and is one of the five columns
+    MxLive finds a record by. A longer name is cut when it is stored, while
+    every later lookup is made with the whole name - so nothing matches, and
+    get_or_create creates again. Two uploads of the same well leave two
+    records, and a third would leave three. MxLive has no delete.
+
+    Nothing this program builds reaches 128, which is why this is a test of
+    the stand-in's storage rather than of a guard: it says what the shape of
+    the accident is, so that a future identifier long enough to be cut is
+    recognised as this and not as a mystery.
+    """
+    view = AddLabwork()
+    client = _client(view, tmp_path)
+    too_long = "B" * (TEXT_LIMITS["protein_name"] + 1)
+    payload = {**_uploaded(), "protein_name": too_long}
+
+    client.upload_labworks((payload,))
+    client.upload_labworks((payload,))
+
+    assert len(view.rows) == 2
+    assert all(len(row["protein_name"]) == 128 for row in view.rows)
+    # And a name that fits is found again, so the two uploads leave one row.
+    other = AddLabwork()
+    fits = {**_uploaded(), "protein_name": "B" * TEXT_LIMITS["protein_name"]}
+    second = tmp_path / "second"
+    second.mkdir()
+    twice = _client(other, second)
+    twice.upload_labworks((fits,))
+    twice.upload_labworks((fits,))
+    assert len(other.rows) == 1

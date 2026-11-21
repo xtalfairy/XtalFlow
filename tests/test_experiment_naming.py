@@ -3,6 +3,7 @@ from datetime import datetime
 import pytest
 
 from xtalflow.domain.experiment_naming import (
+    next_id_beside,
     normalize_protein_name,
     protein_name_for_record,
     suggest_experiment_id,
@@ -88,3 +89,54 @@ def test_a_space_never_reaches_the_record_however_it_got_stored() -> None:
     assert protein_name_for_record("BRD4/1") == "BRD4/1"
     assert protein_name_for_record("   ") == ""
 
+
+
+def test_an_id_taken_in_another_case_is_treated_as_taken() -> None:
+    """Because MxLive's write compares the way its collation does, not ours.
+
+    Its update filter uses ``=`` on ``expri_id``, which on MySQL follows the
+    column's collation, and the default collations there ignore case. So an
+    experiment already on MxLive whose ID differs from ours only in case is
+    one our upload's lookup would find - and the update would rewrite its
+    records from our payload, every column, with no delete to undo it.
+
+    Nothing is refused here and nothing is renamed. The sequence number moves
+    along, which is what it is for.
+    """
+    taken = {"FragSC-202611-BRD4-01".lower()}
+    chosen = suggest_experiment_id(
+        "FragSC", "BRD4", taken, datetime(2026, 11, 21)
+    )
+
+    assert chosen == "FragSC-202611-BRD4-02"
+    # And with nothing taken, the fold changes nothing at all.
+    assert suggest_experiment_id(
+        "FragSC", "BRD4", set(), datetime(2026, 11, 21)
+    ) == "FragSC-202611-BRD4-01"
+
+
+def test_the_id_beside_one_skips_a_name_taken_in_another_case_too() -> None:
+    """The late half of a plate goes to MxLive under its own name.
+
+    Same hazard, same answer: the next free sequence, compared folded.
+    """
+    assert next_id_beside(
+        "FragSC-202611-BRD4-01", {"fragsc-202611-brd4-02"}
+    ) == "FragSC-202611-BRD4-03"
+
+
+def test_an_id_this_program_builds_always_carries_the_year_it_is_checked_against() -> None:
+    """Which is what makes the folded comparison above sufficient.
+
+    The set it compares against is read from MxLive a year at a time, and
+    that read matches the year as a substring. Case does not change a digit,
+    so any ID that folds onto one of ours holds the same YYYYMM and comes
+    back in that read. An ID with no such stamp cannot fold onto one of ours
+    in the first place.
+    """
+    for prefix in ("FragSC", "RawCrystal", "PreTest"):
+        chosen = suggest_experiment_id(
+            prefix, "BRD4", set(), datetime(2026, 11, 21)
+        )
+        assert "2026" in chosen
+        assert chosen.casefold().count("2026") == 1

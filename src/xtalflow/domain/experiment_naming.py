@@ -16,6 +16,43 @@ _SAFE_PROTEIN = re.compile(r"^[A-Z0-9][A-Z0-9_-]*$")
 _NAMED_PROTEIN = re.compile(r"^[A-Z0-9][A-Z0-9._-]*$")
 
 
+def _folded(taken) -> set[str]:
+    """The taken IDs, compared the way MxLive's write compares them.
+
+    MxLive finds the record to update with
+    ``filter(project_id, expri_id, protein_name, plate_well)`` and ``=``,
+    which on MySQL follows the column's collation - and the default
+    collations there ignore case. So if MxLive already holds an experiment
+    whose ID differs from ours only in case, our upload's lookup finds that
+    experiment's records and the update rewrites them, every column, our
+    plate code and compound names included. There is no delete.
+
+    An ID this program builds carries YYYYMM, and case does not change a
+    digit, so any ID that folds onto one of ours holds that same stamp and so
+    comes back in the year read this set is built from. That is what makes
+    comparing folded here enough.
+
+    It has to be here, and it cannot be done later. MxLive's read is
+    ``expri_id__contains``, which Django compiles to ``LIKE BINARY`` on
+    MySQL - case-sensitive whatever the collation is, and measured so on this
+    beamline: reading a known ID in lower case and in upper case returned
+    nothing while the ID as written returned its seven records. So the record
+    at risk is invisible to every guard that reads MxLive by our experiment
+    ID, which is all of them: the check before an upload, the read before a
+    harvest, the re-read that verifies a write. Widening any of those
+    comparisons would be code that can never fire. The one read that does see
+    such a record is the year read, because a year is digits.
+
+    Folding costs nothing when nothing folds, and when something does it only
+    moves the sequence number along - nobody is refused and nothing is
+    renamed. The comparison that must stay exact is the one in
+    ``harvest_record.IDENTITY_COLUMNS``: it decides whether a record is ours
+    to write, and folding that would hand somebody else's record to our
+    payload.
+    """
+    return {str(item).casefold() for item in taken}
+
+
 def normalize_protein_name(value: str, *, already_named: bool = False) -> str:
     text = value.strip()
     if not text:
@@ -68,10 +105,11 @@ def next_id_beside(experiment_id: str, taken: set[str]) -> str:
     base, digits = match.group(1), match.group(2)
     width = len(digits)
     sequence = int(digits)
+    folded = _folded(taken)
     while True:
         sequence += 1
         candidate = f"{base}{sequence:0{width}d}"
-        if candidate not in taken:
+        if candidate.casefold() not in folded:
             return candidate
 
 
@@ -130,7 +168,8 @@ def suggest_experiment_id(
     normalized = normalize_protein_name(protein)
     timestamp = now or datetime.now()
     base = f"{prefix}-{timestamp:%Y%m}-{normalized}"
+    taken = _folded(existing_ids)
     sequence = 1
-    while f"{base}-{sequence:02d}" in existing_ids:
+    while f"{base}-{sequence:02d}".casefold() in taken:
         sequence += 1
     return f"{base}-{sequence:02d}"

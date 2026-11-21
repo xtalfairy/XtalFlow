@@ -107,6 +107,16 @@ stale one does not correct a record - it misses, and ``get_or_create`` makes
 a second record that nobody can delete. A well whose record was renamed on
 MxLive is therefore refused rather than written to, and these compare as
 exact text because text is what they are.
+
+Exact, and they must stay exact. MxLive's own lookup folds case when the
+column's collation does, which is why ``experiment_naming`` compares folded
+when it chooses an ID - but that comparison asks "is this name taken", where
+being generous is free. This one asks "is this record ours to write", where
+being generous means accepting a record that answers to our experiment ID
+only because MySQL ignores case, and then rewriting every column of it from
+our payload. The two directions are not the same question, and making this
+one agree with the other would turn a refusal into exactly the overwrite the
+other exists to prevent.
 """
 
 STAFF_COMMENTS_LIMIT = 256

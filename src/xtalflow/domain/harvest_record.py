@@ -361,7 +361,13 @@ TEXT_COLUMN_LIMITS = {
     "soak_id": 60,
     "soak_smile": 128,
 }
-"""How long MxLive's text columns are, from its model on 2026-11-20.
+"""How long MxLive's text columns are. Read from the install, twice.
+
+All six were read again on 2026-11-21, from the model and from the one
+migration the install still has, and both files give these numbers. They were
+checked because a constant written beside them in the same breath - a width
+for ``staff_comments`` - cited the model and was not in it. These six were
+not that, and now they are not taken on faith either.
 
 Its database is MySQL and, outside strict mode, a value too long for its
 column is cut without a word - MxLive's write endpoint bypasses the model's
@@ -401,9 +407,10 @@ SIGNIFICANT_DIGITS_KEPT = 12
 TRUNCATED_TO_SIGNIFICANT_DIGITS = ("plate_x", "plate_y")
 """Columns MxLive keeps to twelve significant digits.
 
-They are numbers in a text column, and MxLive runs on Python 2, whose
-``str(float)`` gives twelve significant digits and not the seventeen that
-reproduce the value. So a crystal's position arrives rounded: measured on
+They are numbers in a text column - ``CharField(max_length=128)`` in both the
+model and the migration, read on 2026-11-21, and wide enough that no position
+is ever cut - and MxLive runs on Python 2, whose ``str(float)`` gives twelve
+significant digits and not the seventeen that reproduce the value. So a crystal's position arrives rounded: measured on
 every fragment-screen record at this beamline, ``float("%.12g" % sent)``
 equals what comes back, and the full value never does.
 
@@ -422,6 +429,16 @@ the migration made it a float, so the value is truncated on the way in and
 read back with a decimal point. Uploads since 947205f round before sending,
 but the records of earlier ones still hold what was dispensed, and they must
 not be refused over a difference MxLive itself made.
+
+That mechanism was inferred from the two measurements above and has since
+been read in the install, on 2026-11-21: the model declares
+``IntegerField(default=0, null=True)`` and the migration declares
+``FloatField(blank=True, null=True)``, with the integer line left in it
+commented out as ``#REM``. So somebody widened the column by hand and the
+model was never told, which is why a dose goes in through ``int()`` and comes
+back with a decimal point. Two readings of one column disagreeing is also
+why a declaration in that tree is not taken as proof of the live column
+anywhere in this file.
 """
 
 

@@ -172,6 +172,22 @@ def test_a_long_stage_story_is_broken_into_readable_lines():
     app.processEvents()
 
 
+def _lamp_is_whole(button) -> bool:
+    """Whether the name this lamp shows is the whole of what it was given.
+
+    A name too wide for its column is not shortened by Qt - it is cut off
+    where the paint runs out, with no ellipsis to say so. "ECHO 650" drawn in
+    a column meant for "SH… 0" became "ECHO 6", which reads as a different
+    instrument. Shortening is fine and is checked elsewhere; being cut off
+    without being shortened is the bug.
+    """
+    from PyQt5.QtGui import QFontMetrics
+
+    metrics = QFontMetrics(button.font())
+    overhead = button.minimumSizeHint().width() - metrics.width(button.text())
+    return button.width() >= metrics.width(button.text()) + overhead
+
+
 def _lamp_rows(sidebar):
     """What the panel drew, row by row, as a reader would see it."""
     grid = sidebar.shares_grid
@@ -215,7 +231,22 @@ def test_the_lamps_group_by_kind_and_keep_the_stations_on_one_row():
     sidebar = WorkspaceSidebar()
     assert sidebar.width() == 250, "the panel this had to fit"
     sidebar.show_share_states(states)
+    sidebar.show()
+    app.processEvents()
     rows = _lamp_rows(sidebar)
+
+    # Every lamp shows the whole of the name it was given. The rows are
+    # different lengths, so the grid needs a common denominator for them:
+    # without it the two on the first row sat in two of three equal columns,
+    # a third narrower than the width their names had been fitted to, and
+    # were silently cut off.
+    assert all(
+        _lamp_is_whole(button) for button in sidebar.share_buttons.values()
+    ), {
+        key: (button.text(), button.width())
+        for key, button in sidebar.share_buttons.items()
+        if not _lamp_is_whole(button)
+    }
 
     assert len(rows) == 2, "the image share rides with the ECHO, as it always did"
     assert rows[0] == ["RMServer", "ECHO 650"]
@@ -234,6 +265,9 @@ def test_the_lamps_group_by_kind_and_keep_the_stations_on_one_row():
     wider = WorkspaceSidebar()
     wider.setFixedWidth(320)
     wider.show_share_states(states)
+    wider.show()
+    app.processEvents()
+    assert all(_lamp_is_whole(button) for button in wider.share_buttons.values())
     assert _lamp_rows(wider) == [
         ["RMServer", "ECHO 650"], ["SHIFTER 0", "SHIFTER 1", "SHIFTER 2"]
     ]

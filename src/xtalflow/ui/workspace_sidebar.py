@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from math import gcd
+
 from PyQt5.QtCore import QSize, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QIcon
 from PyQt5.QtWidgets import (
@@ -351,31 +353,65 @@ class WorkspaceSidebar(QWidget):
             self.shares_grid.takeAt(0)
         for column in range(self.shares_grid.columnCount()):
             self.shares_grid.setColumnStretch(column, 0)
-        line = 0
-        columns = 1
+        # Spread evenly rather than filling each row and leaving a remainder:
+        # four stations in a panel that holds three to a row read better as
+        # two and two than as three and a stray one. That was the complaint
+        # about the old layout in the first place.
+        lines: list[list] = []
+        kinds: list[list[int]] = []
         for row in rows:
-            # Spread evenly rather than filling each row and leaving a
-            # remainder: four stations in a panel that holds three to a row
-            # read better as two and two than as three and a stray one. That
-            # was the complaint about the old layout in the first place.
-            lines = -(-len(row) // fits)
-            each = -(-len(row) // lines)
-            # One width for the whole kind, taken from the fullest row, so
-            # that a name is not spelled out on one line and shortened on the
-            # line below it.
-            width = (usable - spacing * (each - 1)) // each
-            for start in range(0, len(row), each):
-                part = row[start : start + each]
-                for column, state in enumerate(part):
+            count = -(-len(row) // fits)
+            each = -(-len(row) // count)
+            parts = [row[start : start + each] for start in range(0, len(row), each)]
+            kinds.append(list(range(len(lines), len(lines) + len(parts))))
+            lines.extend(parts)
+
+        # Rows of different lengths in one grid need a common denominator.
+        # Two lamps in a three-column grid would otherwise sit in two of
+        # three equal columns and be drawn a third narrower than the width
+        # their names were fitted to, and a name too wide for its column is
+        # not shortened by Qt - it is cut off where the paint runs out.
+        # "ECHO 650" became "ECHO 6", which reads as a different instrument.
+        columns = 1
+        for part in lines:
+            columns = columns * len(part) // gcd(columns, len(part))
+        for column in range(max(self.shares_grid.columnCount(), columns)):
+            self.shares_grid.setColumnStretch(column, 1 if column < columns else 0)
+        for line, part in enumerate(lines):
+            span = columns // len(part)
+            for index, state in enumerate(part):
+                button = self.share_buttons.get(state.key)
+                if button is not None:
+                    self.shares_grid.addWidget(button, line, index * span, 1, span)
+
+        # Fitted to the width the layout actually gave each lamp, not to the
+        # width this method meant to give it. Those were not the same, and
+        # the difference was invisible from the text alone: a name too wide
+        # for its column is cut off, not shortened.
+        #
+        # One width for a whole kind, and the narrowest of its rows, so that
+        # a name is not spelled out on one line and cut on the line below.
+        # Narrower than a lamp has is safe - it shortens a little more than
+        # it had to - where wider is the bug above.
+        self.shares_grid.activate()
+        for group in kinds:
+            room = min(
+                (
+                    self.share_buttons[state.key].width()
+                    for index in group
+                    for state in lines[index]
+                    if state.key in self.share_buttons
+                ),
+                default=0,
+            )
+            if room <= 0:
+                widest_row = max(len(lines[index]) for index in group)
+                room = (usable - spacing * (widest_row - 1)) // widest_row
+            for index in group:
+                for state in lines[index]:
                     button = self.share_buttons.get(state.key)
-                    if button is None:
-                        continue
-                    self.shares_grid.addWidget(button, line, column)
-                    self._fit_label(button, state.label, width)
-                columns = max(columns, len(part))
-                line += 1
-        for column in range(columns):
-            self.shares_grid.setColumnStretch(column, 1)
+                    if button is not None:
+                        self._fit_label(button, state.label, room)
 
     def _narrowest_lamp(self) -> int:
         """How little room a lamp can be given, in this panel's own font."""

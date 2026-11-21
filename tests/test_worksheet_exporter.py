@@ -205,9 +205,17 @@ def _development_settings(tmp_path: Path):
 
 
 def _worksheet_files(tmp_path: Path) -> list[Path]:
+    """Every file that reached an instrument's folder under ``tmp_path``.
+
+    Named rather than globbed so that the staging and pending folders, which
+    sit beside these, are not counted as delivered. ``shifter0`` is in the
+    list because leaving it out made "nothing was written" true of a save
+    that had written there - the assertion that is meant to catch exactly
+    that.
+    """
     return sorted(
         path
-        for name in ("echo650", "shifter1", "shifter2")
+        for name in ("echo650", "shifter0", "shifter1", "shifter2")
         for path in (tmp_path / name).rglob("*")
         if path.is_file()
     )
@@ -860,3 +868,70 @@ def test_an_experiment_id_that_cannot_be_a_filename_is_refused(tmp_path: Path) -
     assert not list((tmp_path / "shifter1").rglob("*"))
     written = exporter.export(fragment_plan(), "FragSC-202607-BRD4-01")
     assert written.path_for("shifter1").name == "FragSC-202607-BRD4-01.csv"
+
+
+def test_a_station_the_site_file_adds_is_guarded_like_the_rest(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """SHIFTER 0 arrived through xtalflow.toml, not through this repository.
+
+    The guard reads the destinations it is given and asks each folder the
+    same two questions, so a station the site file introduces is protected
+    without anything here naming it. That is worth holding: an instrument
+    mountpoint accepts writes while nothing is mounted on it, so a folder
+    that looks like the station and is really the workstation's own disk
+    would take a whole experiment's worksheets and show no error at all.
+
+    The reverse of the mount reading is checked too, because the beamline's
+    third station is mounted by a script rather than by fstab, and a reboot
+    that misses it leaves exactly this case.
+    """
+    from xtalflow.domain.instruments import WorksheetKind
+    from xtalflow.settings import InstrumentDestination
+
+    instruments = (
+        *standard_instruments(
+            tmp_path / "echo650", tmp_path / "shifter1", tmp_path / "shifter2"
+        ),
+        InstrumentDestination(
+            "shifter0", WorksheetKind.SHIFTER, tmp_path / "shifter0", "SHIFTER 0"
+        ),
+    )
+    settings = replace(
+        DEFAULT_SETTINGS,
+        worksheet_staging_directory=tmp_path / "staging",
+        pending_worksheet_directory=tmp_path / "pending",
+        instruments=instruments,
+        create_missing_instrument_roots=False,
+        require_network_instrument_mounts=True,
+    )
+    for item in instruments:
+        item.output_directory.mkdir()
+    monkeypatch.setattr(
+        "xtalflow.infrastructure.worksheet_exporter.is_network_mount",
+        lambda path: path.name != "shifter0",
+    )
+
+    # Refused by name, so the message says which station to go and look at.
+    with pytest.raises(
+        WorksheetDestinationUnavailable,
+        match="shifter0 \\(network share is not mounted\\)",
+    ):
+        WorksheetExporter(settings, "scientist").export(
+            fragment_plan(), "FragSC-202607-BRD4-01"
+        )
+    assert _worksheet_files(tmp_path) == [], "a refused save writes nothing at all"
+
+    # Held rather than refused is what the window does: the stations that
+    # answered get their worksheets, the one that did not gets nothing, and
+    # its copy waits under its own name so that it can be delivered later.
+    WorksheetExporter(settings, "scientist").export(
+        fragment_plan(), "FragSC-202607-BRD4-01", hold_unreachable=True,
+    )
+    reached = {path.relative_to(tmp_path).parts[0] for path in _worksheet_files(tmp_path)}
+    assert reached == {"echo650", "shifter1", "shifter2"}
+    assert list((tmp_path / "shifter0").rglob("*.csv")) == []
+    assert [
+        path.relative_to(tmp_path / "pending")
+        for path in sorted((tmp_path / "pending").rglob("*.csv"))
+    ] == [Path("shifter0") / "FragSC-202607-BRD4-01.csv"]

@@ -13,6 +13,7 @@ from pathlib import Path
 from xtalflow.domain.instruments import (
     ECHO_650,
     INSTRUMENT_LABELS,
+    SHIFTER_0,
     SHIFTER_1,
     SHIFTER_2,
     WorksheetKind,
@@ -54,11 +55,26 @@ class InstrumentDestination:
 
 
 def standard_instruments(
-    echo_directory: Path, shifter1_directory: Path, shifter2_directory: Path
+    echo_directory: Path,
+    shifter1_directory: Path,
+    shifter2_directory: Path,
+    shifter0_directory: Path | None = None,
 ) -> tuple[InstrumentDestination, ...]:
-    """The BL-5C set: one ECHO 650 and two SHIFTER harvesting stations."""
+    """The BL-5C set: one ECHO 650 and the SHIFTER harvesting stations.
+
+    A third station arrived in November 2026 and is numbered 0, so it is
+    given last here and placed first among the stations - the order of this
+    tuple is the order of the lamps, of the Worksheets table, and of the
+    output rows a save records, and a numbered set reads from 0. Passing it
+    is optional because the development fixtures hold two station folders;
+    the operating preset passes all three.
+    """
+    stations = [] if shifter0_directory is None else [
+        InstrumentDestination(SHIFTER_0, WorksheetKind.SHIFTER, shifter0_directory)
+    ]
     return (
         InstrumentDestination(ECHO_650, WorksheetKind.ECHO, echo_directory),
+        *stations,
         InstrumentDestination(SHIFTER_1, WorksheetKind.SHIFTER, shifter1_directory),
         InstrumentDestination(SHIFTER_2, WorksheetKind.SHIFTER, shifter2_directory),
     )
@@ -159,10 +175,16 @@ OPERATING_SERVER_SETTINGS = ApplicationSettings(
     fragment_library_directory=PROJECT_ROOT / "chems",
     # Many researchers share this machine, so each gets a folder of their own.
     worksheet_staging_directory=None,
+    # Three stations since November 2026. The beamline's own file names them
+    # too, and that file is what actually runs; this is what runs when it is
+    # missing, renamed or read with --mxlive-config pointed elsewhere. The
+    # two must agree, because disagreeing here does not fail - it quietly
+    # writes a plan's worksheets to two stations instead of three.
     instruments=standard_instruments(
         Path("/smbmount/echo650"),
         Path("/smbmount/shifter1"),
         Path("/smbmount/shifter2"),
+        Path("/smbmount/shifter0"),
     ),
     create_missing_instrument_roots=False,
     # Installed beside the versions, like the config file, so a new version

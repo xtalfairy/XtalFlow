@@ -76,8 +76,8 @@ class HarvestedCrystal:
     def same_harvest_as(self, other: HarvestedCrystal) -> bool:
         """Whether two rows for one well say the same thing, whatever file they are in.
 
-        The same worksheet is saved to both SHIFTER stations and again on every
-        later save, so one well legitimately appears several times. Two rows
+        The same worksheet is saved to every SHIFTER station and again on
+        every later save, so one well legitimately appears several times. Two rows
         that agree are one harvest seen twice; two that disagree cannot be
         resolved here.
         """
@@ -240,7 +240,7 @@ class ShifterFile:
     notes: tuple[str, ...] = field(default=())
     # Neither a time nor a puck: nobody has reached these yet, as far as this
     # one file knows. Kept rather than said, because the same worksheet goes
-    # to both stations and the copy nobody worked from reports every well as
+    # to every station and the copies nobody worked from report every well as
     # unpicked - which is not news about the plate, only about the copy.
     unpicked: tuple[tuple[str, str], ...] = ()
 
@@ -292,8 +292,8 @@ def collect_harvest(
     """Fold every returned file into one answer for this revision's crystals.
 
     ``expected`` is (plate, well) for the wells the revision sent; ``files`` is
-    (source, text) for each returned worksheet. The same worksheet goes to both
-    stations and again on every save, so a well may be reported several times:
+    (source, text) for each returned worksheet. The same worksheet goes to every
+    station and again on every save, so a well may be reported several times:
     agreeing rows are one harvest, disagreeing ones are a conflict.
 
     That is also why nothing here says how many rows of a file are unpicked.

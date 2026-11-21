@@ -80,6 +80,7 @@ from xtalflow.domain import (
 )
 from xtalflow.domain.instruments import (
     ECHO_650,
+    SHIFTER_0,
     SHIFTER_1,
     SHIFTER_2,
 )
@@ -2934,6 +2935,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="ECHO 650 worksheet output directory (overrides the configured echo650)",
     )
     parser.add_argument(
+        "--shifter0-dir",
+        type=Path,
+        help="SHIFTER 0 worksheet output directory (overrides the configured shifter0)",
+    )
+    parser.add_argument(
         "--shifter1-dir",
         type=Path,
         help="SHIFTER 1 worksheet output directory (overrides the configured shifter1)",
@@ -3002,6 +3008,7 @@ def settings_from_arguments(args: argparse.Namespace) -> ApplicationSettings:
         settings = replace(settings, instruments=configured)
     for instrument_id, directory in (
         (ECHO_650, args.echo_dir),
+        (SHIFTER_0, args.shifter0_dir),
         (SHIFTER_1, args.shifter1_dir),
         (SHIFTER_2, args.shifter2_dir),
     ):

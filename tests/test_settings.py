@@ -231,3 +231,92 @@ def test_a_score_is_never_rounded_up_past_the_rule_it_is_judged_by() -> None:
     assert counted(2, "boundary") == "2 boundaries"
     assert counted(2, "well") == "2 wells"
     assert counted(2, "box") == "2 boxes"
+
+
+def test_the_operating_preset_holds_the_stations_the_beamline_has() -> None:
+    """Three SHIFTER stations since November 2026, numbered from 0.
+
+    The beamline's own xtalflow.toml names them too, and that file is what
+    actually runs. This is what runs when it is missing, renamed, or read
+    with --mxlive-config pointed at a trial copy, so the two have to agree.
+    Disagreeing does not fail: a save would quietly reach two stations
+    instead of three, every lamp would look right, and the third station
+    would simply never be asked for.
+    """
+    from xtalflow.settings import OPERATING_SERVER_SETTINGS
+
+    assert [item.instrument for item in OPERATING_SERVER_SETTINGS.instruments] == [
+        "echo650", "shifter0", "shifter1", "shifter2",
+    ], "the order here is the order of the lamps, the table, and the saved rows"
+    assert [str(item.output_directory) for item in OPERATING_SERVER_SETTINGS.instruments] == [
+        "/smbmount/echo650",
+        "/smbmount/shifter0",
+        "/smbmount/shifter1",
+        "/smbmount/shifter2",
+    ]
+    assert [item.label for item in OPERATING_SERVER_SETTINGS.instruments] == [
+        "ECHO 650", "SHIFTER 0", "SHIFTER 1", "SHIFTER 2",
+    ], "a station missing from INSTRUMENT_LABELS is drawn by its id"
+
+
+def test_the_site_file_can_name_the_stations_the_beamline_will_name(
+    tmp_path: Path,
+) -> None:
+    """The four tables that are going into the beamline's own file.
+
+    Checked here because nothing else reads them: the presets are held by
+    tests, and the site file is not in this repository. Three things about it
+    can be wrong without failing - a missing echo650, an id that does not
+    contain "shifter", and a renamed station - and all three are quiet.
+    """
+    from xtalflow.domain.instruments import WorksheetKind
+    from xtalflow.infrastructure.instrument_config import (
+        load_instrument_destinations,
+    )
+
+    site = tmp_path / "xtalflow.toml"
+    site.write_text(
+        '[mxlive]\nkey_directory = "/tmp/keys"\n\n'
+        + "".join(
+            f'[[instruments]]\nid = "{name}"\nworksheet = "{kind}"\n'
+            f'directory = "/smbmount/{name}"\nlabel = "{label}"\n\n'
+            for name, kind, label in (
+                ("echo650", "echo", "ECHO 650"),
+                ("shifter0", "shifter", "SHIFTER 0"),
+                ("shifter1", "shifter", "SHIFTER 1"),
+                ("shifter2", "shifter", "SHIFTER 2"),
+            )
+        ),
+        encoding="utf-8",
+    )
+    destinations = load_instrument_destinations(site)
+    assert destinations is not None
+
+    # The same set the operating preset holds, in the same order, because the
+    # file replaces the preset rather than adding to it.
+    from xtalflow.settings import OPERATING_SERVER_SETTINGS
+
+    assert [item.instrument for item in destinations] == [
+        item.instrument for item in OPERATING_SERVER_SETTINGS.instruments
+    ]
+    assert [item.output_directory for item in destinations] == [
+        item.output_directory for item in OPERATING_SERVER_SETTINGS.instruments
+    ]
+    assert [item.label for item in destinations] == [
+        item.label for item in OPERATING_SERVER_SETTINGS.instruments
+    ]
+
+    # An ECHO destination has to be among them. Without one, saving a
+    # fragment plan is refused outright, and the version installed beside
+    # this one asks for "echo650" by name.
+    echo = [item for item in destinations if item.worksheet is WorksheetKind.ECHO]
+    assert [item.instrument for item in echo] == ["echo650"]
+
+    # And every harvesting station's id has to contain "shifter": the harvest
+    # review picks the worksheets to read back by that substring, not by the
+    # worksheet kind, so a station named otherwise would be written to and
+    # then never read from.
+    stations = [
+        item for item in destinations if item.worksheet is WorksheetKind.SHIFTER
+    ]
+    assert stations and all("shifter" in item.instrument for item in stations)

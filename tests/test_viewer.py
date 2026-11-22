@@ -7726,40 +7726,6 @@ def test_every_sidebar_way_home_works_from_mxlive_history() -> None:
     assert window.pages.currentWidget() is window.experiment_page, "a new experiment"
     window.close()
     app.processEvents()
-
-
-def test_the_sort_label_stays_inside_what_the_beamline_measured() -> None:
-    """The label was chosen to fit, and nothing was stopping it growing back.
-
-    "Sort by crystal score" measured 157px here and 174px on the beamline,
-    where it was cut by 8. The label in use was picked by the person at that
-    window from candidates that did fit.
-
-    The budget comes from their measurement, not mine: the check box stops
-    growing at 186px in that row, leaving about 166px for text. DejaVu there
-    runs about 11% wider than the face this suite draws in, so 166 of their
-    pixels is roughly 150 of ours. That is the limit asserted here.
-
-    It cannot prove the host fits - only a measurement there does - but it
-    fails before anyone ships a label that plainly will not, which has
-    happened once. The budget is small because the Select wells row wants
-    about 1520px and gets 1121 at 1920; folding it onto two lines is what
-    would make this test unnecessary.
-    """
-    QApplication.instance() or QApplication([])
-    # With the prefix the box wears on a plate the order gets wrong, which
-    # is the widest the label ever is and was left out of the first version
-    # of this test - a label between 134 and 150 would have passed here and
-    # been cut on screen in exactly the state that matters most.
-    worn = f"{theme.SYMBOL_ATTENTION} {CRYSTAL_ORDER_LABEL}"
-    width = QApplication.fontMetrics().width(worn)
-
-    assert width <= 150, (
-        f"{worn!r} is {width}px here, about {width * 1.11:.0f} on the "
-        "beamline, where there is room for 166; shorten it or fold the row"
-    )
-
-
 def _select_wells_at(width: int, *, docks: tuple[str, ...] = ()):
     """A shown window on the step, at a width, with named docks open."""
     from dataclasses import replace as _replace
@@ -7814,6 +7780,21 @@ def test_nothing_in_the_walk_row_is_squeezed_with_a_panel_open() -> None:
         assert window.review_summary_label.width() > 0, (
             f"the summary is drawn at no width {where}, so nobody reads it"
         )
+
+        # The sort box in the widest form it ever takes. An earlier test
+        # guarded this by carrying a number measured on a Mac and scaling it
+        # by 11%; this asks the box itself, in the font it is drawn in, so
+        # on the beamline it measures DejaVu rather than a guess about it.
+        box = window.crystal_first_input
+        worn = f"{theme.SYMBOL_ATTENTION} {CRYSTAL_ORDER_LABEL}"
+        was = box.text()
+        box.setText(worn)
+        app.processEvents()
+        assert box.sizeHint().width() <= box.width(), (
+            f"{worn!r} does not fit its box {where}: it wants "
+            f"{box.sizeHint().width()}px and has {box.width()}"
+        )
+        box.setText(was)
 
         window.close()
         app.processEvents()

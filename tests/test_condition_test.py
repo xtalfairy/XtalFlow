@@ -172,6 +172,37 @@ def test_plan_refuses_too_few_wells_missing_sources_and_unequal_splits() -> None
         build_condition_test_plan(_design(replicates=1), naked)
 
 
+def test_a_position_an_addition_cannot_reach_is_counted_and_not_written() -> None:
+    """A small addition over many positions leaves some of them with nothing.
+
+    The liquid moves in whole 2.5 nL steps, so an addition of four steps
+    cannot put any at a fifth position. Those positions get no worksheet row
+    at all - not a 0 nL one - so the only way to know a clicked spot will
+    stay dry is to be told the number.
+    """
+    from xtalflow.domain.worksheets import build_condition_echo_rounds
+
+    # 2 % of 500 nL is 10 nL: four steps, and the well has five positions.
+    design = _design(drop="500", percents=("2",), times=(0,), replicates=1)
+    plan = build_condition_test_plan(design, _selection(1, positions=5))
+
+    (assignment,) = plan.assignments
+    (dose,) = assignment.doses
+    assert dose.volume_nl == Decimal("10.0")
+    volumes = [volume for _position, volume in assignment.position_volumes(dose)]
+    assert volumes == [Decimal(value) for value in ("2.5", "2.5", "2.5", "2.5", "0")]
+    assert assignment.positions_without_volume() == 1, "the fifth stays dry"
+
+    ((_minute, rows),) = build_condition_echo_rounds(plan)
+    assert len(rows) == 4, "the dry position is left out, not written as zero"
+    assert sum(row.transfer_volume_nl for row in rows) == dose.volume_nl
+
+    # A well every addition reaches counts none.
+    whole = build_condition_test_plan(design, _selection(1, positions=2))
+    (reached,) = whole.assignments
+    assert reached.positions_without_volume() == 0
+
+
 def test_an_addition_that_cannot_divide_evenly_is_spread_over_the_positions() -> None:
     """The case that stopped BL-5C: 600 nL drop, DMSO 5 %, three crystals per well.
 

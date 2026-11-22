@@ -907,6 +907,25 @@ class ConditionAssignment:
             for dose in self.doses
         )
 
+    def positions_without_volume(self) -> int:
+        """How many chosen positions this well's additions never reach.
+
+        An addition is moved in whole 2.5 nL steps, so one with fewer steps
+        than the well has positions cannot put liquid at every one of them.
+        The positions clicked first take the steps there are and the rest
+        receive nothing, and a position receiving nothing is left out of the
+        worksheet entirely - it does not appear as a 0 nL row.
+
+        Counted per addition and summed, because a well may hold several and
+        a position missed by one can still be reached by another.
+        """
+        return sum(
+            1
+            for dose in self.doses
+            for _position, volume in self.position_volumes(dose)
+            if not volume
+        )
+
 
 @dataclass(frozen=True)
 class ConditionTestPlan:

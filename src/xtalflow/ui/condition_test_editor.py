@@ -2453,6 +2453,22 @@ class ConditionTestEditor(PlanEditorBase):
                         f"is named {item.named_as}%" for item in renamed[:3]
                     ) + " · whole percents only there",
                 ))
+            missed = tuple(
+                item for item in plan.assignments if item.positions_without_volume()
+            )
+            if missed:
+                # Not an error and not in the way: the drop still receives the
+                # whole addition. It is here because the worksheet has no row
+                # for a position that gets nothing, so without this line the
+                # only sign is a spot the liquid never reaches.
+                rows.insert(5, (
+                    "Positions missed",
+                    f"{counted(sum(item.positions_without_volume() for item in missed), 'position')} "
+                    f"in {counted(len(missed), 'well')} "
+                    f"left with nothing and written to no worksheet · "
+                    f"an addition of fewer than {TRANSFER_INCREMENT_NL} nL "
+                    f"per position cannot reach them all",
+                ))
             uneven = tuple(item for item in plan.assignments if item.splits_unevenly())
             if uneven:
                 rows.insert(5, (

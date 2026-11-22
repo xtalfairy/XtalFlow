@@ -1878,6 +1878,10 @@ def test_a_position_past_the_count_is_asked_about_before_it_is_kept(
     window._handle_image_click(610, 510, Qt.LeftButton)
     assert len(asked) == 1, "going past the count is asked about"
     assert "divided between all 2" in asked[0], asked[0]
+    # It must not promise a split it cannot know: the dose belongs to the
+    # plan, which does not exist while a plate is being reviewed.
+    assert "chosen later" in asked[0], asked[0]
+    assert "left off the worksheet" in asked[0], asked[0]
     assert window.controller.session.target_count_for(well) == 1, "no keeps it off"
 
     # And the question is only for going past: the first position on a well

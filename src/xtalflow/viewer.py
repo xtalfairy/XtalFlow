@@ -105,6 +105,7 @@ from xtalflow.settings import (
     SITE_CONFIG_PATH,
     with_network_path_policy,
 )
+from xtalflow.domain.soaking import TRANSFER_INCREMENT_NL
 from xtalflow.text import counted, percent
 from xtalflow.application.crystal_scoring import CrystalScoringService
 from xtalflow.domain.crystal_score import (
@@ -1909,9 +1910,13 @@ class ViewerWindow(QMainWindow):
                 "Add another position?",
                 f"{well} already has {counted(held, 'soaking position')}, "
                 f"and this review is set to {wanted} per well.\n\n"
-                f"Another one is kept and dispensed to: the dose for this well "
-                f"is divided between all {held + 1} of them, so each drop is "
-                f"smaller. The worksheet shows the full dose either way.",
+                f"Another one is kept and dispensed to: this well's dose is "
+                f"divided between all {held + 1} of them in "
+                f"{TRANSFER_INCREMENT_NL} nL steps, so each drop is smaller. "
+                f"A dose too small to go round leaves a position with nothing, "
+                f"and a position with nothing is left off the worksheet.\n\n"
+                f"The dose is chosen later, with the plan, so how it divides "
+                f"cannot be shown here.",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )

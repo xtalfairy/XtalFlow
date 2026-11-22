@@ -2035,7 +2035,7 @@ def test_trusted_plate_auto_confirms_well_above_user_threshold(
     assert window.current_calibration.confirmed
     assert (
         "Well boundary confirmed · auto, outline fit"
-        in window.calibration_label.full_text()
+        in window.calibration_label.text()
     )
     window.close()
     app.processEvents()
@@ -2251,7 +2251,7 @@ def test_manual_calibration_clicks_do_not_create_targets(tmp_path: Path) -> None
 
     assert window.controller.session.target_count_for(image) == 0
     assert window.current_calibration.confirmed
-    assert "confirmed · manual" in window.calibration_label.full_text()
+    assert "confirmed · manual" in window.calibration_label.text()
     window.close()
     app.processEvents()
 
@@ -3459,7 +3459,7 @@ def test_the_view_does_not_leave_a_well_whose_boundary_is_unconfirmed(
         == f"{held} \u00b7 confirm the boundary to move on"
     )
     # The status line names the well, so a confirmation cannot land elsewhere.
-    assert window.calibration_label.full_text().startswith(f"{held} \u00b7")
+    assert window.calibration_label.text().startswith(f"{held} \u00b7")
     assert window.accept_calibration_button.isEnabled()
 
     window.accept_calibration_button.click()
@@ -3558,8 +3558,8 @@ def test_a_confirmed_boundary_with_a_position_outside_it_says_so(
     # Said where it is seen, with the mark matching the words.
     assert theme.SYMBOL_ATTENTION in page.footer_status_label.text()
     assert "1 position outside the boundary" in page.footer_status_label.text()
-    assert "1 position outside it" in window.calibration_label.full_text()
-    assert theme.SYMBOL_OK not in window.calibration_label.full_text()
+    assert "1 position outside it" in window.calibration_label.text()
+    assert theme.SYMBOL_OK not in window.calibration_label.text()
     # And the plan keeps the position, as it is.
     crystals = window.project_controller.selected_crystals_for_plan()
     assert len(crystals) == 1
@@ -7934,7 +7934,7 @@ def test_the_eliding_label_does_not_ratchet_itself_shut() -> None:
     it replaced, which is a strange way to fix clipping.
     """
     app, window = _select_wells_at(1920, docks=("target_summary_dock",))
-    label = window.calibration_label
+    label = window.review_summary_label
     sentence = "F07a · ✓ Well boundary confirmed · auto, outline fit 95%"
 
     label.setText(sentence)

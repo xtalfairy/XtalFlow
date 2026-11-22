@@ -545,14 +545,15 @@ class ViewerWindow(QMainWindow):
         self.fit_button = QPushButton("Fit")
         self.fit_button.setToolTip("Fit image to window (0)")
         self.fit_button.setAccessibleName("Fit image")
-        # The beamline found this one cut at "auto, outl" with the panels
-        # open, in the same way and for the same reason as the summary
-        # above it: a plain QLabel draws what fits and stops. Nobody had
-        # reported it; it was found by looking at a photograph of the
-        # window. Same label class, so it ends in an ellipsis and keeps the
-        # whole sentence in the tooltip.
-        self.calibration_label = ElidingSummaryLabel()
-        self.calibration_label.setText("Well boundary: not loaded")
+        # This clips at "auto, outl" with the panels open, which the
+        # beamline found by looking at a photograph of the window. The
+        # eliding label fixes the clipping and costs the plate list 40px,
+        # because its larger hint changes how the splitter divides the row
+        # - so the sentence gets its ending back and the plate names lose
+        # theirs. That trade has not been put to anyone who looks at this
+        # screen for a living, and it is theirs to make, so this stays the
+        # plain label it has always been until they have made it.
+        self.calibration_label = QLabel("Well boundary: not loaded")
         self.calibration_label.setAccessibleName("Well calibration status")
         self.calibration_accept_inline_button = QPushButton("Accept")
         self.calibration_accept_inline_button.setToolTip("Accept the detected well boundary")

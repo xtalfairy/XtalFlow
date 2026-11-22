@@ -255,6 +255,25 @@ class ImageCanvas(QWidget):
         if image_point is not None:
             self.image_clicked.emit(*image_point, int(event.button()))
 
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt API
+        """Keep a double click from marking a second position.
+
+        Qt's default implementation of this calls ``mousePressEvent``, so a
+        double click arrived here as two presses at the same point and left
+        two positions behind. A double click is one gesture - often just a
+        slow mouse - and never an instruction to mark twice.
+
+        The second one was not merely redundant. With one position per well
+        the first press fills the well and the view moves on, so the second
+        landed on the next well as its first position, which nothing asks
+        about: kept, soaked, and sent to MxLive in that well's dose, on a
+        well nobody had looked at.
+
+        Nothing on this canvas wants a double click, so it stops here
+        rather than being forwarded.
+        """
+        event.accept()
+
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt API
         if self._pan_start is None or self._pan_origin is None:
             return

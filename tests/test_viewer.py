@@ -16,8 +16,8 @@ import pytest
 
 from xtalflow.domain.crystal_score import crystal_first_order
 from xtalflow.domain.plan_lifecycle import PlanRevision
-from PyQt5.QtCore import QPoint, Qt
-from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtCore import QEvent, QPoint, Qt
+from PyQt5.QtGui import QImage, QMouseEvent, QPixmap
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
@@ -7091,6 +7091,74 @@ def test_a_library_read_from_a_moved_folder_is_not_a_changed_plan(
     changed["protein"] = "MDM2"
     editor.last_revision_snapshot = json.dumps(changed)
     assert not editor.facts(False, False).revision_matches_current
+
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_one_double_click_marks_one_position(tmp_path: Path, monkeypatch) -> None:
+    """Qt makes a second press out of a double click, and it was being kept.
+
+    QWidget.mouseDoubleClickEvent calls mousePressEvent by default, so one
+    double click arrived as two presses at the same point. A slow or shaky
+    double click is how a mouse behaves, not a second instruction.
+
+    Where the extra position lands is what makes it serious. On the same
+    well it goes past the configured count, and since the count is asked
+    about it can be refused. But when the first click fills the well and the
+    view moves on - which is the ordinary flow, one position per well - the
+    second press is the FIRST position on the next well, and nothing asks
+    about a first position. It is kept, soaked, and sent to MxLive inside
+    that well's dose, on a well the operator never looked at.
+
+    Measured before the fix: two positions on two wells, one gesture, no
+    question. So the count here is over the whole plate.
+    """
+    app = QApplication.instance() or QApplication([])
+    asked: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        lambda *args, **kwargs: (asked.append(args[2]), QMessageBox.No)[1],
+    )
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        auto_advance_target_count=1,
+    )
+    # Low enough that A01a (0.89) is confirmed on load, so the view advances
+    # once the well has its one position. That is the dangerous path.
+    window.auto_confirm_confidence_input.setValue(50)
+    window.load_plate("2070", SWISSCI_MRC_2_WELL)
+    window.auto_confirm_plate_checkbox.setChecked(True)
+    window._auto_detect_calibration()
+    app.processEvents()
+    asked.clear()  # the calibration question is not what this is about
+
+    canvas = window.image_canvas
+    at = QPoint(canvas.width() // 2, canvas.height() // 2)
+    for kind in (
+        QEvent.MouseButtonPress,
+        QEvent.MouseButtonRelease,
+        QEvent.MouseButtonDblClick,
+        QEvent.MouseButtonRelease,
+    ):
+        app.sendEvent(
+            canvas,
+            QMouseEvent(kind, at, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier),
+        )
+    app.processEvents()
+
+    session = window.controller.session
+    held = {
+        key: session.target_count_for(key)
+        for key in session._targets_by_image
+        if session.target_count_for(key)
+    }
+    assert sum(held.values()) == 1, held
+    assert len(held) == 1, f"a second well was marked: {held}"
+    assert asked == [], f"and it was not even asked about: {asked}"
 
     window.close()
     app.processEvents()

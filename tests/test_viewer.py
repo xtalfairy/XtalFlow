@@ -7639,3 +7639,73 @@ def test_the_window_opens_inside_the_screen_it_is_given() -> None:
 
     window.close()
     app.processEvents()
+
+
+def test_a_workspace_brings_the_home_list_back_from_mxlive_history() -> None:
+    """Clicking a workspace means "show me that folder", wherever you are.
+
+    Reported from the beamline: once MxLive history was open, clicking
+    Workspaces - All experiments included - left the window on the history
+    page. The folder was selected underneath, and the list it chose was the
+    one thing the person could not see. They first read it as experiments
+    refusing to open, which is the worse half of the fault: a control that
+    goes quiet teaches nothing about where it went.
+
+    Only a move away from the experiment page was handled, so a return from
+    MxLive history was never a return at all.
+    """
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(RockMakerImageRepository(FIXTURE_ROOT))
+
+    window.experiments.show_mxlive_history()
+    app.processEvents()
+    assert window.pages.currentWidget() is window.mxlive_history_page
+
+    window._select_home_workspace(None)
+    app.processEvents()
+
+    assert window.pages.currentWidget() is window.home_page, (
+        "a workspace shows its experiments, not the page you were on"
+    )
+
+    window.close()
+    app.processEvents()
+
+
+def test_every_sidebar_way_home_works_from_mxlive_history() -> None:
+    """The three sidebar routes back, each from the history page.
+
+    The one that was broken was a workspace click. These are its neighbours,
+    pinned so a later guard on the page cannot quietly take one of them out
+    again: choosing a workspace, choosing the one already selected, and
+    starting a new experiment.
+    """
+    app = QApplication.instance() or QApplication([])
+
+    def on_history() -> ViewerWindow:
+        window = ViewerWindow(RockMakerImageRepository(FIXTURE_ROOT))
+        window.experiments.show_mxlive_history()
+        app.processEvents()
+        assert window.pages.currentWidget() is window.mxlive_history_page
+        return window
+
+    window = on_history()
+    window._select_home_workspace(None)
+    app.processEvents()
+    assert window.pages.currentWidget() is window.home_page, "a workspace"
+    window.close()
+
+    # The workspace that is already selected: the sidebar re-emits for this
+    # deliberately, so that clicking where you are still takes you there.
+    window = on_history()
+    window._select_home_workspace(window._home_workspace_id)
+    app.processEvents()
+    assert window.pages.currentWidget() is window.home_page, "the same workspace"
+    window.close()
+
+    window = on_history()
+    window.experiments.start_experiment(PlanType.RAW_CRYSTAL)
+    app.processEvents()
+    assert window.pages.currentWidget() is window.experiment_page, "a new experiment"
+    window.close()
+    app.processEvents()

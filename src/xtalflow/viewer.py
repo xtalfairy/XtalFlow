@@ -998,8 +998,16 @@ class ViewerWindow(QMainWindow):
     # -- Workspaces ---------------------------------------------------------------
 
     def _select_home_workspace(self, workspace_id: str | None) -> None:
-        """Show one folder's experiments; new experiments are created in it."""
-        if self.pages.currentWidget() is self.experiment_page:
+        """Show one folder's experiments; new experiments are created in it.
+
+        From wherever the window is. Only a move away from the experiment
+        page used to be handled, so clicking a workspace while MxLive
+        history was open selected the folder and then left the person on
+        the history page - with the list they had just asked for hidden
+        behind it. show_home only leaves an experiment when there is one to
+        leave, so asking it from any other page is safe.
+        """
+        if self.pages.currentWidget() is not self.home_page:
             self.experiments.show_home()
         self._home_workspace_id = workspace_id
         self._refresh_home_workspaces()

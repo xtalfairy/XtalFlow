@@ -83,8 +83,12 @@ def test_the_check_passes_when_the_marks_sit_near_the_front() -> None:
 
     assert check.state == "pass"
     assert check.ranks == (2, 3, 5)
+    # The middle rank is what the sentence quotes, because the middle rank
+    # is what decides: state compares the median against the top quarter,
+    # not a count of how many marks landed there.
     assert check.sentence() == (
-        "◆ Crystal first · your 3 marked drops rank 2, 3 and 5 of 100"
+        "◆ Model check: the middle of your 3 marked drops ranked 3 of 100 "
+        "on this plate, inside its top 25%"
     )
 
 
@@ -97,8 +101,10 @@ def test_the_check_fails_and_says_so_rather_than_going_quiet() -> None:
     check = self_check(keys, scores, ["i40", "i60", "i80"])
 
     assert check.state == "fail"
-    assert check.sentence().startswith("△ Crystal first not used on this plate")
-    assert "41, 61 and 81 of 100" in check.sentence()
+    assert check.sentence().startswith("△ Model check:")
+    assert "ranked 61 of 100" in check.sentence()
+    # It has to say what to do, not only that something was measured.
+    assert "not recommended here" in check.sentence()
 
 
 def test_too_few_marks_is_unverified_rather_than_a_verdict() -> None:
@@ -111,7 +117,12 @@ def test_too_few_marks_is_unverified_rather_than_a_verdict() -> None:
     for marks in ([], ["i1"], ["i1", "i2"]):
         check = self_check(keys, scores, marks)
         assert check.state == "unverified"
-        assert check.sentence() == "Crystal first · not yet checked against your marks"
+        # And it says what would make a check possible, including the part
+        # nobody could guess: marks made while sorting by score are at the
+        # front because they were shown first, so they are not counted.
+        assert check.sentence() == (
+            "Model check: needs 3 or more drops marked in well order"
+        )
 
 
 def test_images_nobody_could_score_are_left_out_of_the_count() -> None:
@@ -132,7 +143,14 @@ def test_images_nobody_could_score_are_left_out_of_the_count() -> None:
     assert check.state == "pass"
 
 
-def test_many_marks_are_given_as_a_range_and_a_median() -> None:
+def test_many_marks_are_still_one_sentence_about_the_middle_one() -> None:
+    """Twenty marks do not become twenty numbers.
+
+    The sentence used to list the ranks, or a range and a median once there
+    were more than eight, and leave the reader to work out which of those
+    the program had actually judged. It judges the median, so that is the
+    number given, however many marks there are.
+    """
     from xtalflow.domain.crystal_score import self_check
 
     keys = tuple(f"i{index}" for index in range(288))
@@ -141,4 +159,7 @@ def test_many_marks_are_given_as_a_range_and_a_median() -> None:
     check = self_check(keys, scores, [f"i{index}" for index in range(2, 61, 3)])
 
     assert len(check.ranks) == 20
-    assert "rank 3–60 of 288, median" in check.sentence()
+    sentence = check.sentence()
+    assert "the middle of your 20 marked drops ranked 33 of 288" in sentence
+    for listed in ("3–60", "rank 3,"):
+        assert listed not in sentence, listed

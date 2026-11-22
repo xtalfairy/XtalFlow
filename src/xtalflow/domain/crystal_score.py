@@ -112,25 +112,33 @@ class SelfCheck:
         return "pass" if middle <= self.total * GOOD_ENOUGH else "fail"
 
     def sentence(self) -> str:
-        """What the window says. A measurement, not a verdict."""
+        """What the window says. A measurement, not a verdict.
+
+        It used to give the ranks and leave the reader to work out what had
+        been measured against what. Reported from the beamline as not
+        understandable, so each sentence now says what was compared, on
+        which plate, and - where it matters most - what would make a check
+        possible at all.
+
+        The middle rank is the one quoted because the middle rank is what
+        decides: ``state`` compares the median against the top quarter, not
+        a count of how many marks landed there.
+        """
+        top = f"top {GOOD_ENOUGH:.0%}"
         if self.state == "unverified":
-            return "Crystal first · not yet checked against your marks"
+            return (
+                f"Model check: needs {ENOUGH_MARKS} or more drops marked "
+                "in well order"
+            )
         drops = f"your {len(self.ranks)} marked drop" + ("" if len(self.ranks) == 1 else "s")
-        ordered = sorted(self.ranks)
-        if len(ordered) > 8:
-            middle = ordered[len(ordered) // 2]
-            where = (
-                f"rank {ordered[0]}–{ordered[-1]} of {self.total}, median {middle}"
-            )
-        else:
-            listed = ", ".join(str(rank) for rank in ordered[:-1])
-            where = (
-                f"rank {listed} and {ordered[-1]} of {self.total}"
-                if len(ordered) > 1 else f"rank {ordered[0]} of {self.total}"
-            )
+        middle = sorted(self.ranks)[len(self.ranks) // 2]
+        where = f"the middle of {drops} ranked {middle} of {self.total}"
         if self.state == "pass":
-            return f"◆ Crystal first · {drops} {where}"
-        return f"△ Crystal first not used on this plate · {drops} {where}"
+            return f"◆ Model check: {where} on this plate, inside its {top}"
+        return (
+            f"△ Model check: {where} on this plate, outside its {top} - "
+            "sorting by score is not recommended here"
+        )
 
 
 def self_check(

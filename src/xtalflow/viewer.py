@@ -161,6 +161,21 @@ T = TypeVar("T")
 SHARE_CHECK_MILLISECONDS = 60_000
 
 
+# One wording in one place: it is on a checkbox, in its tooltip, in its
+# accessible name and in a status message, and the beamline reported the old
+# one as not understandable even after reading the tooltip.
+CRYSTAL_ORDER_LABEL = "Sort by crystal score"
+CRYSTAL_ORDER_TOOLTIP = (
+    "Shows the images the crystal model rates most likely to hold crystals "
+    "first.\n"
+    "Off: well order (A01a, A01b, ...). Only the order changes; every image "
+    "is still shown.\n"
+    "The model is a guess. It shipped with no accuracy measured on data it "
+    "had not seen, so the check against your own marks is the only "
+    "measurement of it there is."
+)
+
+
 class ViewerWindow(QMainWindow):
     """Review plate images and keep the experiments made from them in step."""
 
@@ -315,12 +330,9 @@ class ViewerWindow(QMainWindow):
         self.navigation_label.setObjectName("PrimaryHeading")
         self.position_label = QLabel()
         self.position_label.setObjectName("Muted")
-        self.crystal_first_input = QCheckBox("Crystal first")
-        self.crystal_first_input.setToolTip(
-            "Walk this plate by crystal score, highest first. Nothing is "
-            "hidden; every image is still reached."
-        )
-        self.crystal_first_input.setAccessibleName("Crystal first")
+        self.crystal_first_input = QCheckBox(CRYSTAL_ORDER_LABEL)
+        self.crystal_first_input.setToolTip(CRYSTAL_ORDER_TOOLTIP)
+        self.crystal_first_input.setAccessibleName(CRYSTAL_ORDER_LABEL)
         # No model configured means the whole feature is absent, not greyed out.
         self.crystal_first_input.setVisible(self.settings.crystal_model_path is not None)
         self.image_filter_input = QComboBox()
@@ -2266,17 +2278,15 @@ class ViewerWindow(QMainWindow):
         """
         check = self._crystal_self_check()
         if check is None:
-            self.crystal_first_input.setText("Crystal first")
+            self.crystal_first_input.setText(CRYSTAL_ORDER_LABEL)
             return
         sentence = check.sentence()
         failed = check.state == "fail"
         self.crystal_first_input.setText(
-            f"{theme.SYMBOL_ATTENTION} Crystal first" if failed else "Crystal first"
+            f"{theme.SYMBOL_ATTENTION} {CRYSTAL_ORDER_LABEL}"
+            if failed else CRYSTAL_ORDER_LABEL
         )
-        self.crystal_first_input.setToolTip(
-            f"{sentence}\n\nWalk this plate by crystal score, highest first. "
-            "Nothing is hidden; every image is still reached."
-        )
+        self.crystal_first_input.setToolTip(f"{sentence}\n\n{CRYSTAL_ORDER_TOOLTIP}")
         if failed and self._crystal_failed_set != self._crystal_scored_set:
             # Cleared when a plate first turns out to fail, and not again:
             # someone who ticks it back on after reading why has decided.
@@ -2293,7 +2303,7 @@ class ViewerWindow(QMainWindow):
         self._show_crystal_self_check(announce=checked)
         if checked and not self._crystal_scores:
             self.status_message_label.show_message(
-                "Crystal first · from when scoring finishes", 4000
+                f"{CRYSTAL_ORDER_LABEL} · from when scoring finishes", 4000
             )
 
     def _crystal_service(self):

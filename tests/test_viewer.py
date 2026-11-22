@@ -4277,7 +4277,11 @@ def test_a_plate_the_order_gets_wrong_says_so_and_unticks_itself(
     assert check.state == "fail"
     assert not window.crystal_first_input.isChecked(), "a failing plate starts unticked"
     assert window.crystal_first_input.text().startswith(theme.SYMBOL_ATTENTION)
-    assert "not used on this plate" in window.crystal_first_input.toolTip()
+    tooltip = window.crystal_first_input.toolTip()
+    assert "not recommended here" in tooltip
+    # And the tooltip still says what the control does, below the verdict,
+    # so reading it is not conditional on the plate having been judged.
+    assert "Only the order changes" in tooltip
     # Still usable: it is a permutation, so it hides nothing even when wrong.
     assert window.crystal_first_input.isEnabled()
     window.crystal_first_input.setChecked(True)

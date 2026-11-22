@@ -7826,3 +7826,72 @@ def test_the_walk_row_does_not_move_when_the_data_changes() -> None:
 
     window.close()
     app.processEvents()
+
+
+def test_the_four_view_buttons_stand_together_and_match_their_menu() -> None:
+    """Plate list and Position numbers come out of the Settings menu.
+
+    They decide what else is on screen, exactly as Selected wells and Plate
+    map do, and they were only in a menu because the one-row toolbar had no
+    space for them. Each button and its menu item are two handles on one
+    action, so this presses each handle and checks the other followed.
+    """
+    app, window = _select_wells_at(1920)
+
+    for button, action in (
+        (window.plates_panel_button, window.plates_panel_action),
+        (window.position_numbers_button, window.position_numbers_action),
+    ):
+        assert button.isChecked() == action.isChecked(), "they start together"
+
+        button.setChecked(not button.isChecked())
+        app.processEvents()
+        assert action.isChecked() == button.isChecked(), (
+            f"{button.text()!r}: the menu item did not follow the button"
+        )
+
+        action.setChecked(not action.isChecked())
+        app.processEvents()
+        assert button.isChecked() == action.isChecked(), (
+            f"{button.text()!r}: the button did not follow the menu item"
+        )
+
+    row = next(
+        layout for layout in window.findChildren(QHBoxLayout)
+        if layout.indexOf(window.target_summary_button) >= 0
+    )
+    for button in (window.plates_panel_button, window.position_numbers_button):
+        assert row.indexOf(button) >= 0, f"{button.text()!r} is not in that row"
+
+    window.close()
+    app.processEvents()
+
+
+def test_the_summary_ends_in_an_ellipsis_rather_than_mid_word() -> None:
+    """It gives way to the controls, but it says that it did.
+
+    A bare QLabel draws what fits and stops: "Add a plate to the active
+    workspace" became "Add a plate to the active wo", which reads as the
+    whole message. The sentence is kept in the tooltip either way.
+    """
+    app, window = _select_wells_at(1920, docks=("target_summary_dock",))
+    label = window.review_summary_label
+
+    sentence = "Add a plate to the active workspace before reviewing anything"
+    label.setText(sentence)
+    app.processEvents()
+
+    assert label.toolTip() == sentence, "the whole sentence is still reachable"
+    assert label.full_text() == sentence, "and still readable by a test"
+
+    shown = label.text()
+    if shown != sentence:
+        assert shown.endswith("…"), (
+            f"{shown!r} stops mid-word, so it reads as the whole message"
+        )
+        assert label.fontMetrics().width(shown) <= label.width(), (
+            "the elided text still does not fit"
+        )
+
+    window.close()
+    app.processEvents()

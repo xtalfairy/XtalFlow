@@ -435,6 +435,45 @@ class ImagePathStatusLabel(QLabel):
         )
 
 
+class ElidingSummaryLabel(QLabel):
+    """A status line that ends in an ellipsis rather than mid-word.
+
+    QLabel clips: given too little room it draws what fits and stops, so
+    "Add a plate to the active workspace" became "Add a plate to the active
+    wo" with no sign that anything was missing. This ends it at a word with
+    an ellipsis, and keeps the whole sentence in the tooltip.
+
+    It takes what the row has left, so the controls beside it keep their
+    own width - the same bargain the Ignored size policy struck before,
+    except the reader can now see that a bargain was struck.
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._full_text = ""
+
+    def setText(self, text: str) -> None:  # noqa: N802 - Qt API
+        self._full_text = text
+        self.setToolTip(text)
+        self._refresh_text()
+
+    def full_text(self) -> str:
+        """What it would say with room, which is what a test should read."""
+        return self._full_text
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        self._refresh_text()
+
+    def _refresh_text(self) -> None:
+        QLabel.setText(
+            self,
+            self.fontMetrics().elidedText(
+                self._full_text, Qt.ElideRight, max(self.width() - 4, 24)
+            ),
+        )
+
+
 class StatusMessageLabel(QLabel):
     """Fixed-width area for transient and persistent operational messages."""
 

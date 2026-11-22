@@ -127,6 +127,7 @@ from xtalflow.ui.plate_map import PlateMapPanel, plate_map_cells
 from xtalflow.ui.review_widgets import (
     ImageCanvas,
     ImagePathStatusLabel,
+    ElidingSummaryLabel,
     StatusMessageLabel,
     ImageSetListView,
 )
@@ -396,9 +397,14 @@ class ViewerWindow(QMainWindow):
         self.next_button.setFixedWidth(36)
         self.next_button.setToolTip("Next image (→)")
         self.next_button.setAccessibleName("Next image")
-        self.review_summary_label = QLabel()
+        self._menu_button_followers: list = []
+        self.review_summary_label = ElidingSummaryLabel()
         self.review_summary_label.setObjectName("Muted")
-        # The row is full. Status text gives way before a control does.
+        # It still gives way before a control does - it takes what the row
+        # has left and no more. What changed is that it now says so, with
+        # an ellipsis, instead of being handed zero width and drawing
+        # nothing at all, which is what the bare Ignored policy did for the
+        # life of the program.
         self.review_summary_label.setSizePolicy(
             QSizePolicy.Ignored, self.review_summary_label.sizePolicy().verticalPolicy()
         )
@@ -450,6 +456,21 @@ class ViewerWindow(QMainWindow):
         navigation.addWidget(self.position_label)
         navigation.addWidget(self.review_summary_label, 1)
         navigation.addSpacing(theme.SPACING_L)
+        # The four buttons that decide what else is on screen, together.
+        # Two of them had been in the Settings menu, which is where things
+        # go when there is no room for them - there is room now.
+        self.plates_panel_button = QPushButton("Plate list")
+        self.plates_panel_button.setCheckable(True)
+        self.plates_panel_button.setToolTip(
+            "Show or hide the list of plates (Ctrl+Shift+P)"
+        )
+        navigation.addWidget(self.plates_panel_button)
+        self.position_numbers_button = QPushButton("Position numbers")
+        self.position_numbers_button.setCheckable(True)
+        self.position_numbers_button.setToolTip(
+            "Number the soaking positions on the image (Ctrl+Shift+N)"
+        )
+        navigation.addWidget(self.position_numbers_button)
         self.target_summary_button = QPushButton("Selected wells")
         self.target_summary_button.setCheckable(True)
         self.target_summary_button.setToolTip(
@@ -848,6 +869,24 @@ class ViewerWindow(QMainWindow):
         self.experiment_page.primary_requested.connect(self.experiments._primary_action)
         self.experiment_page.stepper.step_selected.connect(self.experiments.go_to_step)
         self.plate_filter_input.textChanged.connect(self._filter_plate_list)
+        # Button and menu item are two handles on one action, so each
+        # follows the other. Without the block a click would bounce back
+        # and forth between them.
+        for button, action in (
+            (self.plates_panel_button, self.plates_panel_action),
+            (self.position_numbers_button, self.position_numbers_action),
+        ):
+            button.setChecked(action.isChecked())
+            button.toggled.connect(action.setChecked)
+
+            def follow(checked: bool, target=button) -> None:
+                target.blockSignals(True)
+                target.setChecked(checked)
+                target.blockSignals(False)
+
+            action.toggled.connect(follow)
+            self._menu_button_followers.append(follow)
+
         self.target_summary_button.toggled.connect(self.target_summary_dock.setVisible)
         self.target_summary_dock.visibilityChanged.connect(
             self._target_summary_visibility_changed

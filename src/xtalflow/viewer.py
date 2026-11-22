@@ -105,7 +105,6 @@ from xtalflow.settings import (
     SITE_CONFIG_PATH,
     with_network_path_policy,
 )
-from xtalflow.domain.soaking import TRANSFER_INCREMENT_NL
 from xtalflow.text import counted, percent
 from xtalflow.application.crystal_scoring import CrystalScoringService
 from xtalflow.domain.crystal_score import (
@@ -1896,6 +1895,16 @@ class ViewerWindow(QMainWindow):
         with nothing on the worksheet to say so.
 
         So it asks, with "no" as the answer it is already holding.
+
+        Two lines, because this fires on an ordinary click and a long notice
+        is read once and skipped after. It said in three paragraphs that a
+        dose too small to go round leaves a position off the worksheet and
+        that the division could not be shown here; the beamline operator
+        called it too long. Both facts stay where the dose actually exists -
+        the plan's summary counts the positions left with nothing - and what
+        is left here is the one consequence of this click. It still promises
+        no amounts, because the dose belongs to a plan that does not exist
+        while a plate is being reviewed.
         """
         if self.controller is None:
             return False
@@ -1910,13 +1919,8 @@ class ViewerWindow(QMainWindow):
                 "Add another position?",
                 f"{well} already has {counted(held, 'soaking position')}, "
                 f"and this review is set to {wanted} per well.\n\n"
-                f"Another one is kept and dispensed to: this well's dose is "
-                f"divided between all {held + 1} of them in "
-                f"{TRANSFER_INCREMENT_NL} nL steps, so each drop is smaller. "
-                f"A dose too small to go round leaves a position with nothing, "
-                f"and a position with nothing is left off the worksheet.\n\n"
-                f"The dose is chosen later, with the plan, so how it divides "
-                f"cannot be shown here.",
+                f"Its dose will be divided between all {held + 1}, so each "
+                f"drop is smaller.",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )

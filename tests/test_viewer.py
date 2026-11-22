@@ -1,5 +1,6 @@
 import getpass
 import json
+import re
 import os
 import socket
 import sqlite3
@@ -1868,9 +1869,15 @@ def test_a_position_past_the_count_is_asked_about_before_it_is_kept(
     assert len(asked) == 1, "going past the count is asked about"
     assert "divided between all 2" in asked[0], asked[0]
     # It must not promise a split it cannot know: the dose belongs to the
-    # plan, which does not exist while a plate is being reviewed.
-    assert "chosen later" in asked[0], asked[0]
-    assert "left off the worksheet" in asked[0], asked[0]
+    # plan, which does not exist while a plate is being reviewed. The
+    # sentence that used to say so in words is gone - the operator called
+    # the notice too long - so what holds the line now is that no amount
+    # appears at all.
+    assert "nL" not in asked[0], asked[0]
+    assert not re.search(r"\d+\.\d", asked[0]), asked[0]
+    # Short enough to be read on an ordinary click, which is when it fires.
+    assert len(asked[0]) < 160, f"{len(asked[0])}: {asked[0]}"
+    assert asked[0].count("\n\n") == 1, "two short lines"
     assert window.controller.session.target_count_for(well) == 1, "no keeps it off"
 
     # And the question is only for going past: the first position on a well

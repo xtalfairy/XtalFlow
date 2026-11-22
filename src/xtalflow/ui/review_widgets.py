@@ -480,16 +480,14 @@ class ElidingSummaryLabel(QLabel):
         hint.setWidth(self.fontMetrics().width(self._full_text) + 4)
         return hint
 
-    def minimumSizeHint(self):  # noqa: N802 - Qt API
-        """But it may still be squeezed down to an ellipsis.
-
-        It asks for the sentence and settles for whatever is left, which is
-        the bargain it is here to make visible. A minimum taken from the
-        text would make the row refuse to shrink instead.
-        """
-        hint = super().minimumSizeHint()
-        hint.setWidth(min(hint.width(), 24))
-        return hint
+    # No minimumSizeHint override. The first attempt capped it at 24px so
+    # the row could always shrink, and the beamline measured what that
+    # cost: with a panel open the whole centre column lost 40px to the
+    # dock, because a column that can shrink further is given less. Both
+    # labels in it got narrower than the plain QLabel they replaced. Qt
+    # squeezes a widget below its minimum when it must, so the elide still
+    # happens when the room really is not there - it just no longer
+    # volunteers the room first.
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
         super().resizeEvent(event)

@@ -188,6 +188,25 @@ def _lamp_is_whole(button) -> bool:
     return button.width() >= metrics.width(button.text()) + overhead
 
 
+def _ink_right(button) -> int | None:
+    """Where the painted content of a lamp ends, in its parent's coordinates.
+
+    Asked of the picture rather than of the stylesheet, because whether Qt
+    moves a button's icon and text together for ``text-align`` is a question
+    about the platform's style, and the answer that matters is the one on the
+    machine being looked at.
+    """
+    image = button.grab().toImage()
+    marked = [
+        x
+        for x in range(image.width())
+        for y in range(image.height())
+        if image.pixelColor(x, y).alpha() > 0
+        and image.pixelColor(x, y).lightness() < 150
+    ]
+    return button.geometry().left() + max(marked) if marked else None
+
+
 def _lamp_rows(sidebar):
     """What the panel drew, row by row, as a reader would see it."""
     grid = sidebar.shares_grid
@@ -323,6 +342,25 @@ def test_the_lamps_group_by_kind_and_keep_the_stations_on_one_row():
     # It happens on the beamline's, where this order drew three stations with
     # no numbers for the first minute after startup. So this records the
     # order the program really uses; the proof is a render over there.
+
+    # Every row ends on the same line. The lamp furthest right in a row is
+    # pushed against the right edge of the panel, so the block of them stops
+    # square instead of trailing off wherever each row's names happen to run
+    # out. Only the name and its lamp move; the cell keeps its width, which
+    # is what keeps this clear of the fault above - a lamp shrunk to its own
+    # contents reports that smaller width to the next reading, and shrinks
+    # again.
+    grid = sidebar.shares_grid
+    by_row: dict[int, list] = {}
+    for position in range(grid.count()):
+        row, column, _, _ = grid.getItemPosition(position)
+        by_row.setdefault(row, []).append((column, grid.itemAt(position).widget()))
+    ends = [
+        _ink_right(max(line, key=lambda pair: pair[0])[1])
+        for line in by_row.values()
+    ]
+    assert all(end is not None for end in ends), "a lamp painted nothing"
+    assert max(ends) - min(ends) <= 8, f"rows do not end on one line: {ends}"
 
     # However they are split, one kind is shortened the same way throughout:
     # a name spelled out on one line and cut on the next reads as a mistake.

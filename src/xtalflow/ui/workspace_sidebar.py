@@ -295,7 +295,9 @@ class WorkspaceSidebar(QWidget):
             button.setText(state.label)
             # The colour stays in the lamp.  The one that is down gets weight
             # instead, so the row still reads as lamps with a name beside them.
-            button.setStyleSheet("" if lit else "font-weight: 600;")
+            # Which side of its cell a lamp sits on is decided once the rows
+            # are known, in _lay_out_shares.
+            button.setStyleSheet(self._lamp_style(lit, flush_right=False))
             button.setToolTip(
                 f"{state.label} · {state.detail}\n{state.path}\n\n"
                 "Click to look again"
@@ -419,6 +421,22 @@ class WorkspaceSidebar(QWidget):
                     button = self.share_buttons.get(state.key)
                     if button is not None:
                         self._fit_label(button, state.label, room)
+                        # The last lamp of a row sits against the right edge,
+                        # so the panel ends on a line instead of trailing off
+                        # wherever each row's names happen to stop. The cell
+                        # keeps its width - only the name and its lamp move
+                        # inside it - which is what keeps this away from the
+                        # fault above: a lamp shrunk to its own contents
+                        # reports that smaller width on the next reading, and
+                        # the name is fitted to it, and so it shrinks again.
+                        lit = SHARE_LAMPS[
+                            self._share_states[state.key].state
+                        ][0]
+                        button.setStyleSheet(
+                            self._lamp_style(
+                                lit, flush_right=state is lines[index][-1]
+                            )
+                        )
 
     def _narrowest_lamp(self) -> int:
         """How little room a lamp can be given, in this panel's own font."""
@@ -428,6 +446,14 @@ class WorkspaceSidebar(QWidget):
         metrics = button.fontMetrics()
         overhead = button.minimumSizeHint().width() - metrics.width(button.text())
         return overhead + metrics.width(NARROWEST_NAME)
+
+    @staticmethod
+    def _lamp_style(lit: bool, *, flush_right: bool) -> str:
+        """The stylesheet one lamp needs beyond the panel's own."""
+        parts = [] if lit else ["font-weight: 600;"]
+        if flush_right:
+            parts.append("text-align: right;")
+        return " ".join(parts)
 
     def _fit_label(self, button, label: str, width: int) -> None:
         """The longest form of the name that fits the lamp's share of the row.

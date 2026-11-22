@@ -19,7 +19,7 @@ from xtalflow.domain.plan_lifecycle import PlanRevision
 from PyQt5.QtCore import QEvent, QPoint, Qt
 from PyQt5.QtGui import QImage, QKeySequence, QMouseEvent, QPixmap
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication, QMenuBar, QMessageBox
+from PyQt5.QtWidgets import QApplication, QMenuBar, QMessageBox, QStyle
 
 from xtalflow.domain import (
     PLATE_FORMATS,
@@ -58,7 +58,7 @@ from xtalflow.domain.mxlive import MxLiveLabwork, MxLiveReadError
 from xtalflow.ui import icons, theme
 from xtalflow.ui.plan_editors import FragmentScreeningEditor
 from xtalflow.ui.load_plates_dialog import LoadPlatesDialog
-from xtalflow.viewer import ViewerWindow
+from xtalflow.viewer import CRYSTAL_ORDER_LABEL, ViewerWindow
 from xtalflow.viewer import main
 from xtalflow.settings import DEFAULT_SETTINGS, standard_instruments
 from xtalflow.infrastructure.user_preferences import JsonUserPreferencesStore
@@ -7717,3 +7717,32 @@ def test_every_sidebar_way_home_works_from_mxlive_history() -> None:
     assert window.pages.currentWidget() is window.experiment_page, "a new experiment"
     window.close()
     app.processEvents()
+
+
+def test_the_sort_label_stays_inside_what_the_beamline_measured() -> None:
+    """The label was chosen to fit, and nothing was stopping it growing back.
+
+    "Sort by crystal score" measured 157px here and 174px on the beamline,
+    where it was cut by 8. The label in use was picked by the person at that
+    window from candidates that did fit.
+
+    The budget comes from their measurement, not mine: the check box stops
+    growing at 186px in that row, leaving about 166px for text. DejaVu there
+    runs about 11% wider than the face this suite draws in, so 166 of their
+    pixels is roughly 150 of ours. That is the limit asserted here.
+
+    It cannot prove the host fits - only a measurement there does - but it
+    fails before anyone ships a label that plainly will not, which has
+    happened once. The budget is small because the Select wells row wants
+    about 1520px and gets 1121 at 1920; folding it onto two lines is what
+    would make this test unnecessary.
+    """
+    app = QApplication.instance() or QApplication([])
+    QApplication.instance()  # the font below is the application's
+    width = QApplication.fontMetrics().width(CRYSTAL_ORDER_LABEL)
+
+    assert width <= 150, (
+        f"{CRYSTAL_ORDER_LABEL!r} is {width}px here, about {width * 1.11:.0f} "
+        "on the beamline, where there is room for 166; shorten it or fold "
+        "the row"
+    )

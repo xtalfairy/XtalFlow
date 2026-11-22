@@ -164,7 +164,12 @@ SHARE_CHECK_MILLISECONDS = 60_000
 # One wording in one place: it is on a checkbox, in its tooltip, in its
 # accessible name and in a status message, and the beamline reported the old
 # one as not understandable even after reading the tooltip.
-CRYSTAL_ORDER_LABEL = "Sort by crystal score"
+# "Sort by score", not "Sort by crystal score": the longer one was measured
+# at the beamline as 174px against 166px of room, and cut by 8. Chosen by
+# the person who uses it, from candidates that fit. The widget stops growing
+# at 186px because that row is over its width budget, so this has about six
+# pixels of slack and is one word away from being cut again.
+CRYSTAL_ORDER_LABEL = "Sort by score"
 CRYSTAL_ORDER_TOOLTIP = (
     "Shows the images the crystal model rates most likely to hold crystals "
     "first.\n"

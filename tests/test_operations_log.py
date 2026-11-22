@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import getpass
 import logging
 import threading
 from pathlib import Path
@@ -275,5 +276,57 @@ def test_with_no_log_the_folder_action_says_so_instead_of_opening_nothing(
     window.copy_diagnostics()
 
     assert "no log was opened" in QApplication.clipboard().text()
+    window.close()
+    app.processEvents()
+
+
+def test_diagnostics_say_how_big_the_window_is(tmp_path: Path) -> None:
+    """The one thing a report of cut-off text could not say.
+
+    A user reported that the image filter and the well box were cut off.
+    Finding the screen size then took a hunt through Xorg logs on the
+    beamline server, which gave the console's mode - not the size of the
+    window being looked at, and those differ whenever somebody is connected
+    remotely. Every label here is laid out in pixels, so this is the first
+    number anyone needs and it was the one number missing.
+
+    Font and DPI are in the line too: the same label needs different widths
+    in different fonts, which is why a measurement taken on a Mac does not
+    settle what happens on CentOS.
+    """
+    from dataclasses import replace
+
+    from PyQt5.QtWidgets import QApplication
+
+    from xtalflow.infrastructure import RockMakerImageRepository, SQLiteReviewStore
+    from xtalflow.settings import DEFAULT_SETTINGS
+    from xtalflow.viewer import ViewerWindow
+
+    app = QApplication.instance() or QApplication([])
+    operations_log.configure(tmp_path)
+    window = ViewerWindow(
+        RockMakerImageRepository(tmp_path),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        settings=replace(DEFAULT_SETTINGS, fragment_library_directory=tmp_path),
+    )
+    window.resize(1366, 800)
+    window.show()
+    app.processEvents()
+
+    window.copy_diagnostics()
+    copied = QApplication.clipboard().text()
+
+    assert "window 1366x800" in copied
+    assert "windowed" in copied
+    for expected in ("screen ", "dpi", "ratio ", "font "):
+        assert expected in copied, expected
+
+    # Nothing about the person in this line: a diagnostic is pasted into a
+    # message to somebody else, so what is added here is the shape of the
+    # machine and not who is sitting at it. The log's own path is a separate
+    # matter and has always been in here, deliberately.
+    size_line = next(line for line in copied.splitlines() if line.startswith("window "))
+    assert getpass.getuser() not in size_line
+
     window.close()
     app.processEvents()

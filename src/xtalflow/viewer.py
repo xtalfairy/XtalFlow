@@ -654,6 +654,7 @@ class ViewerWindow(QMainWindow):
             f"{APP_WINDOW_TITLE} ({operations_log.commit_hash()})",
             f"profile {os.environ.get('XTALFLOW_SETTINGS') or 'development'}",
             f"log {operations_log.log_directory() or 'none'}",
+            self._window_size_line(),
             "",
             "shares as last read:",
         ]
@@ -675,6 +676,29 @@ class ViewerWindow(QMainWindow):
                 lines.append(f"  (the log could not be read: {error})")
         QApplication.clipboard().setText("\n".join(lines))
         self.status_message_label.show_message("Diagnostics copied", 4000)
+
+    def _window_size_line(self) -> str:
+        """How big the window is, and on what.
+
+        Added because a report that text was cut off cost a resolution hunt
+        through Xorg logs on another machine, which gave the console's mode
+        and not the size of the window the person was looking at - and those
+        differ whenever somebody is connected remotely. Every label in this
+        program is laid out in pixels, so the width is the first thing worth
+        knowing and was the one thing a report could not say.
+        """
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return f"window {self.width()}x{self.height()} · screen unknown"
+        available = screen.availableGeometry()
+        state = "maximised" if self.isMaximized() else "windowed"
+        return (
+            f"window {self.width()}x{self.height()} {state} · "
+            f"screen {available.width()}x{available.height()} · "
+            f"{screen.logicalDotsPerInch():.0f} dpi · "
+            f"ratio {screen.devicePixelRatio():g} · "
+            f"font {self.font().family()} {self.font().pointSize()}pt"
+        )
 
     def open_log_folder(self) -> None:
         """Show the folder the log is in, or say there is none."""

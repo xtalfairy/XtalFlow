@@ -11,6 +11,31 @@ os.environ.pop("XTALFLOW_SETTINGS", None)
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _keep_the_error_hook_to_one_test():
+    """Put ``sys.excepthook`` back after every test.
+
+    ``viewer.main`` installs the window's own handler there and nothing takes
+    it off again, which is right for the program and wrong for a suite: once
+    one test has called ``main``, every later test runs under the handler of
+    a window that has been closed. An exception inside a Qt slot does not
+    return to its caller - PyQt5 would end the process, which is loud - but
+    that leaked handler instead opened a modal error box, with no one to
+    close it, and the run stopped where it stood. It took a sampled stack of
+    a wedged process to find out why, because a hung run says nothing at all.
+
+    Restoring it does not make slot exceptions harmless. It makes them loud
+    again, which is the point.
+    """
+    import sys
+
+    original = sys.excepthook
+    try:
+        yield
+    finally:
+        sys.excepthook = original
+
+
 def pytest_configure(config) -> None:
     """Refuse to run against any folder outside the repository."""
     from xtalflow.settings import DEFAULT_SETTINGS, PROJECT_ROOT

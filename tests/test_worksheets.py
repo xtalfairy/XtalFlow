@@ -12,6 +12,46 @@ from xtalflow.domain.fragment_screening import (
 from xtalflow.domain.worksheets import build_echo_worksheet, build_shifter_worksheet
 
 
+def test_a_position_the_dose_cannot_reach_is_left_out_of_the_echo_worksheet() -> None:
+    """Nothing is not a row.
+
+    5 nL is two 2.5 nL steps and the well has three positions, so the third
+    receives nothing. A 0 nL line would send the dispenser to a spot it has
+    no liquid for, so there is no line for it. The plan summary counts it
+    instead, which is the only place a dry position is visible.
+    """
+    at = datetime.now(timezone.utc)
+    crystal = SelectedCrystal(
+        "image",
+        "2069",
+        "A01d",
+        tuple(
+            CrystalTarget(f"target-{index}", Decimal("0.25"), Decimal("-0.5"), at)
+            for index in range(3)
+        ),
+        SWISSCI_MIDI_3_LENS.id,
+    )
+    plan = build_fragment_screen_plan(
+        FragmentLibrary(
+            "Library",
+            (Fragment("V", "L", "1", "CMP-1", "C2H6O", Decimal("46.07"), "CCO",
+                      Decimal("100"), "DMSO", "SRC-1", "A01"),),
+        ),
+        (crystal,),
+        Decimal("5"),
+    )
+
+    (assignment,) = plan.assignments
+    assert [transfer.volume_nl for transfer in assignment.transfers] == [
+        Decimal("2.5"), Decimal("2.5"), Decimal("0")
+    ]
+
+    rows = build_echo_worksheet(plan)
+    assert len(rows) == 2, "two rows for two steps"
+    assert sum(row.transfer_volume_nl for row in rows) == Decimal("5")
+    # The whole dose still reaches the drop, which is what sets the strength.
+
+
 def test_fragment_plan_builds_echo_and_shifter_preview_rows() -> None:
     fragment = Fragment(
         "Vendor",

@@ -113,6 +113,12 @@ def build_echo_worksheet(plan: FragmentScreenPlan) -> tuple[EchoWorksheetRow, ..
             selected_well.well_address
         )
         for transfer in assignment.transfers:
+            if not transfer.volume_nl:
+                # A dose too small to reach every position leaves some with
+                # nothing, and nothing is not a row: a 0 nL line would ask
+                # the dispenser to visit a place it has no liquid for. The
+                # plan summary counts them so they are not silent.
+                continue
             x_um, y_um = plate_format.echo_offset_um(
                 selected_well.well_address,
                 float(transfer.position.x_mm),

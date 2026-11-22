@@ -197,7 +197,14 @@ def test_fragment_editor_previews_and_reassigns_by_plate_well() -> None:
     app.processEvents()
 
 
-def test_conditions_explain_a_volume_that_cannot_be_split_equally() -> None:
+def test_a_volume_that_will_not_divide_equally_is_planned_and_described() -> None:
+    """It used to refuse to make a plan at all until the volume was changed.
+
+    Now it divides what there is, and the table says how: the leftover steps
+    go to the positions clicked first, so three positions sharing 25 nL get
+    10, 7.5 and 7.5. The column used to print the first share times the
+    count - "10.0 nL x 3" - which claimed 30 nL had been planned.
+    """
     app = QApplication.instance() or QApplication([])
     now = datetime.now(timezone.utc)
     crystal = SelectedCrystal(
@@ -212,49 +219,28 @@ def test_conditions_explain_a_volume_that_cannot_be_split_equally() -> None:
     editor.conditions_page = editor.conditions_widget()
     editor.volume_input.setValue(25)
 
-    assert editor.current_plan is None
-    assert editor.volume_error_label.text() == (
-        "Cannot be split equally in 1 well. Use 22.5 nL."
-    )
-    assert editor.assignment_table.item(0, 4).text() == (
-        "△ 25.0 nL cannot be split equally into 3"
-    )
+    plan = editor.current_plan
+    assert plan is not None, "a dose that will not divide is still a plan"
+    (assignment,) = plan.assignments
+    assert [transfer.volume_nl for transfer in assignment.transfers] == [
+        Decimal("10.0"), Decimal("7.5"), Decimal("7.5")
+    ]
+    assert sum(transfer.volume_nl for transfer in assignment.transfers) == Decimal("25")
+    assert editor.volume_error_label.isHidden(), "nothing to correct"
+
+    # The share column names every amount, so it cannot overstate the dose.
+    assert editor.assignment_table.item(0, 3).text() == "10.0 nL × 1, 7.5 nL × 2"
+    # And there is nothing left to put in the column that raised objections.
+    assert editor.assignment_table.item(0, 4).text() == ""
+
+    # An even one still reads the short way.
     editor.volume_input.setValue(30)
-    assert editor.current_plan is not None
-    assert editor.volume_error_label.isHidden()
-
-    # Finishing the edit asks once, and never changes the value unasked.
-    asked = []
-    editor.volume_input.setValue(25)
-    editor._ask_to_use_volume = lambda suggestion, text: (
-        asked.append((suggestion, text)) or False
-    )
-    editor.check_volume_splits()
-
-    assert editor.volume_input.value() == 25
-    suggestion, text = asked[0]
-    assert str(suggestion) == "22.5"
-    assert "25 nL cannot be split into 2.5 nL steps for 1 well: A01a (3 positions)" in text
-    assert "22.5 nL divides evenly for every selected well" in text
-    assert "largest volume at or below" in text
-
-    # Saying yes is what applies it.
-    editor._ask_to_use_volume = lambda suggestion, text: True
-    editor.check_volume_splits()
-
-    assert editor.volume_input.value() == 22.5
-    assert editor.current_plan is not None
-    editor.volume_input.setValue(30)
-
     assert editor.assignment_table.item(0, 3).text() == "10.0 nL × 3"
-    assert editor.table.item(0, 8).text() == "10.0 nL × 3"
-    assert "30.0 nL per well" in editor.summary_label.text()
+
     editor.close()
     app.processEvents()
 
 
-@pytest.mark.requires_rmserver_fixture
-@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
 def test_viewer_loads_and_navigates_images() -> None:
     app = QApplication.instance() or QApplication([])
     window = ViewerWindow(
@@ -3660,24 +3646,24 @@ def test_a_blocked_button_says_why_it_cannot_be_pressed(tmp_path: Path) -> None:
     app.processEvents()
 
 
-def test_arriving_at_conditions_asks_about_a_volume_the_new_wells_broke(
+def test_arriving_at_conditions_says_how_the_volume_will_divide(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """Choosing a 3-position well after setting 25 nL is the same mistake."""
+    """Choosing a 3-position well after setting 25 nL used to raise a dialog.
+
+    It offered to change the volume, because a dose that would not divide
+    equally stopped the plan being made at all. Nothing is stopped now, so
+    nothing interrupts: the note under the field says how the dose will be
+    divided, and the number is never changed on anyone's behalf.
+    """
     app = QApplication.instance() or QApplication([])
     window, _store, editor = _fragment_plan_window(tmp_path, DEFAULT_SETTINGS)
-    asked = []
-    monkeypatch.setattr(
-        type(editor), "_ask_to_use_volume",
-        lambda self, suggestion, text: asked.append((suggestion, text)) or False,
-    )
 
-    # The volume fits what is selected, so nothing is asked on the way in.
+    # The volume fits what is selected, so there is nothing to say on the
+    # way in.
     window.experiments.go_to_step(WorkflowStep.CONDITIONS)
-    assert asked == []
+    assert editor.volume_note_label.isHidden()
 
-    # A well with three positions is chosen, which 25 nL cannot share. The
-    # question comes when the step is reached again, not while clicking.
     editor.volume_input.setValue(25)
     now = datetime.now(timezone.utc)
     editor.set_crystals((
@@ -3690,12 +3676,15 @@ def test_arriving_at_conditions_asks_about_a_volume_the_new_wells_broke(
             SWISSCI_MIDI_3_LENS.id,
         ),
     ))
-    assert asked == []
 
     window.experiments.go_to_step(WorkflowStep.CONDITIONS)
 
-    assert len(asked) == 1
-    assert "cannot be split" in asked[0][1]
+    assert not editor.volume_note_label.isHidden()
+    note = editor.volume_note_label.text()
+    assert "Divides unevenly in 1 well" in note, note
+    assert "clicked first" in note, note
+    assert "22.5 nL" in note, "the nearest volume that divides evenly"
+    assert editor.volume_input.value() == 25, "never changed on anyone's behalf"
     window.close()
     app.processEvents()
 

@@ -48,7 +48,11 @@ from xtalflow.domain import (
 from xtalflow.domain.crystal_selection import order_selected_wells
 from xtalflow.application.planning_service import compound_ids_in_snapshot
 from xtalflow.domain.experiment_naming import protein_name_for_record
-from xtalflow.domain.soaking import TRANSFER_INCREMENT_NL, volume_that_splits
+from xtalflow.domain.soaking import (
+    TRANSFER_INCREMENT_NL,
+    split_between_positions,
+    volume_that_splits,
+)
 from xtalflow.domain.fragment_screening import (
     AssignmentOrder,
     FragmentLibrary,
@@ -288,6 +292,30 @@ class PlanEditorBase(QWidget):
             ("Experiment ID", experiment_id),
             ("Wells", f"{counted(len(wells), 'well')} · {counted(positions, 'soaking position')}"),
         ]
+        plan = self.current_plan
+        # Only a fragment screen reaches positions through `transfers`. This
+        # method is shared, and a condition test's assignments hold `doses`
+        # instead and count their own dry positions, so asking every plan
+        # the same question raised an AttributeError inside a slot - which
+        # PyQt5 turns into an abort, with no traceback to say where.
+        if isinstance(plan, FragmentScreenPlan):
+            # A position the dose cannot reach keeps its place in the plan and
+            # gets no worksheet row at all - not a 0 nL one. Counted here
+            # because this is the last screen before finalizing, and nowhere
+            # else says a chosen spot will stay dry.
+            dry = sum(
+                1
+                for assignment in plan.assignments
+                for transfer in assignment.transfers
+                if not transfer.volume_nl
+            )
+            if dry:
+                rows.append((
+                    "Positions missed",
+                    f"{counted(dry, 'position')} left with nothing and written "
+                    f"to no worksheet · the dose cannot reach them in "
+                    f"{TRANSFER_INCREMENT_NL} nL steps",
+                ))
         if self.destinations_text:
             rows.append(("Worksheets", self.destinations_text))
         return rows
@@ -612,6 +640,7 @@ class FragmentScreeningEditor(PlanEditorBase):
         self.library_error_label = _field_error_label(self)
         self.rows_error_label = _field_error_label(self)
         self.volume_error_label = _field_error_label(self)
+        self.volume_note_label = _field_note_label(self)
         self.assignment_table = _preview_table(
             ("Well", "Positions", "Fragment", "Per position", "Check"), stretch_last=True
         )
@@ -644,8 +673,7 @@ class FragmentScreeningEditor(PlanEditorBase):
         self.rows_input.textChanged.connect(self.refresh_plan)
         self.volume_input.valueChanged.connect(self.refresh_plan)
         # Asked when the person has finished typing, not on every spin step.
-        self.volume_input.editingFinished.connect(self.check_volume_splits)
-        self._asking_about_volume = False
+        self.volume_input.editingFinished.connect(self.show_how_the_volume_divides)
         self.order_input.currentIndexChanged.connect(self._order_changed)
         self.all_rows_radio.toggled.connect(self._row_mode_changed)
         self.apply_reassignment_button.clicked.connect(self._apply_reassignment)
@@ -741,7 +769,10 @@ class FragmentScreeningEditor(PlanEditorBase):
         form.setVerticalSpacing(theme.SPACING_M)
         form.addRow("Library", _field(library_row, self.library_label, self.library_error_label))
         form.addRow("Fragments", _field(rows_row, self.rows_error_label))
-        form.addRow("Volume per well", _field(volume_row, self.volume_error_label))
+        form.addRow(
+            "Volume per well",
+            _field(volume_row, self.volume_error_label, self.volume_note_label),
+        )
         form.addRow("Order", self.order_input)
         inputs = QWidget()
         inputs.setFixedWidth(460)
@@ -1090,7 +1121,6 @@ class FragmentScreeningEditor(PlanEditorBase):
         except ValueError as error:
             if self.selection is None or selected_library is None:
                 self.count_label.setText("")
-            error = self._short_volume_error(error, volume)
             self._show_field_error(str(error))
             self._refresh_assignments(None, selected_library, volume)
             self.table.setRowCount(0)
@@ -1118,7 +1148,9 @@ class FragmentScreeningEditor(PlanEditorBase):
                 assignment.fragment.compound_id,
                 f"{assignment.fragment.source_plate} / {assignment.fragment.source_well}",
                 f"{assignment.total_volume_nl} nL",
-                f"{assignment.transfers[0].volume_nl} nL × {len(assignment.transfers)}",
+                _per_position_text(
+                    transfer.volume_nl for transfer in assignment.transfers
+                ),
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
@@ -1162,8 +1194,12 @@ class FragmentScreeningEditor(PlanEditorBase):
             ]
         return rows
 
-    def _wells_that_cannot_split(self, volume: Decimal) -> tuple:
-        """Selected wells whose positions cannot share the volume equally."""
+    def _wells_that_divide_unevenly(self, volume: Decimal) -> tuple:
+        """Selected wells whose positions will not receive equal amounts.
+
+        Not a fault and not in anyone's way: the whole volume still
+        reaches each drop, and that is what sets the strength.
+        """
         if self.selection is None:
             return ()
         units = volume / TRANSFER_INCREMENT_NL
@@ -1173,76 +1209,34 @@ class FragmentScreeningEditor(PlanEditorBase):
             or units % len(well.soaking_positions)
         )
 
-    def _short_volume_error(self, error: ValueError, volume: Decimal) -> ValueError:
-        """Name how many wells cannot share the volume, and the volume that can.
+    def show_how_the_volume_divides(self) -> None:
+        """Note under the field when a dose will not reach every position evenly.
 
-        The table marks each of those wells, so the field note stays one line.
+        It used to raise a dialog here offering to change the volume, back
+        when a dose that would not divide equally stopped the plan being made
+        at all. Nothing is stopped now - the whole dose reaches each drop
+        however it is divided, and that is what sets the strength - so this
+        only says what will happen, and never changes the number.
         """
-        if self.selection is None or "split equally" not in str(error):
-            return error
-        failing = self._wells_that_cannot_split(volume)
-        suggestion, _below = volume_that_splits(
-            volume, (len(well.soaking_positions) for well in self.selection.wells)
-        )
-        return ValueError(
-            f"Cannot be split equally in {counted(len(failing), 'well')}. "
-            f"Use {suggestion.normalize():f} nL."
-        )
-
-    def check_volume_splits(self) -> None:
-        """Say so, once, when the volume cannot be shared equally.
-
-        Raised when the volume has been typed rather than on every step of the
-        spin box, and never applied without the click: a volume changed behind
-        somebody's back is a different experiment from the one they asked for.
-        """
-        if self._asking_about_volume or self.selection is None:
+        if self.selection is None:
             return
         volume = Decimal(str(self.volume_input.value()))
-        failing = self._wells_that_cannot_split(volume)
-        if not failing:
+        uneven = self._wells_that_divide_unevenly(volume)
+        if not uneven:
+            self.volume_note_label.hide()
             return
         suggestion, below = volume_that_splits(
             volume, (len(well.soaking_positions) for well in self.selection.wells)
         )
-        named = ", ".join(
-            f"{well.well_address} ({counted(len(well.soaking_positions), 'position')})"
-            for well in failing[:4]
+        reach = "at or below" if below else "above"
+        self.volume_note_label.setText(
+            f"Divides unevenly in {counted(len(uneven), 'well')}: the leftover "
+            f"{TRANSFER_INCREMENT_NL} nL steps go to the positions clicked "
+            f"first, and the whole dose still reaches each drop. "
+            f"{suggestion.normalize():f} nL is the nearest volume {reach} this "
+            f"one that divides evenly everywhere."
         )
-        if len(failing) > 4:
-            named += f", and {len(failing) - 4} more"
-        reach = (
-            "That is the largest volume at or below the one you asked for."
-            if below else
-            f"Nothing at or below {volume.normalize():f} nL divides evenly, so this "
-            "is the smallest one above it."
-        )
-        self._asking_about_volume = True
-        try:
-            use_it = self._ask_to_use_volume(
-                suggestion,
-                f"{volume.normalize():f} nL cannot be split into "
-                f"{TRANSFER_INCREMENT_NL} nL steps for "
-                f"{counted(len(failing), 'well')}: {named}.\n\n"
-                f"{suggestion.normalize():f} nL divides evenly for every selected "
-                f"well. {reach}",
-            )
-        finally:
-            self._asking_about_volume = False
-        if use_it:
-            self.volume_input.setValue(float(suggestion))
-
-    def _ask_to_use_volume(self, suggestion: Decimal, text: str) -> bool:
-        question = QMessageBox(self)
-        question.setIcon(QMessageBox.Warning)
-        question.setWindowTitle("Volume cannot be split equally")
-        question.setText(text)
-        use_it = question.addButton(
-            f"Use {suggestion.normalize():f} nL", QMessageBox.AcceptRole
-        )
-        question.addButton("Keep editing", QMessageBox.RejectRole)
-        question.exec_()
-        return question.clickedButton() is use_it
+        self.volume_note_label.show()
 
     def _show_field_error(self, message: str) -> None:
         lowered = message.casefold()
@@ -1279,7 +1273,9 @@ class FragmentScreeningEditor(PlanEditorBase):
             rows = [
                 (
                     assignment.selected_well, assignment.fragment.compound_id,
-                    f"{assignment.transfers[0].volume_nl} nL × {len(assignment.transfers)}",
+                    _per_position_text(
+                    transfer.volume_nl for transfer in assignment.transfers
+                ),
                     "",
                 )
                 for assignment in plan.assignments
@@ -1302,11 +1298,26 @@ class FragmentScreeningEditor(PlanEditorBase):
                 fragment = fragments[index].compound_id if index < len(fragments) else "—"
                 if library is not None and index >= len(fragments):
                     issues.append("no fragment left in the chosen rows")
-                if count and units % count == 0:
-                    per_position = f"{TRANSFER_INCREMENT_NL * (units // count)} nL × {count}"
+                steps = volume / TRANSFER_INCREMENT_NL
+                if count and steps == steps.to_integral_value() and volume > 0:
+                    # This runs while there is no plan, which includes while
+                    # the volume is one the dispenser cannot move - a number
+                    # still being typed. Dividing such a volume raises, and
+                    # this is inside a slot, where an exception does not come
+                    # back to the caller: PyQt5 aborts the process, or, when
+                    # something has left a handler installed, goes wherever
+                    # that handler goes. In the suite it opened a modal error
+                    # box nobody could close and the run stopped there.
+                    shares = split_between_positions(volume, count)
+                    per_position = _per_position_text(list(shares))
+                    dry = sum(1 for share in shares if not share)
+                    if dry:
+                        issues.append(
+                            f"{counted(dry, 'position')} left with nothing"
+                            " · no worksheet row"
+                        )
                 else:
                     per_position = "—"
-                    issues.append(f"{volume} nL cannot be split equally into {count}")
                 rows.append((well, fragment, per_position, " · ".join(issues)))
         table.setRowCount(len(rows))
         for row, (well, fragment, per_position, issue) in enumerate(rows):
@@ -1470,6 +1481,15 @@ class RawCrystalEditor(PlanEditorBase):
         self.draft_changed.emit()
 
 
+def _field_note_label(parent: QWidget | None = None) -> QLabel:
+    """Like the error label, but for something true rather than something wrong."""
+    label = QLabel(parent)
+    label.setWordWrap(True)
+    label.setObjectName("Muted")
+    label.hide()
+    return label
+
+
 def _field_error_label(parent: QWidget | None = None) -> QLabel:
     """A parent from the start: see the note on message widgets in this file."""
     label = QLabel(parent)
@@ -1490,6 +1510,28 @@ def _field(row: QHBoxLayout, *below: QLabel) -> QWidget:
         layout.addWidget(label)
     widget.setLayout(layout)
     return widget
+
+
+def _per_position_text(volumes) -> str:
+    """How a well's dose is divided, written for a narrow column.
+
+    "7.5 nL x 4" while every position gets the same, because that is the
+    ordinary case and it reads at a glance. When they differ it has to say
+    so - "10 nL x 1, 7.5 nL x 2" - rather than the first value times the
+    count, which is what it printed before and overstated the dose by the
+    whole difference. A position receiving nothing is named as such, since
+    it is the one that will not appear on the worksheet at all.
+    """
+    amounts = list(volumes)
+    if not amounts:
+        return "—"
+    parts = []
+    for amount in sorted(set(amounts), reverse=True):
+        count = amounts.count(amount)
+        parts.append(
+            f"nothing × {count}" if not amount else f"{amount} nL × {count}"
+        )
+    return ", ".join(parts)
 
 
 def _well_usage_display(

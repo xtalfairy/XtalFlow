@@ -77,18 +77,27 @@ def test_plan_splits_each_crystal_volume_equally_across_its_own_targets() -> Non
     assert [item.compound_id for item in plan.unused_fragments] == ["CMP-2"]
 
 
-def test_volume_that_cannot_be_shared_equally_is_refused_with_alternatives() -> None:
+def test_a_volume_that_will_not_divide_equally_is_spread_in_steps() -> None:
+    """It used to be refused here, which stopped the plan being made at all.
+
+    Every soaking experiment divides a dose the same way now: in whole
+    2.5 nL steps, the leftover steps going to the positions clicked first.
+    25 nL is ten steps over three positions, so one gets four and two get
+    three. The whole 25 nL still reaches the drop, which is what sets the
+    concentration.
+    """
     now = datetime.now(timezone.utc)
 
-    with pytest.raises(ValueError) as captured:
-        build_fragment_screen_plan(
-            FragmentLibrary("Library", (fragment(1),)),
-            (crystal("image", now, 3),),
-            Decimal("25"),
-        )
+    plan = build_fragment_screen_plan(
+        FragmentLibrary("Library", (fragment(1),)),
+        (crystal("image", now, 3),),
+        Decimal("25"),
+    )
 
-    assert "25 nL cannot be split equally between 3 positions" in str(captured.value)
-    assert "Use 22.5 nL or 30 nL" in str(captured.value)
+    (assignment,) = plan.assignments
+    volumes = [transfer.volume_nl for transfer in assignment.transfers]
+    assert volumes == [Decimal("10.0"), Decimal("7.5"), Decimal("7.5")]
+    assert sum(volumes) == Decimal("25")
 
 
 @pytest.mark.parametrize("volume", [Decimal("0"), Decimal("6")])
@@ -102,14 +111,26 @@ def test_plan_rejects_invalid_transfer_volume(volume: Decimal) -> None:
         )
 
 
-def test_plan_rejects_zero_volume_transfers() -> None:
+def test_a_position_the_dose_cannot_reach_gets_no_worksheet_row() -> None:
+    """Two steps cannot reach three positions, and nothing is not a row.
+
+    The third position keeps its place in the plan - it was chosen, and the
+    plan summary counts it - but a 0 nL line would send the dispenser to a
+    spot it has no liquid for, so the worksheet leaves it out.
+    """
     now = datetime.now(timezone.utc)
-    with pytest.raises(ValueError, match="cannot be split equally"):
-        build_fragment_screen_plan(
-            FragmentLibrary("Library", (fragment(1),)),
-            (crystal("image", now, 3),),
-            Decimal("5"),
-        )
+
+    plan = build_fragment_screen_plan(
+        FragmentLibrary("Library", (fragment(1),)),
+        (crystal("image", now, 3),),
+        Decimal("5"),
+    )
+
+    (assignment,) = plan.assignments
+    volumes = [transfer.volume_nl for transfer in assignment.transfers]
+    assert volumes == [Decimal("2.5"), Decimal("2.5"), Decimal("0")]
+    # That the worksheet leaves the dry one out is checked in test_worksheets,
+    # where the wells have a plate format to be placed on.
 
 
 def test_crystals_the_fragments_do_not_reach_are_left_out_of_the_plan() -> None:

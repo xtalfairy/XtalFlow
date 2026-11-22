@@ -237,41 +237,24 @@ def build_fragment_screen_plan(
             raise ValueError(
                 f"{selected_well.image_key} needs at least one soaking position"
             )
-        if total_units % position_count:
-            raise ValueError(
-                unequal_split_message(
-                    volume_per_crystal_nl, position_count, selected_well.well_address
-                )
-            )
+        # A dose that will not divide equally is spread as evenly as the
+        # 2.5 nL step allows, the leftover steps going to the positions
+        # clicked first. It used to be refused here instead, which meant a
+        # plan could not be made at all until somebody changed the volume or
+        # deleted a position. Every soaking experiment divides a dose the
+        # same way now; see domain/soaking.py.
         transfers = tuple(
-            FragmentTransfer(
-                position=position,
-                volume_nl=TRANSFER_INCREMENT_NL * (total_units // position_count),
+            FragmentTransfer(position=position, volume_nl=volume)
+            for position, volume in zip(
+                selected_well.soaking_positions,
+                split_between_positions(volume_per_crystal_nl, position_count),
             )
-            for position in selected_well.soaking_positions
         )
         assignments.append(FragmentAssignment(selected_well, fragment, transfers))
 
     return FragmentScreenPlan(
         selection, library, tuple(assignments), volume_per_crystal_nl,
         assignment_order,
-    )
-
-
-def unequal_split_message(
-    total_nl: Decimal, position_count: int, well_address: str
-) -> str:
-    """Explain why a volume cannot be shared equally and suggest volumes that can."""
-    step = TRANSFER_INCREMENT_NL * position_count
-    lower = (total_nl // step) * step
-    higher = lower + step
-    options = " or ".join(
-        f"{value.normalize():f} nL" for value in (lower, higher) if value > 0
-    )
-    return (
-        f"{total_nl.normalize():f} nL cannot be split equally between "
-        f"{position_count} positions in {well_address} in "
-        f"{TRANSFER_INCREMENT_NL} nL steps. Use {options}, or change the positions."
     )
 
 

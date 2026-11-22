@@ -328,7 +328,7 @@ def test_empty_workspace_clears_image_from_previous_workspace(
     assert window.image_canvas.pixmap().isNull()
     assert window.well_input.text() == ""
     assert window.navigation_label.text() == "No image set loaded"
-    assert window.review_summary_label.text() == (
+    assert window.review_summary_label.full_text() == (
         "Add a plate to the active workspace"
     )
     assert not window.previous_button.isEnabled()
@@ -358,7 +358,7 @@ def test_viewer_starts_when_workspace_images_are_unavailable(tmp_path: Path) -> 
 
     assert window.controller is None
     assert window.project_controller.active_project.id == project.id
-    assert "Host is down" in window.review_summary_label.text()
+    assert "Host is down" in window.review_summary_label.full_text()
     window.close()
     app.processEvents()
 
@@ -1705,7 +1705,7 @@ def test_raw_crystal_experiment_runs_from_setup_to_saved_worksheets(
     window.experiments.go_to_step(WorkflowStep.SELECT_WELLS)
     assert window.controller.plate.plate_code == "2070"
     assert window.controller.current_targets == ()
-    assert f"also used in {first.plan_name}" in window.review_summary_label.text()
+    assert f"also used in {first.plan_name}" in window.review_summary_label.full_text()
     assert second.selected_well_count == 0
 
     window.experiments.resume_experiment(first.project_id, first.plan_id)
@@ -3459,7 +3459,7 @@ def test_the_view_does_not_leave_a_well_whose_boundary_is_unconfirmed(
         == f"{held} \u00b7 confirm the boundary to move on"
     )
     # The status line names the well, so a confirmation cannot land elsewhere.
-    assert window.calibration_label.text().startswith(f"{held} \u00b7")
+    assert window.calibration_label.full_text().startswith(f"{held} \u00b7")
     assert window.accept_calibration_button.isEnabled()
 
     window.accept_calibration_button.click()
@@ -3558,8 +3558,8 @@ def test_a_confirmed_boundary_with_a_position_outside_it_says_so(
     # Said where it is seen, with the mark matching the words.
     assert theme.SYMBOL_ATTENTION in page.footer_status_label.text()
     assert "1 position outside the boundary" in page.footer_status_label.text()
-    assert "1 position outside it" in window.calibration_label.text()
-    assert theme.SYMBOL_OK not in window.calibration_label.text()
+    assert "1 position outside it" in window.calibration_label.full_text()
+    assert theme.SYMBOL_OK not in window.calibration_label.full_text()
     # And the plan keeps the position, as it is.
     crystals = window.project_controller.selected_crystals_for_plan()
     assert len(crystals) == 1
@@ -7918,6 +7918,45 @@ def test_the_summary_ends_in_an_ellipsis_rather_than_mid_word() -> None:
         assert label.fontMetrics().width(shown) <= label.width(), (
             "the elided text still does not fit"
         )
+
+    window.close()
+    app.processEvents()
+
+
+def test_the_eliding_label_does_not_ratchet_itself_shut() -> None:
+    """It asks for the sentence however little it last managed to draw.
+
+    The first version handed the shortened string to QLabel.setText, so the
+    size hint shrank to the drawing rather than the text, the layout gave
+    it less, and the next elide was shorter again. On the beamline a
+    boundary line readable to "auto, outl" at about 440px closed to 121px,
+    where "boundary confirmed" was gone - fewer words than the plain QLabel
+    it replaced, which is a strange way to fix clipping.
+    """
+    app, window = _select_wells_at(1920, docks=("target_summary_dock",))
+    label = window.calibration_label
+    sentence = "F07a · ✓ Well boundary confirmed · auto, outline fit 95%"
+
+    label.setText(sentence)
+    app.processEvents()
+    first = label.width()
+
+    # Whatever it managed to draw, it must still ask for the whole thing.
+    assert label.sizeHint().width() >= label.fontMetrics().width(sentence), (
+        "the hint describes the drawing, not the text, so it will shrink again"
+    )
+
+    for _ in range(4):
+        label.setText(sentence)
+        app.processEvents()
+    assert label.width() == first, (
+        f"it lost room by being told the same sentence again: "
+        f"{first}px became {label.width()}px"
+    )
+
+    assert label.accessibleDescription() == sentence, (
+        "a screen reader takes the name from the shortened text"
+    )
 
     window.close()
     app.processEvents()

@@ -455,11 +455,41 @@ class ElidingSummaryLabel(QLabel):
     def setText(self, text: str) -> None:  # noqa: N802 - Qt API
         self._full_text = text
         self.setToolTip(text)
+        # A screen reader takes a label's name from its text, which is the
+        # shortened string. The description carries the sentence.
+        self.setAccessibleDescription(text)
+        self.updateGeometry()
         self._refresh_text()
 
     def full_text(self) -> str:
         """What it would say with room, which is what a test should read."""
         return self._full_text
+
+    def sizeHint(self):  # noqa: N802 - Qt API
+        """Ask for the whole sentence, not for what is currently drawn.
+
+        Without this the label ratchets itself shut: QLabel.setText is
+        given the shortened string, so the hint shrinks to it, so the
+        layout hands over less room, so the next elide is shorter again.
+        Measured on the beamline, a boundary line that had been readable to
+        "auto, outl" at about 440px closed down to 121px and "boundary
+        confirmed" disappeared - the ellipsis was honest and the sentence
+        was gone. The hint has to describe the text, not the drawing of it.
+        """
+        hint = super().sizeHint()
+        hint.setWidth(self.fontMetrics().width(self._full_text) + 4)
+        return hint
+
+    def minimumSizeHint(self):  # noqa: N802 - Qt API
+        """But it may still be squeezed down to an ellipsis.
+
+        It asks for the sentence and settles for whatever is left, which is
+        the bargain it is here to make visible. A minimum taken from the
+        text would make the row refuse to shrink instead.
+        """
+        hint = super().minimumSizeHint()
+        hint.setWidth(min(hint.width(), 24))
+        return hint
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
         super().resizeEvent(event)

@@ -7162,3 +7162,63 @@ def test_one_double_click_marks_one_position(tmp_path: Path, monkeypatch) -> Non
 
     window.close()
     app.processEvents()
+
+
+def test_the_canvas_reports_a_double_click_once() -> None:
+    """The same fix as the test above, provable where there are no images.
+
+    That one drives a loaded plate, so it needs the local RMServer fixture
+    and skips on every machine without one - including the beamline server,
+    where it was pointed out that the fix therefore went unproven. The
+    override itself lives on the canvas and needs no plate, no well and no
+    calibration: a pixmap and four events are enough, and this runs
+    everywhere.
+
+    Qt sends press, release, double-click, release for one double click, and
+    the default double-click handler calls mousePressEvent, so the canvas
+    used to report two clicks at one point. The window test says why that
+    matters; this one says it does not happen.
+    """
+    from xtalflow.ui.review_widgets import ImageCanvas
+
+    app = QApplication.instance() or QApplication([])
+    canvas = ImageCanvas()
+    canvas.resize(400, 300)
+    pixmap = QPixmap(400, 300)
+    pixmap.fill(Qt.gray)
+    canvas.set_image(pixmap, ())
+    canvas.show()
+    app.processEvents()
+
+    seen: list[tuple[int, int, int]] = []
+    canvas.image_clicked.connect(
+        lambda x, y, button: seen.append((round(x), round(y), button))
+    )
+
+    at = QPoint(200, 150)
+    for kind in (
+        QEvent.MouseButtonPress,
+        QEvent.MouseButtonRelease,
+        QEvent.MouseButtonDblClick,
+        QEvent.MouseButtonRelease,
+    ):
+        app.sendEvent(
+            canvas,
+            QMouseEvent(kind, at, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier),
+        )
+    app.processEvents()
+
+    assert len(seen) == 1, seen
+
+    # A second, separate click is a second click and must still arrive.
+    app.sendEvent(
+        canvas,
+        QMouseEvent(
+            QEvent.MouseButtonPress, at, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier
+        ),
+    )
+    app.processEvents()
+    assert len(seen) == 2, seen
+
+    canvas.close()
+    app.processEvents()

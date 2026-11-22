@@ -61,7 +61,7 @@ from xtalflow.domain.condition_test import (
     parse_percent_list,
 )
 from xtalflow.domain.crystal_workflow import AssignmentOrder
-from xtalflow.domain.fragment_screening import TRANSFER_INCREMENT_NL
+from xtalflow.domain.soaking import TRANSFER_INCREMENT_NL
 from xtalflow.domain.echo_source import (
     SOURCE_PLATE_TYPES,
     PlateRecordEntry,

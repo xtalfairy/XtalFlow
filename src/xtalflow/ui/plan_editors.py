@@ -48,8 +48,8 @@ from xtalflow.domain import (
 from xtalflow.domain.crystal_selection import order_selected_wells
 from xtalflow.application.planning_service import compound_ids_in_snapshot
 from xtalflow.domain.experiment_naming import protein_name_for_record
+from xtalflow.domain.soaking import TRANSFER_INCREMENT_NL, volume_that_splits
 from xtalflow.domain.fragment_screening import (
-    TRANSFER_INCREMENT_NL,
     AssignmentOrder,
     FragmentLibrary,
     FragmentScreenPlan,
@@ -58,7 +58,6 @@ from xtalflow.domain.fragment_screening import (
     library_locations_that_are_one_well,
     library_values_that_cannot_be_written,
     parse_library_rows,
-    volume_that_splits,
 )
 from xtalflow.domain.raw_crystal import build_raw_crystal_plan
 from xtalflow.domain.labwork import (

@@ -37,7 +37,7 @@ from .echo_source import (
     source_plate_type,
     well_history,
 )
-from .fragment_screening import TRANSFER_INCREMENT_NL, split_between_positions
+from .soaking import TRANSFER_INCREMENT_NL, split_between_positions
 
 HUNDRED = Decimal("100")
 

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import math
-from collections.abc import Iterable
 
 from dataclasses import dataclass
 from decimal import Decimal
@@ -12,6 +10,11 @@ from .crystal_workflow import (
     CrystalTarget,  # noqa: F401 — re-exported: callers import it from here
     SelectedCrystal,
 )
+from .soaking import (  # noqa: F401 - re-exported during the move
+    TRANSFER_INCREMENT_NL,
+    split_between_positions,
+    volume_that_splits,
+)
 from .crystal_selection import (
     CrystalSelection,
     SelectedWell,
@@ -21,7 +24,6 @@ from .crystal_selection import (
 )
 
 
-TRANSFER_INCREMENT_NL = Decimal("2.5")
 
 # What a value out of a library file may hold if it is going to be an
 # identifier: letters, digits, - and _. The compound ID becomes the soak_id
@@ -254,53 +256,6 @@ def build_fragment_screen_plan(
         selection, library, tuple(assignments), volume_per_crystal_nl,
         assignment_order,
     )
-
-
-def split_between_positions(total_nl: Decimal, positions: int) -> tuple[Decimal, ...]:
-    """How much each position receives, in whole 2.5 nL steps, adding up to the total.
-
-    The dispenser moves in 2.5 nL steps, so a total that is not a multiple of
-    the position count cannot be shared equally: 32.5 nL over three positions
-    is 13 steps over three. The leftover steps go to the first positions
-    (12.5, 10, 10) rather than to nobody, because every position sits in the
-    same drop - the total reaching that drop sets the concentration, and the
-    positions only say where the liquid lands. A position left with nothing
-    gets nothing, and the caller leaves it out of the worksheet.
-    """
-    if positions < 1:
-        raise ValueError("at least one soaking position is needed")
-    steps = total_nl / TRANSFER_INCREMENT_NL
-    if steps != steps.to_integral_value():
-        raise ValueError(
-            f"{total_nl.normalize():f} nL is not a whole number of "
-            f"{TRANSFER_INCREMENT_NL} nL steps"
-        )
-    base, extra = divmod(int(steps), positions)
-    return tuple(
-        TRANSFER_INCREMENT_NL * (base + (1 if index < extra else 0))
-        for index in range(positions)
-    )
-
-
-def volume_that_splits(
-    volume_nl: Decimal, position_counts: "Iterable[int]"
-) -> tuple[Decimal, bool]:
-    """The nearest volume every selected well can share equally.
-
-    Returns the largest volume at or below the one asked for, and True when it
-    is at or below it. When nothing at or below works - the volume is smaller
-    than one 2.5 nL step for each position - the smallest one above is
-    returned with False, because rounding down to nothing is not an answer.
-    """
-    step = 1
-    for count in position_counts:
-        if count:
-            step = step * count // math.gcd(step, count)
-    units = volume_nl / TRANSFER_INCREMENT_NL
-    lower = (units // step) * step
-    if lower > 0:
-        return TRANSFER_INCREMENT_NL * lower, True
-    return TRANSFER_INCREMENT_NL * step, False
 
 
 def unequal_split_message(

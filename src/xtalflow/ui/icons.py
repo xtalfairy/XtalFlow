@@ -47,12 +47,14 @@ SIDEBAR = (
 
 
 # A gear: the window's own settings, as against anything about a plan.
+# Six teeth, each the same tooth turned 60 degrees about (12,12), so the
+# symmetry is arithmetic and not a hand-placed coordinate. The first
+# drawing had its top tooth centred on x=10.5 against a circle at 12 -
+# the kind of thing only visible once somebody looks at it at the size
+# it is drawn, which is how it was found.
 SETTINGS = (
     '<circle cx="12" cy="12" r="3"/>'
-    '<path d="M19.1 14.2a7.6 7.6 0 0 0 0-4.4l2-1.6-2-3.4-2.4 1a7.6 7.6 0 0 0 '
-    '-3.8-2.2L12.5 1h-4l-.4 2.6a7.6 7.6 0 0 0-3.8 2.2l-2.4-1-2 3.4 2 1.6a7.6 '
-    '7.6 0 0 0 0 4.4l-2 1.6 2 3.4 2.4-1a7.6 7.6 0 0 0 3.8 2.2l.4 2.6h4l.4-2.6a'
-    '7.6 7.6 0 0 0 3.8-2.2l2.4 1 2-3.4z"/>'
+    '<path d="M9.84 2.65L14.16 2.65L15.47 6.86L14.72 6.43L19.02 5.45L21.18 9.19L18.18 12.43L18.18 11.57L21.18 14.81L19.02 18.55L14.72 17.57L15.47 17.14L14.16 21.35L9.84 21.35L8.53 17.14L9.28 17.57L4.98 18.55L2.82 14.81L5.82 11.57L5.82 12.43L2.82 9.19L4.98 5.45L9.28 6.43L8.53 6.86Z"/>'
 )
 
 

@@ -19,7 +19,14 @@ from xtalflow.domain.plan_lifecycle import PlanRevision
 from PyQt5.QtCore import QEvent, QPoint, Qt
 from PyQt5.QtGui import QImage, QKeySequence, QMouseEvent, QPixmap
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication, QMenuBar, QMessageBox, QStyle
+from PyQt5.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QMenuBar,
+    QMessageBox,
+    QStyle,
+    QStyleOptionComboBox,
+)
 
 from xtalflow.domain import (
     PLATE_FORMATS,
@@ -7751,3 +7758,90 @@ def test_the_sort_label_stays_inside_what_the_beamline_measured() -> None:
         f"{worn!r} is {width}px here, about {width * 1.11:.0f} on the "
         "beamline, where there is room for 166; shorten it or fold the row"
     )
+
+
+def _select_wells_at(width: int, *, docks: tuple[str, ...] = ()):
+    """A shown window on the step, at a width, with named docks open."""
+    from dataclasses import replace as _replace
+
+    app = QApplication.instance() or QApplication([])
+    settings = _replace(DEFAULT_SETTINGS, crystal_model_path=Path("/tmp/none.pt"))
+    window = ViewerWindow(RockMakerImageRepository(FIXTURE_ROOT), settings=settings)
+    window.resize(width, 1080)
+    window.show()
+    window.experiments.start_experiment(PlanType.RAW_CRYSTAL)
+    window.experiments.go_to_step(WorkflowStep.SELECT_WELLS)
+    for name in docks:
+        getattr(window, name).show()
+    app.processEvents()
+    return app, window
+
+
+def test_nothing_in_the_walk_row_is_squeezed_with_a_panel_open() -> None:
+    """The state the one-row toolbar could not survive.
+
+    With Selected wells open the toolbar wanted 1251px and was given 991, so
+    everything in it was cut at once: the image filter showed none of its
+    four options, the well box read "1a" for "A01a", and the summary label
+    was drawn at zero width in every state - "N images match filter" and
+    "also used in <experiment>" never reached anybody.
+
+    This measures the font it is run in, so on the beamline it measures
+    DejaVu rather than a guess about it. It fails on the single row.
+    """
+    for docks in ((), ("target_summary_dock",),
+                  ("target_summary_dock", "plate_map_dock")):
+        app, window = _select_wells_at(1920, docks=docks)
+        where = f"with {len(docks)} panel(s) open"
+
+        combo = window.image_filter_input
+        option = QStyleOptionComboBox()
+        option.initFrom(combo)
+        room = combo.style().subControlRect(
+            QStyle.CC_ComboBox, option, QStyle.SC_ComboBoxEditField, combo
+        ).width()
+        longest = max(
+            (combo.itemText(index) for index in range(combo.count())),
+            key=lambda text: combo.fontMetrics().width(text),
+        )
+        needs = combo.fontMetrics().width(longest)
+        assert needs <= room, f"{longest!r} needs {needs}, has {room} {where}"
+
+        well = window.well_input
+        assert well.fontMetrics().width("A01a") <= well.width() - 12, (
+            f"the well address is cut {where}; it reads as another well"
+        )
+        assert window.review_summary_label.width() > 0, (
+            f"the summary is drawn at no width {where}, so nobody reads it"
+        )
+
+        window.close()
+        app.processEvents()
+
+
+def test_the_walk_row_does_not_move_when_the_data_changes() -> None:
+    """Its width is a constant, which is why a test can hold it.
+
+    The row carries nothing whose length depends on the plate. The two
+    places it could have - the attention mark on the sort box, and a well
+    going from 9 positions to 10 - have their width reserved, so the arrows
+    do not step sideways while somebody is walking a plate with them.
+    """
+    app, window = _select_wells_at(1920)
+    walk = next(
+        layout for layout in window.findChildren(QHBoxLayout)
+        if layout.indexOf(window.previous_button) >= 0
+    )
+
+    before = (walk.sizeHint().width(), window.previous_button.x())
+
+    window.crystal_first_input.setText(
+        f"{theme.SYMBOL_ATTENTION} {CRYSTAL_ORDER_LABEL}"
+    )
+    window.well_progress_label.setText("This well · 10 of")
+    app.processEvents()
+
+    assert (walk.sizeHint().width(), window.previous_button.x()) == before
+
+    window.close()
+    app.processEvents()

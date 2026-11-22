@@ -50,6 +50,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QShortcut,
     QSpinBox,
+    QStyle,
     QStackedWidget,
     QSizePolicy,
     QSplitter,
@@ -337,6 +338,21 @@ class ViewerWindow(QMainWindow):
         self.position_label = QLabel()
         self.position_label.setObjectName("Muted")
         self.crystal_first_input = QCheckBox(CRYSTAL_ORDER_LABEL)
+        # Reserve the width of the attention form now. The box grows by the
+        # mark when a plate's order turns out wrong, and that is the moment
+        # its own sentence matters most - not the moment to start competing
+        # for room with everything beside it.
+        # Asked of the widget rather than added up from font metrics and
+        # style hints: the first attempt did that arithmetic and came out
+        # 9px short, because a check box's width is not the sum of the parts
+        # anyone thinks to name.
+        self.crystal_first_input.setText(
+            f"{theme.SYMBOL_ATTENTION} {CRYSTAL_ORDER_LABEL}"
+        )
+        self.crystal_first_input.setMinimumWidth(
+            self.crystal_first_input.sizeHint().width()
+        )
+        self.crystal_first_input.setText(CRYSTAL_ORDER_LABEL)
         self.crystal_first_input.setToolTip(CRYSTAL_ORDER_TOOLTIP)
         self.crystal_first_input.setAccessibleName(CRYSTAL_ORDER_LABEL)
         # No model configured means the whole feature is absent, not greyed out.
@@ -349,6 +365,10 @@ class ViewerWindow(QMainWindow):
         self.image_filter_input.setAccessibleName("Image filter")
         self.well_input = QLineEdit()
         self.well_input.setMaximumWidth(90)
+        # And a floor. Squeezed to 39px it showed "1a" for "A01a" - a well
+        # address with its row and column eaten, which reads as a different
+        # well rather than as a truncation.
+        self.well_input.setMinimumWidth(72)
         self.well_input.setPlaceholderText("A01a")
         self.well_input.setAccessibleName("Well address")
         self.well_input.setToolTip(
@@ -394,6 +414,13 @@ class ViewerWindow(QMainWindow):
         # the setting is the denominator, so it is read while the work happens
         # rather than being felt only when the view jumps.
         self.well_progress_label = QLabel("This well · 0 of")
+        # Reserved for two digits, so the arrows beside it do not shift when
+        # a well goes from 9 positions to 10.
+        self.well_progress_label.setText("This well · 00 of")
+        self.well_progress_label.setMinimumWidth(
+            self.well_progress_label.sizeHint().width()
+        )
+        self.well_progress_label.setText("This well · 0 of")
         self.well_progress_label.setObjectName("Muted")
         self.auto_advance_input = QSpinBox()
         self.auto_advance_input.setRange(1, 100)
@@ -405,23 +432,23 @@ class ViewerWindow(QMainWindow):
             "on with fewer; this is not a required count."
         )
 
+        # Two rows, because one cannot hold this. Measured at 1920x1080 on
+        # the step: the row wants 1251px and gets 1402 with both docks shut,
+        # 991 with Selected wells open and 965 with both - so the moment a
+        # dock opens it is 260px short and everything in it is squeezed.
+        # The beamline had already been living with the consequence: the
+        # image filter had exactly zero pixels of slack, and the summary
+        # label below was never drawn at all.
+        #
+        # Row one is what you are looking at, and the panels that show more
+        # of it. Everything here changes length with the data - the plate's
+        # name, the position, the summary - so it is kept away from the
+        # controls that get cut, and the summary takes whatever is left.
         navigation = QHBoxLayout()
         navigation.setSpacing(theme.SPACING_M)
         navigation.addWidget(self.navigation_label)
         navigation.addWidget(self.position_label)
-        navigation.addWidget(self.review_summary_label)
-        navigation.addStretch()
-        navigation.addWidget(self.crystal_first_input)
-        navigation.addWidget(self.image_filter_input)
-        well_label = QLabel("Well")
-        well_label.setObjectName("Muted")
-        navigation.addWidget(well_label)
-        navigation.addWidget(self.well_input)
-        navigation.addSpacing(theme.SPACING_M)
-        navigation.addWidget(self.well_progress_label)
-        navigation.addWidget(self.auto_advance_input)
-        navigation.addWidget(self.previous_button)
-        navigation.addWidget(self.next_button)
+        navigation.addWidget(self.review_summary_label, 1)
         navigation.addSpacing(theme.SPACING_L)
         self.target_summary_button = QPushButton("Selected wells")
         self.target_summary_button.setCheckable(True)
@@ -438,6 +465,33 @@ class ViewerWindow(QMainWindow):
         # not there at all rather than present and empty.
         self.plate_map_button.setVisible(self.settings.crystal_model_path is not None)
         navigation.addWidget(self.plate_map_button)
+
+        # Row two is the walk: how you move and what you are moving through.
+        # Nothing in it changes width with the data, so what it needs is a
+        # constant and a test can hold it there. Left-aligned, so the arrows
+        # stop moving across the window when a dock opens.
+        walk = QHBoxLayout()
+        walk.setSpacing(theme.SPACING_M)
+        walk.addWidget(self.previous_button)
+        walk.addWidget(self.next_button)
+        walk.addWidget(self.well_progress_label)
+        walk.addWidget(self.auto_advance_input)
+        walk.addSpacing(theme.SPACING_M)
+        well_label = QLabel("Well")
+        well_label.setObjectName("Muted")
+        walk.addWidget(well_label)
+        walk.addWidget(self.well_input)
+        walk.addWidget(self.image_filter_input)
+        # Filter and sort decide what the arrows mean, so they travel with
+        # them rather than with the heading.
+        walk.addWidget(self.crystal_first_input)
+        walk.addStretch(1)
+
+        navigation_rows = QVBoxLayout()
+        navigation_rows.setContentsMargins(0, 0, 0, 0)
+        navigation_rows.setSpacing(theme.SPACING_S)
+        navigation_rows.addLayout(navigation)
+        navigation_rows.addLayout(walk)
 
         self.image_canvas = ImageCanvas()
         self.image_canvas.setAccessibleName("Crystal image")
@@ -522,7 +576,7 @@ class ViewerWindow(QMainWindow):
         viewer_layout = QVBoxLayout()
         viewer_layout.setContentsMargins(0, 0, 0, 0)
         viewer_layout.setSpacing(theme.SPACING_M)
-        viewer_layout.addLayout(navigation)
+        viewer_layout.addLayout(navigation_rows)
         viewer_layout.addWidget(self.image_stack, 1)
         viewer_layout.addLayout(display_row)
         viewer_panel = QWidget()

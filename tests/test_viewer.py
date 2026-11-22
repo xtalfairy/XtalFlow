@@ -7298,6 +7298,59 @@ def test_a_marker_is_numbered_in_the_order_its_dose_is_divided() -> None:
     app.processEvents()
 
 
+def test_position_numbers_are_off_until_the_view_option_is_ticked() -> None:
+    """Asked for by the operator after seeing them always on.
+
+    The number answers one question - which spot takes the biggest drop when
+    a dose will not divide evenly - and that question is asked while checking
+    a worksheet against a plate, not while looking for crystals. Shown
+    always, it is ink on top of the thing being looked at.
+
+    So the canvas draws them only when asked, and the window's View menu is
+    where the asking happens, beside the other things that can be shown and
+    hidden.
+    """
+    from xtalflow.ui.review_widgets import ImageCanvas
+
+    app = QApplication.instance() or QApplication([])
+    base = datetime(2026, 11, 22, 12, 0, tzinfo=timezone.utc)
+    canvas = ImageCanvas()
+    canvas.resize(300, 200)
+    pixmap = QPixmap(300, 200)
+    pixmap.fill(Qt.black)
+    canvas.set_image(
+        pixmap,
+        (TargetPoint("t", "image", 150, 100, base),),
+    )
+    canvas.show()
+    app.processEvents()
+
+    def light_pixels_beside_the_marker() -> int:
+        shot = canvas.grab().toImage()
+        x, y = canvas.transform().image_to_viewport(150, 100)
+        found = 0
+        for badge_x in range(round(x) + 8, round(x) + 26):
+            for badge_y in range(round(y) - 26, round(y) - 8):
+                if shot.valid(badge_x, badge_y):
+                    colour = shot.pixelColor(badge_x, badge_y)
+                    if colour.red() > 200 and colour.green() > 200 and colour.blue() > 200:
+                        found += 1
+        return found
+
+    assert light_pixels_beside_the_marker() == 0, "numbers are off to begin with"
+
+    canvas.set_position_numbers_visible(True)
+    app.processEvents()
+    assert light_pixels_beside_the_marker() > 4, "and drawn once asked for"
+
+    canvas.set_position_numbers_visible(False)
+    app.processEvents()
+    assert light_pixels_beside_the_marker() == 0, "and gone again"
+
+    canvas.close()
+    app.processEvents()
+
+
 def test_every_marker_carries_a_number_that_can_be_read() -> None:
     """Drawn, and drawn so it survives a bright image and a dark one.
 
@@ -7325,6 +7378,7 @@ def test_every_marker_carries_a_number_that_can_be_read() -> None:
                 for index in range(3)
             ),
         )
+        canvas.set_position_numbers_visible(True)
         canvas.show()
         app.processEvents()
         shot = canvas.grab().toImage()
@@ -7342,3 +7396,29 @@ def test_every_marker_carries_a_number_that_can_be_read() -> None:
 
         canvas.close()
         app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_the_view_menu_turns_the_position_numbers_on(tmp_path: Path) -> None:
+    """The canvas tests prove the drawing; this proves the menu reaches it.
+
+    A switch that is wired to nothing passes every test of the thing it was
+    meant to switch.
+    """
+    app = QApplication.instance() or QApplication([])
+    window, _store, _editor = _fragment_plan_window(tmp_path, DEFAULT_SETTINGS)
+
+    assert not window.position_numbers_action.isChecked(), "off when the window opens"
+    assert not window.image_canvas._show_position_numbers
+
+    window.position_numbers_action.setChecked(True)
+    app.processEvents()
+    assert window.image_canvas._show_position_numbers, "the menu item is connected"
+
+    window.position_numbers_action.setChecked(False)
+    app.processEvents()
+    assert not window.image_canvas._show_position_numbers
+
+    window.close()
+    app.processEvents()

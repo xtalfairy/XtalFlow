@@ -34,6 +34,8 @@ class ImageCanvas(QWidget):
         super().__init__()
         self._pixmap = QPixmap()
         self._targets: tuple[TargetPoint, ...] = ()
+        # Off by default: see set_position_numbers_visible.
+        self._show_position_numbers = False
         self._calibration: ImageCalibration | None = None
         self._calibration_points: tuple[tuple[float, float], ...] = ()
         self._highlighted_target_id: str | None = None
@@ -234,7 +236,8 @@ class ImageCanvas(QWidget):
                 painter.setPen(QPen(QColor("#4da3ff"), 3))
                 painter.drawEllipse(round(x) - 16, round(y) - 16, 32, 32)
                 painter.setPen(QPen(QColor("#ff4057"), 2))
-            self._draw_position_number(painter, x, y, order[target.id])
+            if self._show_position_numbers:
+                self._draw_position_number(painter, x, y, order[target.id])
 
         if self.hasFocus():
             painter.setPen(QPen(QColor("#4da3ff"), 3))
@@ -256,6 +259,20 @@ class ImageCanvas(QWidget):
         image_point = transform.viewport_to_image(event.x(), event.y())
         if image_point is not None:
             self.image_clicked.emit(*image_point, int(event.button()))
+
+    def set_position_numbers_visible(self, visible: bool) -> None:
+        """Turn the numbers on the markers on or off.
+
+        Off to begin with. The number answers a question that is only asked
+        while checking a worksheet against a plate - which spot takes the
+        biggest drop - and the rest of the time it is ink on top of the
+        crystal somebody is trying to look at. The beamline operator asked
+        for it behind a view option after seeing it always on.
+        """
+        if self._show_position_numbers == visible:
+            return
+        self._show_position_numbers = visible
+        self.update()
 
     def position_numbers(self) -> dict[str, int]:
         """Which position each target is, in the order the dose is divided in.

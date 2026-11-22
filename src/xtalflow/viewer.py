@@ -597,6 +597,17 @@ class ViewerWindow(QMainWindow):
         self.workspace_panel_action.setCheckable(True)
         self.workspace_panel_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
         self.workspace_panel_action.toggled.connect(self.set_workspace_panel_visible)
+        # Off to begin with, because the number is only wanted while checking
+        # a worksheet against a plate; the rest of the time it is ink over the
+        # crystal being looked at. Asked for this way by the operator after
+        # seeing it always on.
+        self.position_numbers_action = self.view_menu.addAction("Position Numbers")
+        self.position_numbers_action.setCheckable(True)
+        self.position_numbers_action.setChecked(False)
+        self.position_numbers_action.setShortcut(QKeySequence("Ctrl+Shift+N"))
+        self.position_numbers_action.toggled.connect(
+            self.image_canvas.set_position_numbers_visible
+        )
         self.help_menu = self.menuBar().addMenu("Help")
         self.shortcuts_action = self.help_menu.addAction("Keyboard Shortcuts")
         self.shortcuts_action.setShortcut(QKeySequence("?"))

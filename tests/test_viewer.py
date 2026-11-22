@@ -1850,6 +1850,55 @@ def test_target_summary_uses_hidden_right_dock_and_jumps_to_image(
 
 @pytest.mark.requires_rmserver_fixture
 @pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_a_position_past_the_count_is_asked_about_before_it_is_kept(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        auto_advance_target_count=1,
+    )
+    _leave_every_boundary_to_the_person(window)
+    window.load_plate("2070", SWISSCI_MRC_2_WELL)
+    window.auto_confirm_plate_checkbox.setChecked(False)
+    window._auto_detect_calibration()
+    window._handle_image_click(600, 500, Qt.LeftButton)
+    # The view holds at an unconfirmed boundary, so the next click lands on
+    # the same well - which is the ordinary way a well goes over the count.
+    well = window.controller.current_image.image_key
+    assert window.controller.session.target_count_for(well) == 1
+
+    asked: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args, **kwargs: (asked.append(args[2]), QMessageBox.No)[1],
+    )
+    window._handle_image_click(610, 510, Qt.LeftButton)
+    assert len(asked) == 1, "going past the count is asked about"
+    assert "divided between all 2" in asked[0], asked[0]
+    assert window.controller.session.target_count_for(well) == 1, "no keeps it off"
+
+    # And the question is only for going past: the first position on a well
+    # must not stop to ask.
+    window.show_next()
+    second = window.controller.current_image.image_key
+    window._handle_image_click(600, 500, Qt.LeftButton)
+    assert len(asked) == 1, "the first position on a well is not asked about"
+    assert window.controller.session.target_count_for(second) == 1
+
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes
+    )
+    window._handle_image_click(610, 510, Qt.LeftButton)
+    assert window.controller.session.target_count_for(second) == 2, "yes keeps it"
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
 def test_valid_automatic_wells_can_be_confirmed_in_bulk(
     tmp_path: Path, monkeypatch
 ) -> None:

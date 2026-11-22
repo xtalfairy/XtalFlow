@@ -1883,6 +1883,41 @@ class ViewerWindow(QMainWindow):
         self._update_review_summary()
         self._update_navigation()
 
+    def _may_add_another_position(self) -> bool:
+        """Ask before putting more positions on a well than were asked for.
+
+        The count in the spinbox is how many positions this review expects per
+        well; passing it is allowed and sometimes meant, because a dose is
+        split between every position a well has. But it was passed by accident
+        more easily than on purpose - the view does not move on once a well is
+        over the count, and two marks a few pixels apart look like one - and
+        the result is a smaller drop at each spot than the operator thinks,
+        with nothing on the worksheet to say so.
+
+        So it asks, with "no" as the answer it is already holding.
+        """
+        if self.controller is None:
+            return False
+        wanted = self.controller.preferences.auto_advance_target_count
+        held = len(self.controller.current_targets)
+        if held < wanted:
+            return True
+        well = self._current_well_address or "This well"
+        return (
+            QMessageBox.question(
+                self,
+                "Add another position?",
+                f"{well} already has {counted(held, 'soaking position')}, "
+                f"and this review is set to {wanted} per well.\n\n"
+                f"Another one is kept and dispensed to: the dose for this well "
+                f"is divided between all {held + 1} of them, so each drop is "
+                f"smaller. The worksheet shows the full dose either way.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            == QMessageBox.Yes
+        )
+
     def _handle_image_click(self, x_px: float, y_px: float, button: int) -> None:
         self.review_hint.hide()
         if self.controller is None:
@@ -1901,6 +1936,8 @@ class ViewerWindow(QMainWindow):
                 self._finish_manual_calibration()
             return
         if button == Qt.LeftButton:
+            if not self._may_add_another_position():
+                return
             pixmap = self.image_canvas.pixmap()
             self._remember_mark_ordering(self.controller.current_image.image_key)
             should_auto_advance = self.controller.add_target(

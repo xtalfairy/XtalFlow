@@ -107,3 +107,36 @@ def test_detector_finds_outer_well_on_real_fixture() -> None:
     assert 600 < boundary.center_x_px < 680
     assert 480 < boundary.center_y_px < 550
     assert 460 < boundary.radius_x_px < 510
+
+
+def test_the_boundary_line_puts_the_exception_before_the_score() -> None:
+    """The count of positions outside is the one thing that must survive.
+
+    The line is drawn by a plain QLabel, which clips without an ellipsis,
+    and the beamline measured what it is given: the sentence needs 749px
+    and gets 436 with a panel open, so it stops inside "auto, outline fit"
+    every time. Written with the count last, the only news in the line was
+    the one thing never drawn, and what was drawn read as a finished
+    sentence. Nothing fits that width, so the order is the whole defence.
+    """
+    from dataclasses import replace
+
+    from xtalflow.ui.calibration_inspector import calibration_status
+
+    confirmed = replace(
+        ImageCalibration.automatic("image", 100.0, 100.0, 50.0, 0.95, 2.77),
+        confirmed=True,
+    )
+
+    text, kind = calibration_status(confirmed, positions_outside=3)
+    assert kind == "attention"
+    assert "3 positions outside boundary" in text
+    assert text.index("3 positions outside") < text.index("outline fit"), text
+    # The words "confirmed" cost more room than the line has. The beamline
+    # took that trade knowingly: the Accept button beside this line is gone
+    # once the boundary is confirmed, so its absence says it instead.
+    assert "confirmed" not in text, text
+
+    one, _ = calibration_status(confirmed, positions_outside=1)
+    assert "1 position outside boundary" in one
+    assert one.index("1 position outside") < one.index("outline fit"), one

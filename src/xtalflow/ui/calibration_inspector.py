@@ -40,10 +40,23 @@ def calibration_status(
     if positions_outside:
         # Green here while the well sat in the list read as a contradiction,
         # so the boundary says it: the mark matches the words.
+        #
+        # The count leads because the line is drawn by a plain QLabel, which
+        # clips without an ellipsis, and the beamline measured what it gets:
+        # written the other way round the sentence needed 749px and was given
+        # 436 with a panel open, so it stopped inside "auto, outline fit"
+        # every time. The one thing the person had to see was the one thing
+        # never drawn, and what was drawn read as a finished sentence.
+        #
+        # It does not say "confirmed" either, which the beamline chose after
+        # being shown the cost: with the boundary confirmed the Accept button
+        # beside this line disappears, so its absence already says it. Even
+        # so this runs to about 577px, past the 436 it is given, so the order
+        # is still the whole defence - the exception first, the score last.
         outside = "position" if positions_outside == 1 else "positions"
         return (
-            f"{theme.SYMBOL_ATTENTION} Well boundary confirmed · {method} · "
-            f"{positions_outside} {outside} outside it",
+            f"{theme.SYMBOL_ATTENTION} {positions_outside} {outside} "
+            f"outside boundary · {method}",
             "attention",
         )
     return f"{theme.SYMBOL_OK} Well boundary confirmed · {method}", "ok"

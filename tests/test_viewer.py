@@ -3558,8 +3558,12 @@ def test_a_confirmed_boundary_with_a_position_outside_it_says_so(
     # Said where it is seen, with the mark matching the words.
     assert theme.SYMBOL_ATTENTION in page.footer_status_label.text()
     assert "1 position outside the boundary" in page.footer_status_label.text()
-    assert "1 position outside it" in window.calibration_label.text()
-    assert theme.SYMBOL_OK not in window.calibration_label.text()
+    line = window.calibration_label.text()
+    assert "1 position outside boundary" in line
+    assert theme.SYMBOL_OK not in line
+    # The label clips without an ellipsis and never gets the whole sentence,
+    # so the count has to come before the score or it is never drawn.
+    assert line.index("1 position outside") < line.index("outline fit"), line
     # And the plan keeps the position, as it is.
     crystals = window.project_controller.selected_crystals_for_plan()
     assert len(crystals) == 1

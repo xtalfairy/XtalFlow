@@ -14,5 +14,5 @@
   "source_sha256": "4c99f441417c9cef54e4dd67ca7511551d954e2873591c2fafaf5b1f0447bbdc",
   "exported_at": "2026-10-19T12:00:59+00:00",
   "exported_by": "codex/export_crystal_onnx.py",
-  "note": "EfficientNet-B0 fine-tuned in-house on hand-labelled SWISS-CI plates. No held-out accuracy was recorded for this checkpoint."
+  "note": "EfficientNet-B0 fine-tuned in-house on hand-labelled SWISS-CI plates. The checkpoint arrived with no held-out accuracy; ee34729 measured one on 4 unseen plates (276 images): accuracy 84.1%, crystal recall 73%, precision 70%, within-plate AUC 0.89-0.95. The reported val figure of 96.4% was chosen on, and is not evidence."
 }

@@ -92,8 +92,15 @@ GOOD_ENOUGH = 0.25
 class SelfCheck:
     """Whether the order put what the user marked near the front.
 
-    This is the only measurement of this model there has ever been: the
-    checkpoint shipped with no held-out accuracy of any kind.
+    Not the only measurement of this model - that note stood here, stale,
+    long enough to be copied into a tooltip the operator reads. The
+    checkpoint arrived from CrystAIze with no held-out number, and ee34729
+    then measured one: 4 plates it never trained on, 276 images, accuracy
+    84.1%, within-plate AUC 0.89-0.95, half the order holding 95-100% of
+    the crystals and the first fifth only 58%.
+
+    What this is, is that measurement repeated on the plate in front of the
+    user, with their own marks as the labels.
 
     It is only meaningful for marks placed while walking in well order. Marks
     placed while walking crystal first are at the front by construction - the
@@ -126,18 +133,25 @@ class SelfCheck:
         """
         top = f"top {GOOD_ENOUGH:.0%}"
         if self.state == "unverified":
+            # "on scored images" is not pedantry: ranks only counts marks
+            # the model actually scored, so somebody who marked six drops on
+            # a plate whose share went flaky would otherwise be told to go
+            # and mark more.
             return (
-                f"Model check: needs {ENOUGH_MARKS} or more drops marked "
-                "in well order"
+                f"Model check: needs {ENOUGH_MARKS} or more scored drops "
+                "marked in well order"
             )
         drops = f"your {len(self.ranks)} marked drop" + ("" if len(self.ranks) == 1 else "s")
         middle = sorted(self.ranks)[len(self.ranks) // 2]
         where = f"the middle of {drops} ranked {middle} of {self.total}"
+        # Verdict first. The status bar announces this for eight seconds in
+        # a 280px label that elides on the right, so anything after the
+        # first few words is never read there - and what was at the tail
+        # was the part telling the user what to do.
         if self.state == "pass":
-            return f"◆ Model check: {where} on this plate, inside its {top}"
+            return f"◆ Sorting worked on this plate: {where}, inside its {top}"
         return (
-            f"△ Model check: {where} on this plate, outside its {top} - "
-            "sorting by score is not recommended here"
+            f"△ Sorting not recommended here: {where}, outside its {top}"
         )
 
 

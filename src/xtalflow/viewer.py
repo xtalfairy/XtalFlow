@@ -175,9 +175,10 @@ CRYSTAL_ORDER_TOOLTIP = (
     "first.\n"
     "Off: well order (A01a, A01b, ...). Only the order changes; every image "
     "is still shown.\n"
-    "The model is a guess. It shipped with no accuracy measured on data it "
-    "had not seen, so the check against your own marks is the only "
-    "measurement of it there is."
+    "Measured on 4 plates it never trained on: half the order held 95-100% "
+    "of the crystals, the first fifth only 58%. So it is worth looking at, "
+    "and it is not a reason to stop early. The check below is the same "
+    "measurement made on this plate, from your own marks."
 )
 
 

@@ -87,8 +87,8 @@ def test_the_check_passes_when_the_marks_sit_near_the_front() -> None:
     # is what decides: state compares the median against the top quarter,
     # not a count of how many marks landed there.
     assert check.sentence() == (
-        "◆ Model check: the middle of your 3 marked drops ranked 3 of 100 "
-        "on this plate, inside its top 25%"
+        "◆ Sorting worked on this plate: the middle of your 3 marked "
+        "drops ranked 3 of 100, inside its top 25%"
     )
 
 
@@ -101,10 +101,11 @@ def test_the_check_fails_and_says_so_rather_than_going_quiet() -> None:
     check = self_check(keys, scores, ["i40", "i60", "i80"])
 
     assert check.state == "fail"
-    assert check.sentence().startswith("△ Model check:")
+    # The verdict leads, because the status bar elides the rest.
+    assert check.sentence().startswith("△ Sorting not recommended here:")
     assert "ranked 61 of 100" in check.sentence()
     # It has to say what to do, not only that something was measured.
-    assert "not recommended here" in check.sentence()
+
 
 
 def test_too_few_marks_is_unverified_rather_than_a_verdict() -> None:
@@ -121,7 +122,7 @@ def test_too_few_marks_is_unverified_rather_than_a_verdict() -> None:
         # nobody could guess: marks made while sorting by score are at the
         # front because they were shown first, so they are not counted.
         assert check.sentence() == (
-            "Model check: needs 3 or more drops marked in well order"
+            "Model check: needs 3 or more scored drops marked in well order"
         )
 
 
@@ -163,3 +164,28 @@ def test_many_marks_are_still_one_sentence_about_the_middle_one() -> None:
     assert "the middle of your 20 marked drops ranked 33 of 288" in sentence
     for listed in ("3–60", "rank 3,"):
         assert listed not in sentence, listed
+
+
+def test_the_middle_mark_decides_and_not_the_best_one() -> None:
+    """Which mark the verdict turns on, pinned.
+
+    Nothing was holding this: changing state to judge by the best mark left
+    every test in this file and every crystal test in test_viewer.py green,
+    while the window would have told people a plate was fine on the strength
+    of one lucky drop.
+
+    Ranks 10, 20, 30 and 40 of 100 separate the two rules. The best is 10,
+    inside the top quarter. The middle is 30, outside it. The order did not
+    work on this plate and the sentence has to say so.
+    """
+    from xtalflow.domain.crystal_score import SelfCheck
+
+    check = SelfCheck((10, 20, 30, 40), 100)
+
+    assert check.state == "fail", "the middle is 30 of 100, outside the top 25%"
+    assert "ranked 30 of 100" in check.sentence()
+    assert "not recommended" in check.sentence()
+
+    # And the mirror: a plate whose middle is inside passes even though its
+    # worst mark is far down.
+    assert SelfCheck((5, 10, 20, 90), 100).state == "pass"

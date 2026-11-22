@@ -207,10 +207,11 @@ class WorkspaceSidebar(QWidget):
         # The third place to stand, beside new experiments and workspaces: what
         # MxLive holds, which is read-only and belongs to the account, not to a
         # folder on this computer.
-        mxlive_title = QLabel("MxLive")
-        mxlive_title.setObjectName("SidebarTitle")
-        mxlive_title.setContentsMargins(10, 0, 0, theme.SPACING_S)
-        self.history_button = QPushButton("Experiment history")
+        # No "MxLive" heading over a single row any more: the row says it.
+        # The page it opens still calls itself Experiment history; this is
+        # the way in, and it has to name what it reaches from a sidebar
+        # where everything else is local to this computer.
+        self.history_button = QPushButton("MxLive history")
         self.history_button.setObjectName("NewExperiment")
         self.history_button.setCursor(Qt.PointingHandCursor)
         self.history_button.setIcon(
@@ -236,32 +237,20 @@ class WorkspaceSidebar(QWidget):
         # one out greys it here too, and a plate map that does not exist at
         # this site is simply not in the list - and the window hands this
         # button its menu once the sidebar is built.
-        menus_divider = QFrame()
-        menus_divider.setObjectName("SidebarDivider")
-        menus_divider.setFixedHeight(1)
-        self.settings_button = QToolButton()
-        self.settings_button.setObjectName("SidebarMenu")
+        # One row, drawn like the row above it. The icon alone sat in a band
+        # of its own between two rules and read as a second status bar; a
+        # named row does not. What it opens is a plain menu - the shape of a
+        # right-click menu - rather than anything that looks like a page.
+        self.settings_button = QPushButton("Settings")
+        self.settings_button.setObjectName("NewExperiment")
         self.settings_button.setCursor(Qt.PointingHandCursor)
         self.settings_button.setIcon(
             QIcon(icons.svg_pixmap(icons.SETTINGS, 18, theme.TEXT_MUTED))
         )
         self.settings_button.setIconSize(QSize(18, 18))
-        # The icon alone, the way the panel's own toggle is drawn. The words
-        # live in the tooltip and in the accessible name, so the menu is
-        # still findable by anything reading the window rather than looking
-        # at it, and by anyone hovering.
         self.settings_button.setToolTip(
             "What this window shows, and help with the program"
         )
-        self.settings_button.setAccessibleName("Settings")
-        # The whole button opens the menu, rather than a separate arrow that
-        # is a smaller target than the icon beside it.
-        self.settings_button.setPopupMode(QToolButton.InstantPopup)
-        menus_row = QHBoxLayout()
-        menus_row.setContentsMargins(0, 0, 0, 0)
-        menus_row.setSpacing(theme.SPACING_S)
-        menus_row.addWidget(self.settings_button)
-        menus_row.addStretch(1)
 
         layout = QVBoxLayout()
         layout.setContentsMargins(theme.SPACING_M, theme.SPACING_L, theme.SPACING_M, theme.SPACING_L)
@@ -283,12 +272,8 @@ class WorkspaceSidebar(QWidget):
         layout.addSpacing(theme.SPACING_L)
         layout.addWidget(mxlive_divider)
         layout.addSpacing(theme.SPACING_L)
-        layout.addWidget(mxlive_title)
         layout.addWidget(self.history_button)
-        layout.addSpacing(theme.SPACING_L)
-        layout.addWidget(menus_divider)
-        layout.addSpacing(theme.SPACING_S)
-        layout.addLayout(menus_row)
+        layout.addWidget(self.settings_button)
         self.setLayout(layout)
 
         self.collapse_button.clicked.connect(self.collapse_requested.emit)

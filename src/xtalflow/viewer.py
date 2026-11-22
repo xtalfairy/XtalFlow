@@ -578,8 +578,8 @@ class ViewerWindow(QMainWindow):
         # of chrome this program never themed, and on CentOS it is a grey
         # strip across the top of a window whose every other edge is ours;
         # on a Mac it is in the system bar, which is why nobody building
-        # this had seen it. The two menus now hang off buttons at the foot
-        # of the sidebar, and keep their contents exactly as they were.
+        # this had seen it. Both menus now open from one Settings row at the
+        # foot of the sidebar, and keep their contents exactly as they were.
         self.view_menu = QMenu("View", self)
         self.target_summary_action = self.target_summary_dock.toggleViewAction()
         self.target_summary_action.setText("Selected Wells")
@@ -648,7 +648,14 @@ class ViewerWindow(QMainWindow):
         self.settings_menu.addActions(self.view_menu.actions())
         self.settings_menu.addSeparator()
         self.settings_menu.addActions(self.help_menu.actions())
-        self.workspace_sidebar.settings_button.setMenu(self.settings_menu)
+        # Popped rather than attached: setMenu would draw a drop-down arrow
+        # and make the row look like a control with a mode, when what opens
+        # is an ordinary menu. popup() also flips the menu upward by itself
+        # where there is no room below, which at the foot of a window there
+        # usually is not.
+        self.workspace_sidebar.settings_button.clicked.connect(
+            self._show_settings_menu
+        )
 
     def copy_diagnostics(self) -> None:
         """Put on the clipboard what a report needs, and nothing private.
@@ -685,6 +692,11 @@ class ViewerWindow(QMainWindow):
                 lines.append(f"  (the log could not be read: {error})")
         QApplication.clipboard().setText("\n".join(lines))
         self.status_message_label.show_message("Diagnostics copied", 4000)
+
+    def _show_settings_menu(self) -> None:
+        """Open the settings menu over its row, like a right-click menu."""
+        button = self.workspace_sidebar.settings_button
+        self.settings_menu.popup(button.mapToGlobal(button.rect().bottomLeft()))
 
     def _open_at_a_width_the_row_fits(self) -> None:
         """Open wide enough for the Select wells row to be readable.

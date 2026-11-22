@@ -7596,13 +7596,17 @@ def test_the_menus_hang_off_the_sidebar_not_a_menu_bar() -> None:
     window = ViewerWindow(RockMakerImageRepository(FIXTURE_ROOT))
 
     sidebar = window.workspace_sidebar
-    shown = [action.text() for action in sidebar.settings_button.menu().actions()]
+    shown = [action.text() for action in window.settings_menu.actions()]
     # View above, Help below a rule - and every item still present.
     assert shown[0] == "Selected Wells"
     assert shown[-3:] == ["Keyboard Shortcuts", "Copy Diagnostics", "Open Log Folder"]
     assert "" in shown, "a rule between what this window shows and help with it"
     for action in window.view_menu.actions() + window.help_menu.actions():
-        assert action in sidebar.settings_button.menu().actions(), action.text()
+        assert action in window.settings_menu.actions(), action.text()
+    # Popped, not attached: a menu set on the button would draw a drop-down
+    # arrow on a row that is drawn like the MxLive row above it.
+    assert sidebar.settings_button.menu() is None
+    assert sidebar.settings_button.text() == "Settings"
     # Nothing is in a menu bar, and the window does not grow one.
     assert window.findChild(QMenuBar) is None
 

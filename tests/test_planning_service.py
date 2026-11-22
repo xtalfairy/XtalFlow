@@ -468,3 +468,70 @@ def test_a_part_with_nobody_in_it_is_refused(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError):
         snapshot_for_part(_two_condition_snapshot(), frozenset({"nobody"}), "r1", "late")
+
+
+def _fragment_snapshot(shares, *, protein="BRD4", library_id="/libraries/a.csv"):
+    """A fragment snapshot holding one well whose dose is split as given."""
+    return json.dumps({
+        "schema": 1, "plan_type": "fragment_screening", "protein": protein,
+        "library_id": library_id, "volume_per_crystal_nl": "20",
+        "assignments": [{
+            "image_key": "image", "plate": "1070", "well": "A01a",
+            "targets": [
+                {"id": f"t{index}", "x_mm": "0.1", "y_mm": "0",
+                 "selected_at": NOW.isoformat(), "volume_nl": share}
+                for index, share in enumerate(shares)
+            ],
+        }],
+    })
+
+
+def test_a_moved_library_folder_is_the_same_plan_not_a_changed_one() -> None:
+    """The case the screen used to get wrong while the header got it right."""
+    from xtalflow.application.planning_service import (
+        PlanComparison, compare_plans, plans_match,
+    )
+
+    stored = _fragment_snapshot(["7.5", "7.5", "5.0"])
+    moved = _fragment_snapshot(["7.5", "7.5", "5.0"], library_id="/elsewhere/a.csv")
+
+    assert compare_plans(stored, moved) is PlanComparison.SAME
+    assert plans_match(stored, moved)
+
+
+def test_a_revision_divided_by_another_rule_is_told_apart_from_an_edit() -> None:
+    """Same wells, same totals, divided differently - and that is all it says.
+
+    Before 2026-09-17 a fragment screen gave the whole remainder to the last
+    position, so 20 nL over three was 5, 5, 10 where it is now 7.5, 7.5, 5.
+    Nobody changed such a plan, and calling it changed was a lie; but what
+    changed the division cannot be known from here, only that it differs.
+    """
+    from xtalflow.application.planning_service import (
+        PlanComparison, compare_plans, plans_match,
+    )
+
+    old_rule = _fragment_snapshot(["5.0", "5.0", "10.0"])
+    this_rule = _fragment_snapshot(["7.5", "7.5", "5.0"])
+
+    assert compare_plans(old_rule, this_rule) is PlanComparison.DIVISION_ONLY
+    assert not plans_match(old_rule, this_rule), "it is still not the same plan"
+
+    # An edit is an edit, even when the dose still adds up.
+    edited = _fragment_snapshot(["7.5", "7.5", "5.0"], protein="MDM2")
+    assert compare_plans(old_rule, edited) is PlanComparison.DIFFERENT
+    # And a different amount in the well is never a division difference.
+    more = _fragment_snapshot(["7.5", "7.5", "7.5"])
+    assert compare_plans(old_rule, more) is PlanComparison.DIFFERENT
+
+
+def test_a_snapshot_can_say_on_its_own_whether_its_division_is_current() -> None:
+    """Asked where there is no editor to build anything to compare with."""
+    from xtalflow.application.planning_service import division_is_current
+
+    assert division_is_current(_fragment_snapshot(["7.5", "7.5", "5.0"]))
+    assert division_is_current(_fragment_snapshot(["10.0", "10.0"])), "even splits"
+    assert not division_is_current(_fragment_snapshot(["5.0", "5.0", "10.0"]))
+    # A condition test stores no shares and divides nothing here.
+    assert division_is_current(json.dumps({"assignments": [{"targets": [{"id": "t"}]}]}))
+    assert division_is_current(None)

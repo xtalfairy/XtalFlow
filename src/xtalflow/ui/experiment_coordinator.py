@@ -64,6 +64,7 @@ from xtalflow.application.experiment_workflow import (
     experiment_progress,
     steps_for,
 )
+from xtalflow.application.planning_service import division_is_current
 from xtalflow.application.planning_service import (
     EXPERIMENT_ID_PREFIXES,
     PlanningService,
@@ -2001,7 +2002,15 @@ class ExperimentCoordinator:
         worksheets were unaffected while both were refused.
         """
         composed = self._plan_snapshot(editor)
-        return composed is None or plans_match(composed, editor.last_revision_snapshot)
+        if composed is not None:
+            return plans_match(composed, editor.last_revision_snapshot)
+        # Nothing to compare with is not the same as nothing having changed,
+        # and it was being read as such. A revision whose library has moved
+        # composes to None and so passed here - including one whose doses
+        # were divided by a rule this build no longer uses, whose worksheet
+        # then went to the instrument saying so. The snapshot can answer
+        # that much by itself.
+        return division_is_current(editor.last_revision_snapshot)
     @staticmethod
 
     def _draft_from_editor(editor: PlanEditorBase) -> PlanningDraft:

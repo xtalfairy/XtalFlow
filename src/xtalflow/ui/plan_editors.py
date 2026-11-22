@@ -46,7 +46,10 @@ from xtalflow.domain import (
     crystal_selection_from_selected_crystals,
 )
 from xtalflow.domain.crystal_selection import order_selected_wells
-from xtalflow.application.planning_service import compound_ids_in_snapshot
+from xtalflow.application.planning_service import (
+    compound_ids_in_snapshot,
+    plans_match,
+)
 from xtalflow.domain.experiment_naming import protein_name_for_record
 from xtalflow.domain.soaking import (
     TRANSFER_INCREMENT_NL,
@@ -455,9 +458,13 @@ class PlanEditorBase(QWidget):
             conditions_error=self.conditions_error(),
             unused_fragment_count=0,
             revision_number=revision.revision if revision is not None else None,
+            # Through the one comparison, not a bare ==. These were different
+            # rules: a fragment library read from a renamed folder is the
+            # same plan, and the == here called it a change, so the step said
+            # the plan had moved on while the header above it said finalized.
             revision_matches_current=(
                 revision is not None
-                and self.plan_snapshot() == self.last_revision_snapshot
+                and plans_match(self.plan_snapshot(), self.last_revision_snapshot)
             ),
             worksheets_saved_for_revision=worksheets_saved,
             local_save_failed=self.save_failed,

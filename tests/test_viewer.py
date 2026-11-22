@@ -14,6 +14,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 
 from xtalflow.domain.crystal_score import crystal_first_order
+from xtalflow.domain.plan_lifecycle import PlanRevision
 from PyQt5.QtCore import QPoint, Qt
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtTest import QTest
@@ -7005,3 +7006,82 @@ def test_the_log_and_the_title_cannot_disagree_about_the_build() -> None:
     assert operations_log.commit_hash() == BUILD.for_log
     assert BUILD.for_log.startswith(BUILD.short)
     assert BUILD.short in APP_WINDOW_TITLE
+
+
+def test_a_revision_nothing_can_rebuild_is_not_delivered_on_an_old_division(
+    tmp_path: Path,
+) -> None:
+    """The gate's last question when there is nothing to compare with.
+
+    A finalized revision whose fragment library has moved composes to
+    nothing, and "nothing to compare" used to pass as "nothing changed" -
+    which let a revision divided by a rule this build no longer uses write
+    its worksheet. That file goes to the instrument, and the liquid goes
+    where the file says. The snapshot alone can answer whether its division
+    is this build's, so it is asked.
+    """
+    app = QApplication.instance() or QApplication([])
+    window, _store, editor = _fragment_plan_window(tmp_path, DEFAULT_SETTINGS)
+    gate = window.experiments
+
+    def snapshot(shares):
+        return json.dumps({
+            "schema": 1, "plan_type": "fragment_screening", "protein": "BRD4",
+            "assignments": [{
+                "well": "A01a",
+                "targets": [{"id": f"t{i}", "volume_nl": share}
+                            for i, share in enumerate(shares)],
+            }],
+        })
+
+    # Nothing can be composed: that is the branch under test.
+    gate._plan_snapshot = lambda _editor: None
+
+    # 20 nL over three positions is 7.5, 7.5, 5 here. A revision holding
+    # 5, 5, 10 was divided by another rule.
+    editor.last_revision_snapshot = snapshot(["7.5", "7.5", "5.0"])
+    assert gate._revision_is_still_the_plan(editor), "its own division, still the plan"
+
+    editor.last_revision_snapshot = snapshot(["5.0", "5.0", "10.0"])
+    assert not gate._revision_is_still_the_plan(editor), "another rule divided this"
+
+    window.close()
+    app.processEvents()
+
+
+def test_a_library_read_from_a_moved_folder_is_not_a_changed_plan(
+    tmp_path: Path,
+) -> None:
+    """The sentence beside the header used to disagree with the header.
+
+    Where a fragment library is read from is not part of the plan, and the
+    status label knew it. The fact that drives the step's message compared
+    the snapshots with == instead, so moving the folder made the step say
+    the plan had changed - and its save button dead - under a header still
+    reading "Finalized r1".
+    """
+    app = QApplication.instance() or QApplication([])
+    window, _store, editor = _fragment_plan_window(tmp_path, DEFAULT_SETTINGS)
+
+    composed = editor.plan_snapshot()
+    assert composed is not None, editor.error_label.text()
+    moved = json.loads(composed)
+    assert "library_id" in moved, moved.keys()
+    moved["library_id"] = "/somewhere/else/library.csv"
+    editor.last_revision_snapshot = json.dumps(moved)
+    editor.last_revision = PlanRevision(
+        "revision", "plan", 1, "BRD4-2069-1",
+        editor.last_revision_snapshot, "someone", datetime.now(timezone.utc),
+    )
+
+    facts = editor.facts(False, False)
+    assert facts.revision_matches_current, "the same plan, read from elsewhere"
+
+    # And a real edit is still a real edit.
+    changed = json.loads(composed)
+    changed["protein"] = "MDM2"
+    editor.last_revision_snapshot = json.dumps(changed)
+    assert not editor.facts(False, False).revision_matches_current
+
+    window.close()
+    app.processEvents()

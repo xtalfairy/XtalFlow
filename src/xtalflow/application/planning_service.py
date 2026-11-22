@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from enum import Enum
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Protocol, Union
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
+from xtalflow.domain.soaking import split_between_positions
 from xtalflow.domain.crystal_selection import (
     CrystalSelection,
     SelectedWell,
@@ -331,6 +333,132 @@ def plan_from_snapshot(plan_id: str, snapshot_json: str) -> Plan:
     )
 
 
+class PlanComparison(str, Enum):
+    """How a stored revision stands against the plan the editor builds now."""
+
+    SAME = "same"
+    DIVISION_ONLY = "division_only"
+    DIFFERENT = "different"
+
+
+def _without_position_shares(snapshot: dict) -> tuple[dict, list]:
+    """The snapshot with each position's share taken out, and those shares.
+
+    By subtraction rather than by listing what to compare, so a field nobody
+    thought of here - a protein name, a library row - still counts as a
+    difference. Only the one value this is about is removed.
+    """
+    stripped = json.loads(json.dumps(snapshot))
+    shares = []
+    for assignment in stripped.get("assignments", []):
+        if not isinstance(assignment, dict):
+            continue
+        well = []
+        for target in assignment.get("targets", []):
+            if isinstance(target, dict) and "volume_nl" in target:
+                well.append(target.pop("volume_nl"))
+        shares.append(well)
+    return stripped, shares
+
+
+def _same_totals(one: list, other: list) -> bool:
+    """Whether each well receives the same amount, however it is divided."""
+    if len(one) != len(other) or not any(one):
+        return False
+    for left, right in zip(one, other):
+        if not left or not right:
+            return False
+        try:
+            if sum(Decimal(value) for value in left) != sum(
+                Decimal(value) for value in right
+            ):
+                return False
+        except (ArithmeticError, TypeError, ValueError):
+            return False
+    return True
+
+
+def compare_plans(one: str | None, other: str | None) -> PlanComparison:
+    """Whether two snapshots are the same plan, and if not, how they differ.
+
+    One place answers this, because it used to be answered in five with
+    three different rules: this function, a bare ``==`` behind the sentence
+    on the Review step, and another ``==`` behind the buttons. They
+    disagreed, so moving a fragment library's folder left the header saying
+    "Finalized r1" while the step beside it said the plan had changed and
+    the save button was dead.
+
+    DIVISION_ONLY is a revision that differs only in how each well's dose is
+    spread between its positions. The amount reaching each drop is the same,
+    and nothing a person can edit here produces it - there is no control for
+    one position's share - so it means the rule that divides a dose is not
+    the rule that divided this one. It does not say why. An older build,
+    another machine and a hand-edited row all look alike from here.
+    """
+    if one == other:
+        return PlanComparison.SAME
+    if one is None or other is None:
+        return PlanComparison.DIFFERENT
+    try:
+        left, right = json.loads(one), json.loads(other)
+    except ValueError:
+        return PlanComparison.DIFFERENT
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return PlanComparison.DIFFERENT
+    left.pop("library_id", None)
+    right.pop("library_id", None)
+    if left == right:
+        return PlanComparison.SAME
+    bare_left, shares_left = _without_position_shares(left)
+    bare_right, shares_right = _without_position_shares(right)
+    if bare_left == bare_right and _same_totals(shares_left, shares_right):
+        return PlanComparison.DIVISION_ONLY
+    return PlanComparison.DIFFERENT
+
+
+def division_is_current(snapshot_json: str | None) -> bool:
+    """Whether a stored revision divides its doses the way this build does.
+
+    Asked of one snapshot alone, with no editor and no library, because the
+    place that needs it is the one where the editor can build nothing: a
+    revision whose library has moved composes to None, and "nothing to
+    compare" was being read as "unchanged". That let a revision divided by
+    a rule this build no longer uses write its worksheet, which is the one
+    thing that must not happen - the file goes to the instrument and the
+    liquid goes where the file says.
+
+    A snapshot that holds no per-position shares, such as a condition test's,
+    divides nothing here and is current by default.
+    """
+    if not snapshot_json:
+        return True
+    try:
+        snapshot = json.loads(snapshot_json)
+    except ValueError:
+        return False
+    if not isinstance(snapshot, dict):
+        return False
+    for assignment in snapshot.get("assignments", []):
+        if not isinstance(assignment, dict):
+            continue
+        shares = [
+            target["volume_nl"]
+            for target in assignment.get("targets", [])
+            if isinstance(target, dict) and "volume_nl" in target
+        ]
+        if not shares:
+            continue
+        try:
+            amounts = [Decimal(value) for value in shares]
+            if tuple(amounts) != split_between_positions(
+                sum(amounts), len(amounts)
+            ):
+                return False
+        except (ArithmeticError, TypeError, ValueError):
+            return False
+    return True
+
+
 def plans_match(one: str | None, other: str | None) -> bool:
     """Whether two snapshots fix the same plan.
 
@@ -343,19 +471,7 @@ def plans_match(one: str | None, other: str | None) -> bool:
     It stays in the snapshot: taking it out would change the canonical JSON
     of every revision already stored, and they would all read as changed.
     """
-    if one == other:
-        return True
-    if one is None or other is None:
-        return False
-    try:
-        left, right = json.loads(one), json.loads(other)
-    except ValueError:
-        return False
-    if not isinstance(left, dict) or not isinstance(right, dict):
-        return False
-    left.pop("library_id", None)
-    right.pop("library_id", None)
-    return left == right
+    return compare_plans(one, other) is PlanComparison.SAME
 
 
 # A part revision records that some of a finalized revision's crystals went

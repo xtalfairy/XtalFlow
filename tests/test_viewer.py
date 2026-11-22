@@ -242,6 +242,8 @@ def test_a_volume_that_will_not_divide_equally_is_planned_and_described() -> Non
     app.processEvents()
 
 
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
 def test_viewer_loads_and_navigates_images() -> None:
     app = QApplication.instance() or QApplication([])
     window = ViewerWindow(

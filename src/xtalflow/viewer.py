@@ -397,7 +397,6 @@ class ViewerWindow(QMainWindow):
         self.next_button.setFixedWidth(36)
         self.next_button.setToolTip("Next image (→)")
         self.next_button.setAccessibleName("Next image")
-        self._menu_button_followers: list = []
         self.review_summary_label = ElidingSummaryLabel()
         self.review_summary_label.setObjectName("Muted")
         # It still gives way before a control does - it takes what the row
@@ -456,21 +455,6 @@ class ViewerWindow(QMainWindow):
         navigation.addWidget(self.position_label)
         navigation.addWidget(self.review_summary_label, 1)
         navigation.addSpacing(theme.SPACING_L)
-        # The four buttons that decide what else is on screen, together.
-        # Two of them had been in the Settings menu, which is where things
-        # go when there is no room for them - there is room now.
-        self.plates_panel_button = QPushButton("Plate list")
-        self.plates_panel_button.setCheckable(True)
-        self.plates_panel_button.setToolTip(
-            "Show or hide the list of plates (Ctrl+Shift+P)"
-        )
-        navigation.addWidget(self.plates_panel_button)
-        self.position_numbers_button = QPushButton("Position numbers")
-        self.position_numbers_button.setCheckable(True)
-        self.position_numbers_button.setToolTip(
-            "Number the soaking positions on the image (Ctrl+Shift+N)"
-        )
-        navigation.addWidget(self.position_numbers_button)
         self.target_summary_button = QPushButton("Selected wells")
         self.target_summary_button.setCheckable(True)
         self.target_summary_button.setToolTip(
@@ -561,7 +545,14 @@ class ViewerWindow(QMainWindow):
         self.fit_button = QPushButton("Fit")
         self.fit_button.setToolTip("Fit image to window (0)")
         self.fit_button.setAccessibleName("Fit image")
-        self.calibration_label = QLabel("Well boundary: not loaded")
+        # The beamline found this one cut at "auto, outl" with the panels
+        # open, in the same way and for the same reason as the summary
+        # above it: a plain QLabel draws what fits and stops. Nobody had
+        # reported it; it was found by looking at a photograph of the
+        # window. Same label class, so it ends in an ellipsis and keeps the
+        # whole sentence in the tooltip.
+        self.calibration_label = ElidingSummaryLabel()
+        self.calibration_label.setText("Well boundary: not loaded")
         self.calibration_label.setAccessibleName("Well calibration status")
         self.calibration_accept_inline_button = QPushButton("Accept")
         self.calibration_accept_inline_button.setToolTip("Accept the detected well boundary")
@@ -869,24 +860,6 @@ class ViewerWindow(QMainWindow):
         self.experiment_page.primary_requested.connect(self.experiments._primary_action)
         self.experiment_page.stepper.step_selected.connect(self.experiments.go_to_step)
         self.plate_filter_input.textChanged.connect(self._filter_plate_list)
-        # Button and menu item are two handles on one action, so each
-        # follows the other. Without the block a click would bounce back
-        # and forth between them.
-        for button, action in (
-            (self.plates_panel_button, self.plates_panel_action),
-            (self.position_numbers_button, self.position_numbers_action),
-        ):
-            button.setChecked(action.isChecked())
-            button.toggled.connect(action.setChecked)
-
-            def follow(checked: bool, target=button) -> None:
-                target.blockSignals(True)
-                target.setChecked(checked)
-                target.blockSignals(False)
-
-            action.toggled.connect(follow)
-            self._menu_button_followers.append(follow)
-
         self.target_summary_button.toggled.connect(self.target_summary_dock.setVisible)
         self.target_summary_dock.visibilityChanged.connect(
             self._target_summary_visibility_changed

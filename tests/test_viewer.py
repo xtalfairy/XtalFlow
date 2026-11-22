@@ -2033,7 +2033,10 @@ def test_trusted_plate_auto_confirms_well_above_user_threshold(
     assert window.current_calibration is not None
     assert window.auto_confirm_plate_checkbox.isChecked()
     assert window.current_calibration.confirmed
-    assert "Well boundary confirmed · auto, outline fit" in window.calibration_label.text()
+    assert (
+        "Well boundary confirmed · auto, outline fit"
+        in window.calibration_label.full_text()
+    )
     window.close()
     app.processEvents()
 
@@ -2248,7 +2251,7 @@ def test_manual_calibration_clicks_do_not_create_targets(tmp_path: Path) -> None
 
     assert window.controller.session.target_count_for(image) == 0
     assert window.current_calibration.confirmed
-    assert "confirmed · manual" in window.calibration_label.text()
+    assert "confirmed · manual" in window.calibration_label.full_text()
     window.close()
     app.processEvents()
 
@@ -7828,43 +7831,66 @@ def test_the_walk_row_does_not_move_when_the_data_changes() -> None:
     app.processEvents()
 
 
-def test_the_four_view_buttons_stand_together_and_match_their_menu() -> None:
-    """Plate list and Position numbers come out of the Settings menu.
+def test_nothing_in_the_heading_row_is_squeezed_with_a_panel_open() -> None:
+    """The row one test that did not exist, and should have.
 
-    They decide what else is on screen, exactly as Selected wells and Plate
-    map do, and they were only in a menu because the one-row toolbar had no
-    space for them. Each button and its menu item are two handles on one
-    action, so this presses each handle and checks the other followed.
+    Row two had this guard from the day it was folded; row one did not, so
+    when two buttons were moved into it the suite stayed green here and the
+    beamline found the damage by looking: "Position numbers" drawn as
+    "osition number", the summary back to zero width, and the heading
+    cutting "F07a" down to something that reads as a different well.
+
+    Be honest about what this does and does not do. It measures the font
+    and the panel widths it is run in, and on this machine the row has
+    211px to spare, so it passes here even with the two buttons put back.
+    It did not catch the fault; the beamline caught it by measuring. What
+    this is, is a guard that fires there - the suite is run on the host
+    before every install, and the host is where the row runs out.
+
+    A test that only fails on another machine is worth less than one that
+    fails here, and if the row-one budget is ever tightened again, the
+    number to get from the beamline first is what this row is given with a
+    panel open. Row two has that number; row one does not yet.
     """
-    app, window = _select_wells_at(1920)
+    for docks in ((), ("target_summary_dock",),
+                  ("target_summary_dock", "plate_map_dock")):
+        app, window = _select_wells_at(1920, docks=docks)
+        where = f"with {len(docks)} panel(s) open"
 
-    for button, action in (
-        (window.plates_panel_button, window.plates_panel_action),
-        (window.position_numbers_button, window.position_numbers_action),
-    ):
-        assert button.isChecked() == action.isChecked(), "they start together"
-
-        button.setChecked(not button.isChecked())
+        # The fixture's heading is "No image set loaded". The beamline's is
+        # "Plate 2204 · F07a · 133 / 192 · Batch 1", and the row is sized
+        # against whatever is in it - so measuring the fixture's short
+        # string measures nothing. The first version of this test did that
+        # and passed on the very layout the beamline had just rejected.
+        window.navigation_label.setText("Plate 2204 · F07a")
+        window.position_label.setText("133 / 192 · Batch 14122")
+        window.review_summary_label.setText("28 images match filter")
         app.processEvents()
-        assert action.isChecked() == button.isChecked(), (
-            f"{button.text()!r}: the menu item did not follow the button"
+
+        row = next(
+            layout for layout in window.findChildren(QHBoxLayout)
+            if layout.indexOf(window.target_summary_button) >= 0
+        )
+        assert row.sizeHint().width() <= row.geometry().width(), (
+            f"the heading row wants {row.sizeHint().width()}px and has "
+            f"{row.geometry().width()} {where}, so everything in it is cut"
         )
 
-        action.setChecked(not action.isChecked())
-        app.processEvents()
-        assert button.isChecked() == action.isChecked(), (
-            f"{button.text()!r}: the button did not follow the menu item"
+        for button in (window.target_summary_button, window.plate_map_button):
+            if not button.isVisibleTo(window):
+                continue
+            assert button.width() >= button.sizeHint().width(), (
+                f"{button.text()!r} is cut {where}"
+            )
+
+        heading = window.navigation_label
+        assert heading.fontMetrics().width(heading.text()) <= heading.width(), (
+            f"the plate and well heading is cut {where}; a well address "
+            "missing characters reads as a different well"
         )
 
-    row = next(
-        layout for layout in window.findChildren(QHBoxLayout)
-        if layout.indexOf(window.target_summary_button) >= 0
-    )
-    for button in (window.plates_panel_button, window.position_numbers_button):
-        assert row.indexOf(button) >= 0, f"{button.text()!r} is not in that row"
-
-    window.close()
-    app.processEvents()
+        window.close()
+        app.processEvents()
 
 
 def test_the_summary_ends_in_an_ellipsis_rather_than_mid_word() -> None:

@@ -287,6 +287,13 @@ class ExperimentFacts:
     unassigned_well_count: int = 0
     revision_number: int | None = None
     revision_matches_current: bool = False
+    # Not the same plan, and not an edit either: the wells, the targets and
+    # the amount each well receives all agree, and only the way that amount
+    # is spread between a well's positions differs. Nothing a person can
+    # change here produces it, so it means the rule that divides a dose is
+    # not the rule that divided that revision. Why it differs is not knowable
+    # from here, and the message must not guess.
+    revision_divides_differently: bool = False
     worksheets_saved_for_revision: bool = False
     local_save_failed: bool = False
     # Saved, but to a folder the user chose because an instrument folder could
@@ -532,6 +539,13 @@ def evaluate_experiment(facts: ExperimentFacts) -> ExperimentStatus:
     if finalized:
         review = StepStatus(
             WorkflowStep.REVIEW, StepState.COMPLETE, f"Finalized r{facts.revision_number}"
+        )
+    elif facts.revision_divides_differently and facts.revision_number is not None:
+        review = StepStatus(
+            WorkflowStep.REVIEW, StepState.ATTENTION,
+            f"r{facts.revision_number} divides each well's dose between its "
+            f"positions differently · nothing else differs · finalize again "
+            f"to save worksheets",
         )
     elif facts.revision_number is not None:
         review = StepStatus(

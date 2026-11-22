@@ -47,6 +47,8 @@ from xtalflow.domain import (
 )
 from xtalflow.domain.crystal_selection import order_selected_wells
 from xtalflow.application.planning_service import (
+    PlanComparison,
+    compare_plans,
     compound_ids_in_snapshot,
     plans_match,
 )
@@ -465,6 +467,12 @@ class PlanEditorBase(QWidget):
             revision_matches_current=(
                 revision is not None
                 and plans_match(self.plan_snapshot(), self.last_revision_snapshot)
+            ),
+            revision_divides_differently=(
+                revision is not None
+                and compare_plans(
+                    self.plan_snapshot(), self.last_revision_snapshot
+                ) is PlanComparison.DIVISION_ONLY
             ),
             worksheets_saved_for_revision=worksheets_saved,
             local_save_failed=self.save_failed,

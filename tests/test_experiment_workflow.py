@@ -499,3 +499,38 @@ def test_renaming_the_protein_says_the_experiment_id_does_not_follow() -> None:
     assert evaluate_experiment(READY_FRAGMENT).status_of(WorkflowStep.SETUP).state is (
         StepState.COMPLETE
     )
+
+
+def test_a_revision_divided_by_another_rule_is_not_called_a_change() -> None:
+    """"Changes after r1" is a lie when nobody changed anything.
+
+    A revision whose doses are spread between a well's positions differently
+    from the way this build spreads them is not an edit - there is no control
+    for one position's share - so saying the plan was changed after it names
+    the wrong culprit, and the person goes looking for what they did.
+
+    What the sentence may say is only what was compared: the division
+    differs, nothing else does, and finalizing again is what makes the
+    worksheets saveable. Not why it differs. An older build, another
+    machine and a hand-edited row cannot be told apart from here.
+    """
+    facts = replace(
+        READY_FRAGMENT,
+        revision_number=1,
+        revision_matches_current=False,
+        revision_divides_differently=True,
+    )
+
+    said = evaluate_experiment(facts).status_of(WorkflowStep.REVIEW).message
+
+    assert "divides each well's dose" in said
+    assert "nothing else differs" in said
+    assert "Changes after r1" not in said, "nobody changed it"
+    for forbidden in ("older", "version", "rule changed", "wrong"):
+        assert forbidden not in said.lower(), forbidden
+
+    # A real edit keeps the sentence it had.
+    edited = replace(READY_FRAGMENT, revision_number=1, revision_matches_current=False)
+    assert evaluate_experiment(edited).status_of(WorkflowStep.REVIEW).message == (
+        "Changes after r1 · finalize again to use them"
+    )

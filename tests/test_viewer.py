@@ -7424,8 +7424,6 @@ def test_the_view_menu_turns_the_position_numbers_on(tmp_path: Path) -> None:
     app.processEvents()
 
 
-@pytest.mark.requires_rmserver_fixture
-@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
 def test_the_position_number_choice_outlives_the_window(tmp_path: Path) -> None:
     """Ticked once, still ticked tomorrow - asked for by the operator.
 
@@ -7434,13 +7432,17 @@ def test_the_position_number_choice_outlives_the_window(tmp_path: Path) -> None:
     person's window looks, nothing about a plan. The test opens a second
     window against the same file rather than reading the field back, since
     saving a value nothing reloads would pass that and fail a person.
+
+    It needs no plate images, so it carries no fixture markers and runs on
+    the beamline server too - where the window test beside it skips, and
+    where this was therefore unproven.
     """
     preferences = tmp_path / "preferences.json"
-    settings = replace(DEFAULT_SETTINGS, rmserver_root=FIXTURE_ROOT)
+    settings = replace(DEFAULT_SETTINGS, rmserver_root=tmp_path / "no-such-fixture")
     app = QApplication.instance() or QApplication([])
 
     first = ViewerWindow(
-        RockMakerImageRepository(FIXTURE_ROOT),
+        RockMakerImageRepository(tmp_path / "no-such-fixture"),
         SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
         settings=settings,
         preferences_store=JsonUserPreferencesStore(preferences),
@@ -7453,7 +7455,7 @@ def test_the_position_number_choice_outlives_the_window(tmp_path: Path) -> None:
     app.processEvents()
 
     second = ViewerWindow(
-        RockMakerImageRepository(FIXTURE_ROOT),
+        RockMakerImageRepository(tmp_path / "no-such-fixture"),
         SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
         settings=settings,
         preferences_store=JsonUserPreferencesStore(preferences),
@@ -7468,7 +7470,7 @@ def test_the_position_number_choice_outlives_the_window(tmp_path: Path) -> None:
     app.processEvents()
 
     third = ViewerWindow(
-        RockMakerImageRepository(FIXTURE_ROOT),
+        RockMakerImageRepository(tmp_path / "no-such-fixture"),
         SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
         settings=settings,
         preferences_store=JsonUserPreferencesStore(preferences),

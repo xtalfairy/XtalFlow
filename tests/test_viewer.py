@@ -7607,9 +7607,11 @@ def test_the_menus_hang_off_the_sidebar_not_a_menu_bar() -> None:
     assert "" in shown, "a rule between what this window shows and help with it"
     for action in window.view_menu.actions() + window.help_menu.actions():
         assert action in window.settings_menu.actions(), action.text()
-    # Popped, not attached: a menu set on the button would draw a drop-down
-    # arrow on a row that is drawn like the MxLive row above it.
-    assert sidebar.settings_button.menu() is None
+    # The row must actually carry the menu. Deleting the line that joins
+    # them left every test passing and the only route to Copy Diagnostics,
+    # Open Log Folder and two unshortcutted items dead, with no menu bar to
+    # fall back on. The drop-down arrow is hidden in the stylesheet instead.
+    assert sidebar.settings_button.menu() is window.settings_menu
     assert sidebar.settings_button.text() == "Settings"
     # Nothing is in a menu bar, and the window does not grow one.
     assert window.findChild(QMenuBar) is None
@@ -7737,12 +7739,15 @@ def test_the_sort_label_stays_inside_what_the_beamline_measured() -> None:
     about 1520px and gets 1121 at 1920; folding it onto two lines is what
     would make this test unnecessary.
     """
-    app = QApplication.instance() or QApplication([])
-    QApplication.instance()  # the font below is the application's
-    width = QApplication.fontMetrics().width(CRYSTAL_ORDER_LABEL)
+    QApplication.instance() or QApplication([])
+    # With the prefix the box wears on a plate the order gets wrong, which
+    # is the widest the label ever is and was left out of the first version
+    # of this test - a label between 134 and 150 would have passed here and
+    # been cut on screen in exactly the state that matters most.
+    worn = f"{theme.SYMBOL_ATTENTION} {CRYSTAL_ORDER_LABEL}"
+    width = QApplication.fontMetrics().width(worn)
 
     assert width <= 150, (
-        f"{CRYSTAL_ORDER_LABEL!r} is {width}px here, about {width * 1.11:.0f} "
-        "on the beamline, where there is room for 166; shorten it or fold "
-        "the row"
+        f"{worn!r} is {width}px here, about {width * 1.11:.0f} on the "
+        "beamline, where there is room for 166; shorten it or fold the row"
     )

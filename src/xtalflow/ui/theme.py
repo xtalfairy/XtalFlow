@@ -144,6 +144,8 @@ QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
     image: url("{down}"); width: 11px; height: 11px;
 }}
 QToolButton::menu-indicator {{ image: none; width: 0; }}
+/* A sidebar row carrying a menu is still a row, not a drop-down. */
+QPushButton::menu-indicator {{ image: none; width: 0; }}
 QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {{
     color: {TEXT_TERTIARY}; background: {SUBTLE};
 }}

@@ -666,14 +666,14 @@ class ViewerWindow(QMainWindow):
         self.settings_menu.addActions(self.view_menu.actions())
         self.settings_menu.addSeparator()
         self.settings_menu.addActions(self.help_menu.actions())
-        # Popped rather than attached: setMenu would draw a drop-down arrow
-        # and make the row look like a control with a mode, when what opens
-        # is an ordinary menu. popup() also flips the menu upward by itself
-        # where there is no room below, which at the foot of a window there
-        # usually is not.
-        self.workspace_sidebar.settings_button.clicked.connect(
-            self._show_settings_menu
-        )
+        # Attached, with the arrow hidden in the stylesheet. It was popped by
+        # hand for a while, on the belief that popup() flips above a button
+        # with no room below it. It does not: it slides up only as far as the
+        # screen edge forces, which at the foot of a window puts the menu
+        # over the row that opened it - and a second click at the same point
+        # then lands on an item. Measured as "flipping" only because the
+        # offscreen screen is 800x600 and the button was off it.
+        self.workspace_sidebar.settings_button.setMenu(self.settings_menu)
 
     def copy_diagnostics(self) -> None:
         """Put on the clipboard what a report needs, and nothing private.
@@ -710,11 +710,6 @@ class ViewerWindow(QMainWindow):
                 lines.append(f"  (the log could not be read: {error})")
         QApplication.clipboard().setText("\n".join(lines))
         self.status_message_label.show_message("Diagnostics copied", 4000)
-
-    def _show_settings_menu(self) -> None:
-        """Open the settings menu over its row, like a right-click menu."""
-        button = self.workspace_sidebar.settings_button
-        self.settings_menu.popup(button.mapToGlobal(button.rect().bottomLeft()))
 
     def _open_at_a_width_the_row_fits(self) -> None:
         """Open wide enough for the Select wells row to be readable.

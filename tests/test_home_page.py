@@ -290,6 +290,40 @@ def test_the_lamps_group_by_kind_and_keep_the_stations_on_one_row():
         ["SHIFTER 2", "SHIFTER 3"],
     ]
 
+    # The order the running program uses: the window is shown, and the first
+    # reading arrives later from the thread that looks at the shares. The
+    # buttons are made at that moment, and a button that has just been made
+    # reports the width it was born with - wider than the one it will get,
+    # because a nested layout does not give its children their geometry when
+    # it is activated. Fitting a name to that width drew it cut off, and the
+    # part lost was the number that says which station it is. Nothing
+    # corrected it for a minute, which is how long the next reading takes.
+    #
+    # Checked before the processEvents that would hide it, because this is
+    # what the first painted frame holds.
+    shown_first = WorkspaceSidebar()
+    shown_first.show()
+    app.processEvents()
+    shown_first.show_share_states(states)
+    assert all(
+        _lamp_is_whole(button) for button in shown_first.share_buttons.values()
+    ), {
+        key: (button.text(), button.width(), button.minimumSizeHint().width())
+        for key, button in shown_first.share_buttons.items()
+        if not _lamp_is_whole(button)
+    }
+    assert [
+        button.text()[-1] for key, button in shown_first.share_buttons.items()
+        if key.startswith("shifter")
+    ] == ["0", "1", "2"], "the number is the part that must survive"
+
+    # This case passes here whether or not the arithmetic that makes it safe
+    # is present, because the thing that breaks it - a just-made button
+    # reporting the width it was born with - does not happen on this machine.
+    # It happens on the beamline's, where this order drew three stations with
+    # no numbers for the first minute after startup. So this records the
+    # order the program really uses; the proof is a render over there.
+
     # However they are split, one kind is shortened the same way throughout:
     # a name spelled out on one line and cut on the next reads as a mistake.
     panel = WorkspaceSidebar()

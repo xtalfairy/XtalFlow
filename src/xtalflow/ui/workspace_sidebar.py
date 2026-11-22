@@ -384,29 +384,36 @@ class WorkspaceSidebar(QWidget):
                 if button is not None:
                     self.shares_grid.addWidget(button, line, index * span, 1, span)
 
-        # Fitted to the width the layout actually gave each lamp, not to the
-        # width this method meant to give it. Those were not the same, and
-        # the difference was invisible from the text alone: a name too wide
-        # for its column is cut off, not shortened.
+        # How much room a lamp has, worked out two ways and the smaller taken.
         #
-        # One width for a whole kind, and the narrowest of its rows, so that
-        # a name is not spelled out on one line and cut on the line below.
-        # Narrower than a lamp has is safe - it shortens a little more than
-        # it had to - where wider is the bug above.
+        # The grid shares its width equally between its columns, so a span of
+        # so many columns can be worked out from the panel's width without
+        # asking the layout anything. That matters because the layout cannot
+        # be asked yet: these buttons may have just been made, and a nested
+        # layout does not give its children their geometry when it is
+        # activated. On the first reading after the window is shown, a new
+        # button still reports whatever width it was born with - wider than
+        # it will get - and a name fitted to that is drawn cut off, with the
+        # number that says which station it is being the part that is lost.
+        # The next reading is a minute later.
+        #
+        # Where the layout has run, its answer is the real one, and it comes
+        # out a few pixels under the arithmetic because of margins this does
+        # not model. So: the smaller of the two. Too little room only
+        # shortens a name further than it had to; too much cuts it off.
         self.shares_grid.activate()
+        per_column = (usable - spacing * (columns - 1)) // columns
         for group in kinds:
             room = min(
-                (
-                    self.share_buttons[state.key].width()
-                    for index in group
-                    for state in lines[index]
-                    if state.key in self.share_buttons
-                ),
-                default=0,
+                min(
+                    per_column * (columns // len(lines[index]))
+                    + spacing * (columns // len(lines[index]) - 1),
+                    self.share_buttons[state.key].width() or 1 << 20,
+                )
+                for index in group
+                for state in lines[index]
+                if state.key in self.share_buttons
             )
-            if room <= 0:
-                widest_row = max(len(lines[index]) for index in group)
-                room = (usable - spacing * (widest_row - 1)) // widest_row
             for index in group:
                 for state in lines[index]:
                     button = self.share_buttons.get(state.key)

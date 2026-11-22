@@ -7477,3 +7477,59 @@ def test_the_position_number_choice_outlives_the_window(tmp_path: Path) -> None:
     assert not third.image_canvas._show_position_numbers
     third.close()
     app.processEvents()
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_the_plate_map_stays_inside_the_step_it_describes(tmp_path: Path) -> None:
+    """It used to be offered everywhere, and to float over Home once opened.
+
+    The selected-wells table has belonged to Select wells all along: leave
+    the step and its menu item greys out and the dock goes away. The plate
+    map had no such gate. Its menu item stayed enabled on every page - a map
+    of a plate offered where there is no plate - and a map opened while
+    selecting wells stayed open afterwards, on pages whose navigation row
+    does not carry its button, so there was nothing on screen to close it.
+
+    Reaching it the way a person does, through the menu action rather than
+    the button, because the button is only on screen inside the step.
+    """
+    from xtalflow.ui.load_plates_dialog import PlateSource
+
+    app = QApplication.instance() or QApplication([])
+    settings = replace(DEFAULT_SETTINGS, crystal_model_path=tmp_path / "crystal3.onnx")
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        settings=settings,
+    )
+    window.show()
+    app.processEvents()
+    window.load_plates(SWISSCI_MIDI_3_LENS, (
+        (PlateSource("2070", 14122, "profileID_1"),
+         RockMakerImageRepository(FIXTURE_ROOT).load_plate("2070")),
+    ))
+    app.processEvents()
+
+    assert not window.plate_map_action.isEnabled(), "not offered away from the step"
+
+    _open_select_wells(window)
+    app.processEvents()
+    assert window.plate_map_action.isEnabled(), "offered where the plate is"
+    window.plate_map_action.trigger()
+    app.processEvents()
+    assert window.plate_map_dock.isVisible()
+
+    window.experiments.show_home()
+    app.processEvents()
+    assert not window.plate_map_dock.isVisible(), "gone once the step is left"
+    assert not window.plate_map_action.isEnabled()
+
+    # Coming back gives the person the window they left. Driven at the seam
+    # the coordinator drives at every step change, because show_home has
+    # left the experiment by now and returning to one is a longer path than
+    # this test is about.
+    window.experiments._set_select_wells_panels_available(True)
+    app.processEvents()
+    assert window.plate_map_dock.isVisible(), "and back on return"
+
+    window.close()
+    app.processEvents()

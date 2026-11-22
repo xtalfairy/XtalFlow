@@ -197,6 +197,8 @@ class ViewerWindow(QMainWindow):
         self.error_log_path: Path | None = None
         self._handling_unexpected_error = False
         self._target_summary_available = True
+        self._plate_map_available = True
+        self._plate_map_visible_in_review = False
         # The other half of this window: the experiments and their steps.
         self.experiments = ExperimentCoordinator(self)
         self.setStyleSheet(theme.APPLICATION_STYLE_SHEET)

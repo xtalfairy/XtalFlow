@@ -492,7 +492,7 @@ class ExperimentCoordinator:
                 self.window._selection_sync_timer.stop()
                 self._sync_editor_selection(editor)
             self._leave_experiment(editor)
-        self._set_target_summary_available(False)
+        self._set_select_wells_panels_available(False)
         recent = self._recent_experiments()
         self.window.home_page.show_recent_work(recent)
         self.window._refresh_home_workspaces(recent)
@@ -1286,7 +1286,7 @@ class ExperimentCoordinator:
             self.window._selection_sync_timer.stop()
             self._sync_editor_selection(editor)
         self._current_step = step
-        self._set_target_summary_available(step is WorkflowStep.SELECT_WELLS)
+        self._set_select_wells_panels_available(step is WorkflowStep.SELECT_WELLS)
         self.window.experiment_page.show_step(step, STEP_HINTS[step])
         if step is WorkflowStep.WORKSHEETS:
             self._refresh_worksheets_step(editor)
@@ -1644,10 +1644,25 @@ class ExperimentCoordinator:
         ):
             self._sync_editor_selection(self.current_editor)
 
-    def _set_target_summary_available(self, available: bool) -> None:
-        """The selected-wells table and image status belong to the Select wells step."""
+    def _set_select_wells_panels_available(self, available: bool) -> None:
+        """The panels that belong to the Select wells step, and only to it.
+
+        The selected-wells table was gated here and the plate map was not,
+        which is how the plate map came to float over the Home page: its menu
+        item stayed enabled everywhere, and a map opened while selecting
+        wells stayed open afterwards, on pages where the button that would
+        close it is not on screen. Both are about the plate being looked at,
+        so both belong to the step where one is.
+
+        The plate map exists only where a crystal model is configured, so
+        everything about it is asked for by name rather than assumed.
+        """
         self.window.save_status_label.setVisible(available)
         self.window.image_path_status.setVisible(available)
+        # Before the early return below, which is about the table's state
+        # only: the map keeps its own, and skipping it here is how it came
+        # to stay open on a page that is not about a plate.
+        self._set_plate_map_available(available)
         if available == self.window._target_summary_available:
             if not available:
                 self.window.target_summary_dock.hide()
@@ -1662,6 +1677,32 @@ class ExperimentCoordinator:
                 self.window.target_summary_dock.isVisible()
             )
             self.window.target_summary_dock.hide()
+
+    def _set_plate_map_available(self, available: bool) -> None:
+        """Keep the plate map inside the step it describes.
+
+        Remembered across the step the way the selected-wells table is, so
+        that leaving Select wells and coming back gives the window the person
+        left. A site with no crystal model has no plate map at all - no
+        action, no button - so the attribute is checked rather than assumed.
+        """
+        action = getattr(self.window, "plate_map_action", None)
+        if action is None:
+            return
+        if available == self.window._plate_map_available:
+            if not available:
+                self.window.plate_map_dock.hide()
+            return
+        self.window._plate_map_available = available
+        action.setEnabled(available)
+        if available:
+            if self.window._plate_map_visible_in_review:
+                self.window.plate_map_dock.show()
+        else:
+            self.window._plate_map_visible_in_review = (
+                self.window.plate_map_dock.isVisible()
+            )
+            self.window.plate_map_dock.hide()
 
     def _refresh_worksheets_step(self, editor: PlanEditorBase) -> None:
         revision = editor.last_revision

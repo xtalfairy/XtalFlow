@@ -574,7 +574,13 @@ class ViewerWindow(QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, self.target_summary_dock)
         self.target_summary_dock.hide()
         self._build_plate_map_dock()
-        self.view_menu = self.menuBar().addMenu("View")
+        # Owned by the window, not by a menu bar. The bar was the one piece
+        # of chrome this program never themed, and on CentOS it is a grey
+        # strip across the top of a window whose every other edge is ours;
+        # on a Mac it is in the system bar, which is why nobody building
+        # this had seen it. The two menus now hang off buttons at the foot
+        # of the sidebar, and keep their contents exactly as they were.
+        self.view_menu = QMenu("View", self)
         self.target_summary_action = self.target_summary_dock.toggleViewAction()
         self.target_summary_action.setText("Selected Wells")
         self.target_summary_action.setShortcut(QKeySequence("Ctrl+Shift+T"))
@@ -613,7 +619,7 @@ class ViewerWindow(QMainWindow):
         )
         self.position_numbers_action.setShortcut(QKeySequence("Ctrl+Shift+N"))
         self.position_numbers_action.toggled.connect(self.set_position_numbers_visible)
-        self.help_menu = self.menuBar().addMenu("Help")
+        self.help_menu = QMenu("Help", self)
         self.shortcuts_action = self.help_menu.addAction("Keyboard Shortcuts")
         self.shortcuts_action.setShortcut(QKeySequence("?"))
         self.shortcuts_action.triggered.connect(self.show_shortcuts)
@@ -621,6 +627,19 @@ class ViewerWindow(QMainWindow):
         self.diagnostics_action.triggered.connect(self.copy_diagnostics)
         self.log_folder_action = self.help_menu.addAction("Open Log Folder")
         self.log_folder_action.triggered.connect(self.open_log_folder)
+        # A QAction's shortcut only fires while the widget holding it is
+        # visible, and a menu bar was that widget. Measured: an action merely
+        # parented to the window does nothing, and so does one in a menu with
+        # no visible host - including a menu on a button inside a hidden
+        # sidebar. Ctrl+Shift+S is how a hidden sidebar is brought back, so
+        # losing it would shut the door this pattern exists to keep open.
+        # Adding them here makes every shortcut the window's own, reachable
+        # wherever the menus happen to live.
+        for menu in (self.view_menu, self.help_menu):
+            for action in menu.actions():
+                self.addAction(action)
+        self.workspace_sidebar.view_menu_button.setMenu(self.view_menu)
+        self.workspace_sidebar.help_menu_button.setMenu(self.help_menu)
 
     def copy_diagnostics(self) -> None:
         """Put on the clipboard what a report needs, and nothing private.

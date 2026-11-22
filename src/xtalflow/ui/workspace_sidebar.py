@@ -226,6 +226,25 @@ class WorkspaceSidebar(QWidget):
         mxlive_divider.setObjectName("SidebarDivider")
         mxlive_divider.setFixedHeight(1)
 
+        # The two menus that used to be a menu bar across the top of the
+        # window. They are kept as menus - the same QAction objects, so a
+        # step that greys one out greys it here too, and a plate map that
+        # does not exist at this site is simply not in the list - and the
+        # window hands each button its menu after the sidebar is built.
+        menus_divider = QFrame()
+        menus_divider.setObjectName("SidebarDivider")
+        menus_divider.setFixedHeight(1)
+        self.view_menu_button = QPushButton("View")
+        self.help_menu_button = QPushButton("Help")
+        menus_row = QHBoxLayout()
+        menus_row.setContentsMargins(0, 0, 0, 0)
+        menus_row.setSpacing(theme.SPACING_S)
+        for button in (self.view_menu_button, self.help_menu_button):
+            button.setObjectName("SidebarMenu")
+            button.setCursor(Qt.PointingHandCursor)
+            # Upwards: there is nothing below the foot of the window.
+            menus_row.addWidget(button, 1)
+
         layout = QVBoxLayout()
         layout.setContentsMargins(theme.SPACING_M, theme.SPACING_L, theme.SPACING_M, theme.SPACING_L)
         layout.setSpacing(theme.SPACING_S)
@@ -248,6 +267,10 @@ class WorkspaceSidebar(QWidget):
         layout.addSpacing(theme.SPACING_L)
         layout.addWidget(mxlive_title)
         layout.addWidget(self.history_button)
+        layout.addSpacing(theme.SPACING_L)
+        layout.addWidget(menus_divider)
+        layout.addSpacing(theme.SPACING_S)
+        layout.addLayout(menus_row)
         self.setLayout(layout)
 
         self.collapse_button.clicked.connect(self.collapse_requested.emit)

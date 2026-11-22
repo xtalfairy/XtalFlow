@@ -17,9 +17,9 @@ import pytest
 from xtalflow.domain.crystal_score import crystal_first_order
 from xtalflow.domain.plan_lifecycle import PlanRevision
 from PyQt5.QtCore import QEvent, QPoint, Qt
-from PyQt5.QtGui import QImage, QMouseEvent, QPixmap
+from PyQt5.QtGui import QImage, QKeySequence, QMouseEvent, QPixmap
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication, QMessageBox
+from PyQt5.QtWidgets import QApplication, QMenuBar, QMessageBox
 
 from xtalflow.domain import (
     PLATE_FORMATS,
@@ -7532,6 +7532,74 @@ def test_the_plate_map_stays_inside_the_step_it_describes(tmp_path: Path) -> Non
     window.experiments._set_select_wells_panels_available(True)
     app.processEvents()
     assert window.plate_map_dock.isVisible(), "and back on return"
+
+    window.close()
+    app.processEvents()
+
+
+def test_every_menu_shortcut_fires_without_a_menu_bar() -> None:
+    """The thing that breaks silently when a menu bar is removed.
+
+    A QAction's shortcut only fires while the widget holding it is visible,
+    and the menu bar was that widget. Measured: an action merely parented to
+    the window does nothing; so does one in a menu whose host is hidden,
+    which a menu on a button inside a hidden sidebar is. Ctrl+Shift+S is how
+    a hidden sidebar comes back, so losing it would shut the only door.
+
+    On a Mac the menu bar lives in the system bar, so none of this shows: the
+    suite would have stayed green while every shortcut died on the beamline's
+    CentOS. Hence a test that presses the keys.
+    """
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(RockMakerImageRepository(FIXTURE_ROOT))
+    window.show()
+    app.processEvents()
+
+    def press(sequence: str) -> None:
+        key = QKeySequence(sequence)[0]
+        QTest.keyClick(
+            window,
+            Qt.Key(key & ~int(Qt.KeyboardModifierMask)),
+            Qt.KeyboardModifiers(key & int(Qt.KeyboardModifierMask)),
+        )
+        app.processEvents()
+
+    # The sidebar's own shortcut, both ways - including from the state where
+    # the sidebar, and so its menu buttons, cannot be clicked at all.
+    assert window.workspace_sidebar.isVisible()
+    press("Ctrl+Shift+S")
+    assert not window.workspace_sidebar.isVisible(), "hidden by its shortcut"
+    press("Ctrl+Shift+S")
+    assert window.workspace_sidebar.isVisible(), "and back, with the panel away"
+
+    # And one that does something visible on the canvas.
+    before = window.image_canvas._show_position_numbers
+    press("Ctrl+Shift+N")
+    assert window.image_canvas._show_position_numbers is not before
+
+    window.close()
+    app.processEvents()
+
+
+def test_the_menus_hang_off_the_sidebar_not_a_menu_bar() -> None:
+    """Where the eight items live now, and that they are the same items.
+
+    The menus are the same QMenu objects they always were, so everything
+    acting on their actions still works: a step greying out Selected Wells
+    greys it here, and a site with no crystal model has no Plate Map action
+    to show in the first place.
+    """
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(RockMakerImageRepository(FIXTURE_ROOT))
+
+    sidebar = window.workspace_sidebar
+    assert sidebar.view_menu_button.menu() is window.view_menu
+    assert sidebar.help_menu_button.menu() is window.help_menu
+    assert [action.text() for action in window.help_menu.actions()] == [
+        "Keyboard Shortcuts", "Copy Diagnostics", "Open Log Folder",
+    ]
+    # Nothing is in a menu bar, and the window does not grow one.
+    assert window.findChild(QMenuBar) is None
 
     window.close()
     app.processEvents()

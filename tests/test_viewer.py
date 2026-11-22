@@ -7584,6 +7584,9 @@ def test_every_menu_shortcut_fires_without_a_menu_bar() -> None:
 def test_the_menus_hang_off_the_sidebar_not_a_menu_bar() -> None:
     """Where the eight items live now, and that they are the same items.
 
+    One button, not two: the items are all about this window rather than
+    about a plan, and they are opened rarely.
+
     The menus are the same QMenu objects they always were, so everything
     acting on their actions still works: a step greying out Selected Wells
     greys it here, and a site with no crystal model has no Plate Map action
@@ -7593,13 +7596,46 @@ def test_the_menus_hang_off_the_sidebar_not_a_menu_bar() -> None:
     window = ViewerWindow(RockMakerImageRepository(FIXTURE_ROOT))
 
     sidebar = window.workspace_sidebar
-    assert sidebar.view_menu_button.menu() is window.view_menu
-    assert sidebar.help_menu_button.menu() is window.help_menu
-    assert [action.text() for action in window.help_menu.actions()] == [
-        "Keyboard Shortcuts", "Copy Diagnostics", "Open Log Folder",
-    ]
+    shown = [action.text() for action in sidebar.settings_button.menu().actions()]
+    # View above, Help below a rule - and every item still present.
+    assert shown[0] == "Selected Wells"
+    assert shown[-3:] == ["Keyboard Shortcuts", "Copy Diagnostics", "Open Log Folder"]
+    assert "" in shown, "a rule between what this window shows and help with it"
+    for action in window.view_menu.actions() + window.help_menu.actions():
+        assert action in sidebar.settings_button.menu().actions(), action.text()
     # Nothing is in a menu bar, and the window does not grow one.
     assert window.findChild(QMenuBar) is None
+
+    window.close()
+    app.processEvents()
+
+
+def test_the_window_opens_inside_the_screen_it_is_given() -> None:
+    """Wider than it was, but never wider than the display.
+
+    It opened at a flat 1440x900, and the Select wells row wants 1520px, so
+    the image filter was given 49px for a label needing 78 and showed none
+    of its four options - on a 2560-wide screen, in a window two thirds its
+    size. Nothing remembered a resize either, so a window widened by hand
+    came back narrow the next morning.
+
+    What matters here is the clamp rather than the number: a researcher on a
+    small laptop must not be handed a window reaching past their own screen,
+    with its foot - and so the Settings button - off the bottom edge.
+    """
+    app = QApplication.instance() or QApplication([])
+    window = ViewerWindow(RockMakerImageRepository(FIXTURE_ROOT))
+    window.show()
+    app.processEvents()
+
+    usable = QApplication.primaryScreen().availableGeometry()
+    # The minimum wins where a screen is smaller than it - a window that
+    # cannot shrink that far is a separate, older matter, and on a screen
+    # that small this row needs folding rather than widening.
+    assert window.width() <= max(usable.width(), 1100)
+    assert window.height() <= max(usable.height(), 700)
+    assert window.width() >= 1100
+    assert window.height() >= 700
 
     window.close()
     app.processEvents()

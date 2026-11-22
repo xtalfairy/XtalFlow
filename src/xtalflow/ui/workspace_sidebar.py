@@ -226,24 +226,42 @@ class WorkspaceSidebar(QWidget):
         mxlive_divider.setObjectName("SidebarDivider")
         mxlive_divider.setFixedHeight(1)
 
-        # The two menus that used to be a menu bar across the top of the
-        # window. They are kept as menus - the same QAction objects, so a
-        # step that greys one out greys it here too, and a plate map that
-        # does not exist at this site is simply not in the list - and the
-        # window hands each button its menu after the sidebar is built.
+        # What used to be a menu bar across the top of the window, and then
+        # briefly two buttons here. One now: these eight items are all about
+        # this window rather than about a plan, and they are opened rarely,
+        # so they ask for one quiet place rather than two labels competing
+        # with the workspace list above them.
+        #
+        # They stay menus - the same QAction objects, so a step that greys
+        # one out greys it here too, and a plate map that does not exist at
+        # this site is simply not in the list - and the window hands this
+        # button its menu once the sidebar is built.
         menus_divider = QFrame()
         menus_divider.setObjectName("SidebarDivider")
         menus_divider.setFixedHeight(1)
-        self.view_menu_button = QPushButton("View")
-        self.help_menu_button = QPushButton("Help")
+        self.settings_button = QToolButton()
+        self.settings_button.setObjectName("SidebarMenu")
+        self.settings_button.setCursor(Qt.PointingHandCursor)
+        self.settings_button.setIcon(
+            QIcon(icons.svg_pixmap(icons.SETTINGS, 18, theme.TEXT_MUTED))
+        )
+        self.settings_button.setIconSize(QSize(18, 18))
+        # The icon alone, the way the panel's own toggle is drawn. The words
+        # live in the tooltip and in the accessible name, so the menu is
+        # still findable by anything reading the window rather than looking
+        # at it, and by anyone hovering.
+        self.settings_button.setToolTip(
+            "What this window shows, and help with the program"
+        )
+        self.settings_button.setAccessibleName("Settings")
+        # The whole button opens the menu, rather than a separate arrow that
+        # is a smaller target than the icon beside it.
+        self.settings_button.setPopupMode(QToolButton.InstantPopup)
         menus_row = QHBoxLayout()
         menus_row.setContentsMargins(0, 0, 0, 0)
         menus_row.setSpacing(theme.SPACING_S)
-        for button in (self.view_menu_button, self.help_menu_button):
-            button.setObjectName("SidebarMenu")
-            button.setCursor(Qt.PointingHandCursor)
-            # Upwards: there is nothing below the foot of the window.
-            menus_row.addWidget(button, 1)
+        menus_row.addWidget(self.settings_button)
+        menus_row.addStretch(1)
 
         layout = QVBoxLayout()
         layout.setContentsMargins(theme.SPACING_M, theme.SPACING_L, theme.SPACING_M, theme.SPACING_L)

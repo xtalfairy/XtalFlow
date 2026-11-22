@@ -46,6 +46,16 @@ SIDEBAR = (
 )
 
 
+# A gear: the window's own settings, as against anything about a plan.
+SETTINGS = (
+    '<circle cx="12" cy="12" r="3"/>'
+    '<path d="M19.1 14.2a7.6 7.6 0 0 0 0-4.4l2-1.6-2-3.4-2.4 1a7.6 7.6 0 0 0 '
+    '-3.8-2.2L12.5 1h-4l-.4 2.6a7.6 7.6 0 0 0-3.8 2.2l-2.4-1-2 3.4 2 1.6a7.6 '
+    '7.6 0 0 0 0 4.4l-2 1.6 2 3.4 2.4-1a7.6 7.6 0 0 0 3.8 2.2l.4 2.6h4l.4-2.6a'
+    '7.6 7.6 0 0 0 3.8-2.2l2.4 1 2-3.4z"/>'
+)
+
+
 # A clock turned back: what the beamline already did.
 HISTORY = (
     '<path d="M3.6 12a8.4 8.4 0 1 0 2.5-6"/>'

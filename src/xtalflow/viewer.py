@@ -203,8 +203,8 @@ class ViewerWindow(QMainWindow):
         self.experiments = ExperimentCoordinator(self)
         self.setStyleSheet(theme.APPLICATION_STYLE_SHEET)
         self.setWindowTitle(APP_WINDOW_TITLE)
-        self.resize(1440, 900)
         self.setMinimumSize(1100, 700)
+        self._open_at_a_width_the_row_fits()
 
         # Home lists what XtalFlow prepares; each experiment then walks its steps.
         self.home_page = HomePage()
@@ -638,8 +638,17 @@ class ViewerWindow(QMainWindow):
         for menu in (self.view_menu, self.help_menu):
             for action in menu.actions():
                 self.addAction(action)
-        self.workspace_sidebar.view_menu_button.setMenu(self.view_menu)
-        self.workspace_sidebar.help_menu_button.setMenu(self.help_menu)
+        # One menu behind one button. View first, because that is what gets
+        # opened while working; Help below a rule, because Copy Diagnostics
+        # is hunted for under pressure and wants a settled place rather than
+        # a short list. Both menus are kept as they are so that everything
+        # acting on their actions - the step gating, the absent plate map -
+        # goes on working untouched.
+        self.settings_menu = QMenu(self)
+        self.settings_menu.addActions(self.view_menu.actions())
+        self.settings_menu.addSeparator()
+        self.settings_menu.addActions(self.help_menu.actions())
+        self.workspace_sidebar.settings_button.setMenu(self.settings_menu)
 
     def copy_diagnostics(self) -> None:
         """Put on the clipboard what a report needs, and nothing private.
@@ -676,6 +685,30 @@ class ViewerWindow(QMainWindow):
                 lines.append(f"  (the log could not be read: {error})")
         QApplication.clipboard().setText("\n".join(lines))
         self.status_message_label.show_message("Diagnostics copied", 4000)
+
+    def _open_at_a_width_the_row_fits(self) -> None:
+        """Open wide enough for the Select wells row to be readable.
+
+        It used to open at a flat 1440x900, which on the beamline's 2560-wide
+        screen is a window two thirds the size of the display showing cut-off
+        text. Measured there at 1440: that row wants 1520px and is given 846,
+        so the image filter had 49px for a label needing 78 and showed none
+        of its four options. Nothing was remembered either, so a window made
+        bigger by hand came back small the next morning.
+
+        1920x1080 is where the row last measured whole. Clamped to what the
+        screen actually offers, less a margin, so a smaller display gets a
+        window that fits it rather than one pushed off its own edges - and
+        the minimum above still wins on a very small screen, where this row
+        needs folding rather than widening.
+        """
+        width, height = 1920, 1080
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            usable = screen.availableGeometry()
+            width = min(width, usable.width() - 80)
+            height = min(height, usable.height() - 80)
+        self.resize(max(width, 1100), max(height, 700))
 
     def _window_size_line(self) -> str:
         """How big the window is, and on what.

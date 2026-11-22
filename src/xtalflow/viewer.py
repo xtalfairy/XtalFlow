@@ -265,6 +265,9 @@ class ViewerWindow(QMainWindow):
         self._update_navigation()
         self._initialize_projects()
         self.set_workspace_panel_visible(self.user_preferences.workspace_panel_visible)
+        self.set_position_numbers_visible(
+            self.user_preferences.position_numbers_visible
+        )
         self.experiments.show_home()
         self.experiments._show_planning_migration_status()
         self._check_shares()
@@ -603,11 +606,11 @@ class ViewerWindow(QMainWindow):
         # seeing it always on.
         self.position_numbers_action = self.view_menu.addAction("Position Numbers")
         self.position_numbers_action.setCheckable(True)
-        self.position_numbers_action.setChecked(False)
-        self.position_numbers_action.setShortcut(QKeySequence("Ctrl+Shift+N"))
-        self.position_numbers_action.toggled.connect(
-            self.image_canvas.set_position_numbers_visible
+        self.position_numbers_action.setChecked(
+            self.user_preferences.position_numbers_visible
         )
+        self.position_numbers_action.setShortcut(QKeySequence("Ctrl+Shift+N"))
+        self.position_numbers_action.toggled.connect(self.set_position_numbers_visible)
         self.help_menu = self.menuBar().addMenu("Help")
         self.shortcuts_action = self.help_menu.addAction("Keyboard Shortcuts")
         self.shortcuts_action.setShortcut(QKeySequence("?"))
@@ -934,6 +937,25 @@ class ViewerWindow(QMainWindow):
         if self.user_preferences.workspace_panel_visible == visible:
             return
         preferences = replace(self.user_preferences, workspace_panel_visible=visible)
+        try:
+            self.preferences_store.save(preferences)
+        except OSError:
+            return
+        self.user_preferences = preferences
+
+    def set_position_numbers_visible(self, visible: bool) -> None:
+        """Show or hide the numbers on the markers, and remember the choice.
+
+        Kept the way the workspace panel is kept, in this account's own
+        preferences file, because it is the same kind of choice: one person
+        deciding how their window looks, not anything about a plan. A
+        failure to write it is not worth a dialog - the window does what was
+        asked for now, and asks again next time.
+        """
+        self.image_canvas.set_position_numbers_visible(visible)
+        if self.user_preferences.position_numbers_visible == visible:
+            return
+        preferences = replace(self.user_preferences, position_numbers_visible=visible)
         try:
             self.preferences_store.save(preferences)
         except OSError:

@@ -19,6 +19,10 @@ class UserPreferences:
     auto_advance_target_count: int | None = None
     review_hint_shown: bool = False
     workspace_panel_visible: bool = True
+    # Off for somebody who has not chosen: the number on a marker is wanted
+    # while a worksheet is being checked against a plate, not while crystals
+    # are being looked for.
+    position_numbers_visible: bool = False
 
     def __post_init__(self) -> None:
         if not 0 <= self.auto_confirm_confidence_percent <= 100:
@@ -53,6 +57,7 @@ class JsonUserPreferencesStore:
                 int(count) if count is not None else None,
                 bool(data.get("review_hint_shown", False)),
                 bool(data.get("workspace_panel_visible", True)),
+                bool(data.get("position_numbers_visible", False)),
             )
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
             return UserPreferences()
@@ -69,6 +74,7 @@ class JsonUserPreferencesStore:
                         preferences.auto_advance_target_count,
                     "review_hint_shown": preferences.review_hint_shown,
                     "workspace_panel_visible": preferences.workspace_panel_visible,
+                    "position_numbers_visible": preferences.position_numbers_visible,
                 },
                 indent=2,
             ) + "\n",

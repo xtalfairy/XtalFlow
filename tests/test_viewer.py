@@ -7422,3 +7422,58 @@ def test_the_view_menu_turns_the_position_numbers_on(tmp_path: Path) -> None:
 
     window.close()
     app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_the_position_number_choice_outlives_the_window(tmp_path: Path) -> None:
+    """Ticked once, still ticked tomorrow - asked for by the operator.
+
+    Kept the way the workspace panel is kept, in this account's own
+    preferences file, because it is the same kind of choice: how one
+    person's window looks, nothing about a plan. The test opens a second
+    window against the same file rather than reading the field back, since
+    saving a value nothing reloads would pass that and fail a person.
+    """
+    preferences = tmp_path / "preferences.json"
+    settings = replace(DEFAULT_SETTINGS, rmserver_root=FIXTURE_ROOT)
+    app = QApplication.instance() or QApplication([])
+
+    first = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        settings=settings,
+        preferences_store=JsonUserPreferencesStore(preferences),
+    )
+    assert not first.position_numbers_action.isChecked(), "off for somebody new"
+    first.position_numbers_action.setChecked(True)
+    app.processEvents()
+    assert first.image_canvas._show_position_numbers
+    first.close()
+    app.processEvents()
+
+    second = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        settings=settings,
+        preferences_store=JsonUserPreferencesStore(preferences),
+    )
+    assert second.position_numbers_action.isChecked(), "the tick came back"
+    assert second.image_canvas._show_position_numbers, "and so did the numbers"
+
+    # And turning it off is remembered just as well.
+    second.position_numbers_action.setChecked(False)
+    app.processEvents()
+    second.close()
+    app.processEvents()
+
+    third = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT),
+        SQLiteReviewStore(tmp_path / "reviews.sqlite3"),
+        settings=settings,
+        preferences_store=JsonUserPreferencesStore(preferences),
+    )
+    assert not third.position_numbers_action.isChecked()
+    assert not third.image_canvas._show_position_numbers
+    third.close()
+    app.processEvents()

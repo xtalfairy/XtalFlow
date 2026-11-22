@@ -33,3 +33,24 @@ def percent(value: float) -> str:
     the person reading it.
     """
     return f"{math.floor(value * 100)}%"
+
+
+def bulk_confirm_question(count: int) -> str:
+    """What "Confirm detected boundaries" is about to do, in its own words.
+
+    The dialog promised a restriction the code had already dropped: "Only
+    wells whose selected targets are inside the detected boundary will be
+    confirmed."  A position outside the outline stopped being a bar once
+    the detected outline turned out to be smaller than the well often
+    enough that the button read "Confirm detected boundaries (0)" beside a
+    list of wells waiting for it.  The sentence stayed behind, so the
+    person was told fewer wells would be confirmed than were - and said yes
+    to that.
+    """
+    return (
+        f"Confirm {counted(count, 'automatically detected boundary')}?\n\n"
+        "A position outside the detected outline does not hold a well back: "
+        "the outline is often smaller than the well, so that is a warning, "
+        "not a bar. Wells with no boundary detected, and boundaries set by "
+        "hand, are left as they are."
+    )

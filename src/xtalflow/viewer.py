@@ -106,7 +106,7 @@ from xtalflow.settings import (
     SITE_CONFIG_PATH,
     with_network_path_policy,
 )
-from xtalflow.text import counted, percent
+from xtalflow.text import bulk_confirm_question, counted, percent
 from xtalflow.application.crystal_scoring import CrystalScoringService
 from xtalflow.domain.crystal_score import (
     CRYSTAL_FIRST,
@@ -1838,9 +1838,7 @@ class ViewerWindow(QMainWindow):
         if QMessageBox.question(
             self,
             "Confirm automatic well calibration",
-            f"Confirm {count} automatically detected well(s)?\n\n"
-            "Only wells whose selected targets are inside the detected boundary "
-            "will be confirmed.",
+            bulk_confirm_question(count),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         ) != QMessageBox.Yes:

@@ -233,6 +233,29 @@ def test_a_score_is_never_rounded_up_past_the_rule_it_is_judged_by() -> None:
     assert counted(2, "box") == "2 boxes"
 
 
+def test_bulk_confirming_does_not_promise_a_restriction_it_dropped() -> None:
+    """The dialog said positions outside the outline would hold a well back.
+
+    They stopped holding one back when the detected outline turned out to
+    be smaller than the well often enough that the button read "Confirm
+    detected boundaries (0)" beside a list of wells waiting for it. Only
+    the sentence in the dialog stayed behind, so the person was told fewer
+    boundaries would be confirmed than were, and said yes to that.
+    """
+    from xtalflow.text import bulk_confirm_question
+
+    question = bulk_confirm_question(12)
+
+    assert "12 automatically detected boundaries" in question
+    assert "1 automatically detected boundary?" in bulk_confirm_question(1)
+    # It must not claim the outline decides which wells are included.
+    assert "Only wells" not in question
+    assert "does not hold a well back" in question
+    # And it still says what is left out, which is a real exclusion.
+    assert "no boundary detected" in question
+    assert "set by hand" in question
+
+
 def test_the_operating_preset_holds_the_stations_the_beamline_has() -> None:
     """Three SHIFTER stations since November 2026, numbered from 0.
 

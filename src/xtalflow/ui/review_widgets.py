@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt5.QtCore import QRectF, QTimer, Qt, pyqtSignal
+from PyQt5.QtCore import QRect, QRectF, QTimer, Qt, pyqtSignal
 from PyQt5.QtGui import (
     QColor,
     QKeySequence,
@@ -224,6 +224,7 @@ class ImageCanvas(QWidget):
 
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(QPen(QColor("#ff4057"), 2))
+        order = self.position_numbers()
         for target in self._targets:
             x, y = transform.image_to_viewport(target.x_px, target.y_px)
             painter.drawEllipse(round(x) - 7, round(y) - 7, 14, 14)
@@ -233,6 +234,7 @@ class ImageCanvas(QWidget):
                 painter.setPen(QPen(QColor("#4da3ff"), 3))
                 painter.drawEllipse(round(x) - 16, round(y) - 16, 32, 32)
                 painter.setPen(QPen(QColor("#ff4057"), 2))
+            self._draw_position_number(painter, x, y, order[target.id])
 
         if self.hasFocus():
             painter.setPen(QPen(QColor("#4da3ff"), 3))
@@ -254,6 +256,59 @@ class ImageCanvas(QWidget):
         image_point = transform.viewport_to_image(event.x(), event.y())
         if image_point is not None:
             self.image_clicked.emit(*image_point, int(event.button()))
+
+    def position_numbers(self) -> dict[str, int]:
+        """Which position each target is, in the order the dose is divided in.
+
+        Sorted here rather than trusted from the tuple, because the number is
+        only worth drawing if it is the order the dose is actually divided
+        in. ``position_order`` is built by sorting a well's targets by
+        ``selected_at`` (``domain/crystal_selection.py``), and the leftover
+        2.5 nL steps go to the lowest orders, so position 1 takes the biggest
+        drop and the last may take none. A tuple restored from the database
+        arrives in whatever order the query gave, so the sort is done again
+        here against the same key.
+        """
+        return {
+            target.id: number
+            for number, target in enumerate(
+                sorted(self._targets, key=lambda item: item.selected_at), start=1
+            )
+        }
+
+    def _draw_position_number(
+        self, painter: QPainter, x: float, y: float, number: int
+    ) -> None:
+        """Write which position this is, in the order the dose is divided in.
+
+        The order decides the drops: a dose that will not go round evenly
+        gives its leftover 2.5 nL steps to the lowest numbers, so 1 takes
+        the biggest share and the last one may take nothing at all. Until
+        now that order lived only in the operator's memory of which spot
+        they clicked first, which is no way to check a worksheet against a
+        plate.
+
+        Drawn as a filled badge with the number reversed out of it, because
+        a crystal image is bright in places and dark in others and plain
+        text is lost on one or the other. The badge sits up and to the
+        right of the cross so it does not cover the spot being marked.
+        """
+        badge = 9 if number < 10 else 13
+        left = round(x) + 8
+        top = round(y) - 8 - badge * 2
+        painter.save()
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#ff4057"))
+        painter.drawRoundedRect(left, top, badge * 2, badge * 2, badge, badge)
+        font = painter.font()
+        font.setPointSize(9)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(QPen(QColor("#ffffff")))
+        painter.drawText(
+            QRect(left, top, badge * 2, badge * 2), Qt.AlignCenter, str(number)
+        )
+        painter.restore()
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt API
         """Keep a double click from marking a second position.

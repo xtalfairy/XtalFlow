@@ -28,6 +28,7 @@ from xtalflow.domain import (
     ReviewSession,
     SWISSCI_MIDI_3_LENS,
     SWISSCI_MRC_2_WELL,
+    TargetPoint,
 )
 from xtalflow.domain.fragment_screening import (
     AssignmentOrder,
@@ -7222,3 +7223,122 @@ def test_the_canvas_reports_a_double_click_once() -> None:
 
     canvas.close()
     app.processEvents()
+
+
+def test_a_marker_is_numbered_in_the_order_its_dose_is_divided() -> None:
+    """The number on a marker has to be the number the dose is split by.
+
+    A dose that will not go round evenly gives its leftover 2.5 nL steps to
+    the lowest position orders, so 25 nL over four positions is 7.5, 7.5, 5,
+    5 and the first-clicked spot takes the biggest drop. Until now which
+    spot was clicked first lived only in the operator's memory, so a
+    worksheet could not be checked against a plate at all.
+
+    The canvas therefore may not number by the order the targets happen to
+    arrive in - restored from the database, that is whatever the query gave.
+    It sorts by selected_at, which is the same key
+    ``crystal_selection_from_selected_crystals`` uses to assign
+    position_order, and this test holds the two together rather than
+    trusting that they agree.
+    """
+    from xtalflow.domain.crystal_selection import (
+        crystal_selection_from_selected_crystals,
+    )
+    from xtalflow.domain.crystal_workflow import CrystalTarget, SelectedCrystal
+    from xtalflow.domain.soaking import split_between_positions
+    from xtalflow.ui.review_widgets import ImageCanvas
+
+    app = QApplication.instance() or QApplication([])
+    base = datetime(2026, 11, 22, 12, 0, tzinfo=timezone.utc)
+    clicked = {"first": 0, "second": 1, "third": 2, "fourth": 3}
+    # Deliberately not in click order, the way a restored tuple arrives.
+    arrived = ("third", "first", "fourth", "second")
+
+    canvas = ImageCanvas()
+    canvas.resize(420, 320)
+    pixmap = QPixmap(420, 320)
+    pixmap.fill(Qt.darkGray)
+    canvas.set_image(
+        pixmap,
+        tuple(
+            TargetPoint(name, "image", 100 + 40 * index, 100,
+                        base + timedelta(seconds=clicked[name]))
+            for index, name in enumerate(arrived)
+        ),
+    )
+
+    on_screen = canvas.position_numbers()
+    assert on_screen == {"first": 1, "second": 2, "third": 3, "fourth": 4}, on_screen
+
+    # And that is the order the dose is actually divided in.
+    selection = crystal_selection_from_selected_crystals(
+        "project",
+        (
+            SelectedCrystal(
+                "image", "1070", "A01a",
+                tuple(
+                    CrystalTarget(name, Decimal("1"), Decimal("1"),
+                                  base + timedelta(seconds=clicked[name]))
+                    for name in arrived
+                ),
+            ),
+        ),
+    )
+    in_the_plan = {
+        position.source_target_id: position.position_order
+        for position in selection.wells[0].soaking_positions
+    }
+    assert in_the_plan == on_screen, (in_the_plan, on_screen)
+
+    shares = split_between_positions(Decimal("25"), 4)
+    assert shares[0] > shares[-1], shares
+    assert in_the_plan["first"] == 1, "the biggest drop is the one marked 1"
+
+    canvas.close()
+    app.processEvents()
+
+
+def test_every_marker_carries_a_number_that_can_be_read() -> None:
+    """Drawn, and drawn so it survives a bright image and a dark one.
+
+    A number nobody can read is the same as no number, and a crystal image
+    is bright in places and dark in others, so the badge is filled and the
+    digit reversed out of it. The check is that white pixels appear beside
+    each marker on both backgrounds - not what shape they make, which only
+    a person can judge.
+    """
+    from xtalflow.ui.review_widgets import ImageCanvas
+
+    app = QApplication.instance() or QApplication([])
+    base = datetime(2026, 11, 22, 12, 0, tzinfo=timezone.utc)
+
+    for background in (Qt.black, Qt.white):
+        canvas = ImageCanvas()
+        canvas.resize(300, 200)
+        pixmap = QPixmap(300, 200)
+        pixmap.fill(background)
+        canvas.set_image(
+            pixmap,
+            tuple(
+                TargetPoint(f"t{index}", "image", 80 + 60 * index, 100,
+                            base + timedelta(seconds=index))
+                for index in range(3)
+            ),
+        )
+        canvas.show()
+        app.processEvents()
+        shot = canvas.grab().toImage()
+
+        for index in range(3):
+            x, y = canvas.transform().image_to_viewport(80 + 60 * index, 100)
+            white = 0
+            for badge_x in range(round(x) + 8, round(x) + 26):
+                for badge_y in range(round(y) - 26, round(y) - 8):
+                    if shot.valid(badge_x, badge_y):
+                        colour = shot.pixelColor(badge_x, badge_y)
+                        if colour.red() > 200 and colour.green() > 200 and colour.blue() > 200:
+                            white += 1
+            assert white > 4, f"no readable digit beside marker {index} on {background}"
+
+        canvas.close()
+        app.processEvents()

@@ -32,6 +32,7 @@ from ..domain.shifter_results import (
     collect_harvest,
     expected_wells,
     file_is_one_of,
+    wells_in_file,
     worksheets_a_revision_sent,
 )
 
@@ -229,7 +230,7 @@ def read_harvest(
                 continue
             # Not refused outright: a worksheet saved twice, or one the
             # instrument has not touched yet, both land here.
-            read_states.append((path, "not a worksheet of this revision"))
+            read_states.append((path, _why_not_ours(text)))
             continue
         read_states.append((path, "read"))
         files.append((path, text))
@@ -253,6 +254,25 @@ def read_harvest(
         rows, report, tuple(read_states), tuple(warnings) + report.notes,
         strays,
     )
+
+
+def _why_not_ours(text: str) -> str:
+    """Why a file at a path we exported to is not this revision's worksheet.
+
+    The two are told apart because they want different things done. A file
+    holding other wells is another revision's worksheet, or another
+    experiment's, and what to do is find out which. A file nothing can be read
+    out of at all is a layout this reader does not know, and what to do is
+    teach it one.
+
+    Said because one sentence for both cost a whole station's harvest. The
+    third SHIFTER answers in its own thirteen columns instead of filling ours
+    in, and all anybody was told was that its file was not a worksheet of this
+    revision - which was the one thing it was not.
+    """
+    if wells_in_file(text):
+        return "not a worksheet of this revision"
+    return "not in a layout XtalFlow can read"
 
 
 def _succeeded_upload(

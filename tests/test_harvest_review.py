@@ -551,3 +551,24 @@ def test_a_plate_split_between_the_two_stations_is_folded_into_one_answer() -> N
     ]
     assert review.summary() == "2 harvests to record"
     assert review.warnings == ()
+
+
+def test_a_file_in_a_layout_nothing_can_read_says_so_and_not_the_other_thing() -> None:
+    """One sentence for both cost a whole station's harvest, and silently.
+
+    Told "not a worksheet of this revision", nobody goes looking for a reader
+    that cannot read the file - they go looking for the right file, and there
+    is no right file: the instrument wrote this one and it is the only copy of
+    its 62 harvests.
+    """
+    plan = _plan()
+    header = ",".join(f"Column{index}" for index in range(15))
+    row = "SwissCI-MRC-3d,1070,AM,A,1,a,OK,,arrived,departed,5,5C-0001,1,,"
+    files = {"/s1/station.csv": f"{header}\r\n{row}\r\n"}
+    store = _store(plan, paths=tuple(files))
+
+    review = _review(plan, store, files, _records(plan))
+
+    assert dict(review.sources) == {
+        "/s1/station.csv": "not in a layout XtalFlow can read"
+    }

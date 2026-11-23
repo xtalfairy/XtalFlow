@@ -507,3 +507,122 @@ def test_a_file_with_no_header_at_all_is_still_read() -> None:
 
     assert len(report.harvested) == 1
     assert report.notes == ()
+
+
+# The layout the third SHIFTER returned on 2026-11-23, read off
+# /smbmount/shifter0 with the experiment id left out. It does not fill our
+# file in: it writes the harvest out in these thirteen columns under the same
+# name and moves the worksheet we sent into an original/ subfolder beside it.
+# The header carries a byte-order mark and no leading semicolon, and the
+# address is one unpadded cell.
+STATION_ZERO_HEADER = (
+    "﻿PlateType,PlateID,Well,Comment,XtalNo,Arr.Time,Dept.Time,"
+    "Duration(s),PuckID,Position,Barcode,ExternalComment,Mounted"
+)
+STATION_ZERO_PICKED = (
+    "SwissCI-MRC-3d,2218,B6c,,1,17:11:45,17:13:40,00:01:55,5C-0018,1,,,Mount"
+)
+STATION_ZERO_UNPICKED = "SwissCI-MRC-3d,2215,A1a,,,,,,,,,,"
+
+
+def test_the_station_that_answers_in_its_own_layout_is_read_and_not_refused() -> None:
+    """The harvest of a whole station was lost to this, and silently.
+
+    320 wells went out to three stations; this one picked 62 of them and
+    answered in its own columns. Read positionally as ours, its XtalNo landed
+    in PlateColumn, nothing read as a well address, and the file was reported
+    as "not a worksheet of this revision" - the one thing it was not. All 62
+    harvests read as not picked yet and could not be recorded.
+    """
+    text = "\r\n".join((
+        STATION_ZERO_HEADER, STATION_ZERO_UNPICKED, STATION_ZERO_PICKED,
+    )) + "\r\n"
+    expected = (("2215", "A01a"), ("2218", "B06c"))
+
+    # The address is padded to the form the worksheet was written with, so
+    # the wells still fingerprint the file as the one we sent.
+    assert sorted(wells_in_file(text)) == sorted(expected)
+    assert file_holds_these_wells(expected, text)
+
+    read = read_shifter_results(text, "shifter0/FragSC.csv")
+    assert read.notes == ()
+    assert [crystal.well_address for crystal in read.harvested] == ["B06c"]
+    picked = read.harvested[0]
+    assert (picked.plate_code, picked.puck_name, picked.puck_position) == (
+        "2218", "5C-0018", "1",
+    )
+    assert picked.harvest_time == "17:13:40"
+    assert picked.arrival_time == "17:11:45"
+    assert read.unpicked == (("2215", "A01a"),)
+
+
+def test_a_mounted_word_nobody_has_seen_is_not_recorded_as_a_harvest() -> None:
+    """Every picked row of the measured file said Mount, and no row failed.
+
+    So what another value means is unknown, and it may well be how this
+    instrument says a pick failed. A puck name beside a word we cannot read
+    is not evidence the crystal went into that puck, and MxLive cannot be
+    asked to take a harvest back.
+    """
+    text = "\r\n".join((
+        STATION_ZERO_HEADER,
+        STATION_ZERO_PICKED.replace(",Mount", ",Lost"),
+    )) + "\r\n"
+
+    read = read_shifter_results(text, "shifter0/FragSC.csv")
+
+    assert read.harvested == ()
+    assert read.attempted == ()
+    assert read.notes == (
+        "FragSC.csv: line 2: B06c says Mounted “Lost”, which nothing "
+        "here knows the meaning of, so its harvest is not read.",
+    )
+
+
+def test_a_header_line_in_a_layout_we_cannot_read_refuses_the_file() -> None:
+    """Fifteen columns wide is not a reason to read fifteen columns of ours.
+
+    This is the branch the station above fell through before it was known:
+    a header nobody here can name, read by position, puts somebody else's
+    column where a puck name is expected and records it as fact.
+    """
+    header = ",".join(f"Column{index}" for index in range(15))
+    row = "SwissCI-MRC-3d,2069,AM,A,1,a,OK,,arrived,departed,5,5C-0001,1,,"
+
+    read = read_shifter_results(f"{header}\r\n{row}\r\n", "unknown.csv")
+
+    assert read.harvested == ()
+    assert read.notes == ("unknown.csv: not a worksheet XtalFlow wrote.",)
+
+
+# Two failed picks and one unpicked row of a file this station returned on
+# 2026-11-23, verbatim but for the plate. Measured over the three files it had
+# written that day: Mounted says Mount on every row with a puck, Fail on a row
+# with both times and no puck, and nothing on a row with neither. No row was
+# ever Fail with a puck, and Comment was empty throughout - which is what the
+# fifteen-column files say a failure with.
+STATION_ZERO_FAILED = (
+    "SwissCI-MRC-3d,2069,A3a,,,2026-11-23 16:50:06,2026-11-23 16:50:08,"
+    "00:00:02,,,,,Fail"
+)
+
+
+def test_a_failed_pick_in_that_layout_is_a_failure_and_not_an_unpicked_well() -> None:
+    """The one thing it must not read as is a crystal nobody has reached.
+
+    A failure is the only record that the crystal was reached and lost, and
+    this layout says it with a departure time, no puck, and Mounted Fail -
+    not in the Comment the fifteen-column files use, which it leaves empty.
+    """
+    text = "\r\n".join((
+        STATION_ZERO_HEADER, STATION_ZERO_FAILED, STATION_ZERO_UNPICKED,
+    )) + "\r\n"
+
+    read = read_shifter_results(text, "shifter0/FragSC.csv")
+
+    assert read.harvested == ()
+    assert [crystal.well_address for crystal in read.attempted] == ["A03a"]
+    assert read.attempted[0].harvest_time == "2026-11-23 16:50:08"
+    assert read.attempted[0].puck_name == ""
+    assert read.unpicked == (("2215", "A01a"),)
+    assert read.notes == ()

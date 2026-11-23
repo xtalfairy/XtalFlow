@@ -55,6 +55,70 @@ POSITION_COLUMN = "DestinationLocation"
 COMMENT_COLUMN = "Comment"
 ARRIVAL_COLUMN = "TimeArrival"
 
+# Columns no worksheet of ours has, written by an instrument that answers in
+# its own layout rather than filling ours in.
+WELL_COLUMN = "Well"
+"""Row, column and subwell in one unpadded cell: A1a, B6c."""
+MOUNTED_COLUMN = "Mounted"
+MOUNTED_INTO_A_PUCK = "mount"
+"""Said of a row with a puck. Fail is said of one with both times and none."""
+
+_COMBINED_WELL = re.compile(r"^([A-H])(\d{1,2})([a-z])$")
+
+# Our column for each name an instrument may write for it, folded.
+#
+# One of this beamline's three SHIFTERs does not fill our file in at all. It
+# writes the harvest out in its own thirteen columns, under the same name, and
+# moves the file we sent into an original/ subfolder beside it. Measured on the
+# file it returned on 2026-11-23: a header line carrying a byte-order mark and
+# no leading semicolon, 320 rows, and - once the addresses are padded - exactly
+# the wells of the worksheet we had sent.
+#
+# Which is why this is read by name and never by position. Before it, a file
+# in that layout fell through to the positional read, where XtalNo landed in
+# PlateColumn and PuckID a column away from DestinationName. The only thing
+# that kept a crystal from being recorded into a puck nobody filled was that
+# the address then came out unreadable and the file was refused whole - so the
+# harvest of a whole station was lost instead, reported as "not a worksheet of
+# this revision", which is the one thing it was not.
+#
+# Both spellings of PositionSubWell are here because files on this beamline
+# carry the header both ways, mixed, 288 of 502 with a header at all. A header
+# the match missed was read as a data row; every harvest still landed in the
+# right place, but the note said the header "is not a well address", and a
+# note that cries wolf teaches somebody to stop reading the notes.
+_COLUMN_ALIASES = {
+    "platetype": ";PlateType",
+    "plateid": "PlateID",
+    "locationshifter": "LocationShifter",
+    "platerow": "PlateRow",
+    "platecolumn": "PlateColumn",
+    "positionsubwell": "PositionSubWell",
+    "comment": COMMENT_COLUMN,
+    "crystalid": "CrystalID",
+    "timearrival": ARRIVAL_COLUMN,
+    "timedeparture": TIME_COLUMN,
+    "pickduration": "PickDuration",
+    "destinationname": PUCK_COLUMN,
+    "destinationlocation": POSITION_COLUMN,
+    "barcode": "Barcode",
+    "externalcomment": "ExternalComment",
+    # The thirteen the other instrument writes.
+    "well": WELL_COLUMN,
+    "xtalno": "CrystalID",
+    "arr.time": ARRIVAL_COLUMN,
+    "dept.time": TIME_COLUMN,
+    "duration(s)": "PickDuration",
+    "puckid": PUCK_COLUMN,
+    "position": POSITION_COLUMN,
+    "mounted": MOUNTED_COLUMN,
+}
+
+# Without all of these a header line is not one we can read a harvest from,
+# and a layout we cannot read is refused rather than guessed at.
+_REQUIRED_COLUMNS = ("PlateID", TIME_COLUMN, PUCK_COLUMN, POSITION_COLUMN)
+_ADDRESS_COLUMNS = ("PlateRow", "PlateColumn", "PositionSubWell")
+
 
 @dataclass(frozen=True)
 class HarvestedCrystal:
@@ -263,14 +327,34 @@ def read_shifter_results(text: str, source: str = "") -> ShifterFile:
         if well is None:
             notes.append(
                 f"{_where(source)}line {number}: "
-                f"{_cell(row, 'PlateRow')}{_cell(row, 'PlateColumn')}"
-                f"{_cell(row, 'PositionSubWell')} is not a well address."
+                f"{_written_well(row)} is not a well address."
             )
             continue
         time = _cell(row, TIME_COLUMN)
         puck = _cell(row, PUCK_COLUMN)
         if not time and not puck:
             unpicked.append((_cell(row, "PlateID"), well))
+            continue
+        mounted = _cell(row, MOUNTED_COLUMN)
+        if puck and mounted and mounted.casefold() != MOUNTED_INTO_A_PUCK:
+            # Measured over the three files this instrument wrote on
+            # 2026-11-23: Mount on every row with a puck, Fail on every row
+            # with both times and no puck, nothing on a row with neither, and
+            # no fourth value anywhere. A Fail therefore needs nothing from
+            # this guard - it has no puck, so it reads as a failed pick by
+            # the same rule as the fifteen-column files, which is what the
+            # test beside it pins.
+            #
+            # The guard is for the value nobody has seen yet. A puck name
+            # beside a word we cannot read is not evidence that the crystal
+            # went into that puck, and a harvest on MxLive cannot be taken
+            # back. So the row is left unrecorded and named, which costs a
+            # harvest that waits and buys a record nobody has to undo.
+            notes.append(
+                f"{_where(source)}line {number}: {well} says Mounted "
+                f"\u201c{mounted}\u201d, which nothing here knows the meaning "
+                f"of, so its harvest is not read."
+            )
             continue
         crystal = HarvestedCrystal(
             _cell(row, "PlateID"), well, time, puck,
@@ -369,17 +453,20 @@ class _Read:
 
 
 def _rows(text: str) -> _Read:
-    """Rows keyed by the column names the worksheet was written with.
+    """Rows keyed by our column names, however the instrument wrote them.
 
-    The SHIFTER rewrites our file in place and **drops the header line**, so a
-    returned file begins with data. The names are then taken from the order
-    XtalFlow wrote.
+    A header line is read by name, so a file in another instrument's layout is
+    read correctly or refused - never read crookedly. A file with no header at
+    all is read by position, as our own columns, because the SHIFTER that
+    rewrites our file in place drops the header line: 214 of 502 files on this
+    beamline have none.
 
-    A row is read only if it has at least the columns XtalFlow writes and no
-    more than the header's, because the fields are a puck name and a time and
-    mistaking one for the other would be recorded as fact. A row wider than
-    the header is a layout nobody here has seen, so the file is refused rather
-    than read crookedly.
+    Positionally, a row is read only if it has at least the columns XtalFlow
+    writes and no more than the header's, because the fields are a puck name
+    and a time and mistaking one for the other would be recorded as fact. The
+    first row must also be a readable address: a file whose first line is a
+    header we do not know is a layout nobody here has seen, and the one thing
+    not to do with it is read it as ours.
 
     A short row is padded, which leaves its harvest columns empty and so
     reports the well as not picked. Files from 2022 on this beamline hold
@@ -390,23 +477,49 @@ def _rows(text: str) -> _Read:
     """
     names = [name.lstrip(";") for name in SHIFTER_HEADER]
     authored = len(WRITTEN_COLUMNS)
-    reader = csv.reader(StringIO(text))
+    reader = csv.reader(StringIO(text.lstrip("\ufeff")))
     rows = [row for row in reader if any(cell.strip() for cell in row)]
     if not rows:
         return _Read([])
-    # Folded, because the instrument writes the header both ways: files on
-    # this beamline carry PositionSubWell and PositionSubwell, mixed. The
-    # column order is the same in both, so a row read positionally still lands
-    # correctly and no harvest was ever lost to this - but the header line was
-    # then read as data and reported as a line that "is not a well address",
-    # and a note that cries wolf about the header teaches somebody to stop
-    # reading the notes.
-    folded = [name.casefold() for name in names]
-    if [cell.strip().lstrip(";").casefold() for cell in rows[0]][: len(names)] == folded:
-        return _Read([_named(names, row) for row in rows[1:]], 2)
-    if all(authored <= len(row) <= len(names) for row in rows):
+    columns = _columns_named_in(rows[0])
+    if columns is not None:
+        return _Read([_by_column(columns, row) for row in rows[1:]], 2)
+    if (
+        all(authored <= len(row) <= len(names) for row in rows)
+        and _well_address(_named(names, rows[0])) is not None
+    ):
         return _Read([_named(names, row) for row in rows])
     return _Read([])
+
+
+def _columns_named_in(heading: list[str]) -> list[str] | None:
+    """Our column for each cell of a header line, or None if it is not one.
+
+    None for a data row as much as for a layout we cannot read, and the two
+    cannot be told apart here: a file with no header begins with data, whose
+    cells name no column of anybody's.
+    """
+    columns = [
+        _COLUMN_ALIASES.get(
+            cell.strip().lstrip("\ufeff").lstrip(";").casefold(), ""
+        )
+        for cell in heading
+    ]
+    found = set(columns)
+    if not all(column in found for column in _REQUIRED_COLUMNS):
+        return None
+    if WELL_COLUMN not in found and not all(
+        column in found for column in _ADDRESS_COLUMNS
+    ):
+        return None
+    return columns
+
+
+def _by_column(columns: list[str], row: list[str]) -> dict[str, str]:
+    """One row under the names its header gave, ignoring columns we have none for."""
+    return {
+        column: cell for column, cell in zip(columns, row) if column
+    }
 
 
 def _named(names: list[str], row: list[str]) -> dict[str, str]:
@@ -418,12 +531,34 @@ def _cell(row: dict[str, str], column: str) -> str:
 
 
 def _well_address(row: dict[str, str]) -> str | None:
-    """A01a, from the row, column and subwell the worksheet was written with."""
-    column = _cell(row, "PlateColumn")
+    """A01a, however the instrument wrote the row, column and subwell.
+
+    One of them writes all three as one unpadded cell, A1a, so a single-digit
+    column is padded here: the padded form is what the worksheet was written
+    with and what MxLive holds the record under.
+    """
+    combined = _cell(row, WELL_COLUMN)
+    if combined:
+        found = _COMBINED_WELL.match(combined)
+        if found is None:
+            return None
+        letter, column, subwell = found.groups()
+    else:
+        letter = _cell(row, "PlateRow")
+        column = _cell(row, "PlateColumn")
+        subwell = _cell(row, "PositionSubWell")
     if not column.isdigit():
         return None
-    well = f"{_cell(row, 'PlateRow')}{int(column):02d}{_cell(row, 'PositionSubWell')}"
+    well = f"{letter}{int(column):02d}{subwell}"
     return well if _WELL_PATTERN.match(well) else None
+
+
+def _written_well(row: dict[str, str]) -> str:
+    """The address cells as the instrument wrote them, for naming a bad row."""
+    return _cell(row, WELL_COLUMN) or (
+        f"{_cell(row, 'PlateRow')}{_cell(row, 'PlateColumn')}"
+        f"{_cell(row, 'PositionSubWell')}"
+    )
 
 
 def _name(source: str) -> str:

@@ -117,11 +117,20 @@ def _records(plan, **filled: Any) -> Sequence[MxLiveLabwork]:
     )
 
 
+def _read(files):
+    """Reads what is there and raises for what is not, as the real one does."""
+    def read(path: str) -> str:
+        if path not in files:
+            raise FileNotFoundError(2, "No such file or directory", path)
+        return files[path]
+    return read
+
+
 def _review(plan, store, files, records, *, username: str = "jjh"):
     sources = prepare_harvest_review(
         EXPID, store, lambda _revision: plan, username=username
     )
-    return read_harvest(sources, lambda path: files[path], lambda _expid: records)
+    return read_harvest(sources, _read(files), lambda _expid: records)
 
 
 def test_a_returned_worksheet_is_read_and_each_crystal_placed() -> None:
@@ -347,7 +356,7 @@ def test_a_split_upload_finds_the_worksheets_of_the_whole_revision() -> None:
         prepare_harvest_review(
             EXPID, store, lambda _revision: plan, username="jjh"
         ),
-        lambda path: files[path],
+        _read(files),
         lambda _expid: _records(plan),
     )
 
@@ -359,7 +368,7 @@ def test_a_split_upload_finds_the_worksheets_of_the_whole_revision() -> None:
             EXPID, store, lambda _revision: plan, username="jjh",
             worksheets_also_from=("rev-1",),
         ),
-        lambda path: files[path],
+        _read(files),
         lambda _expid: _records(plan),
     )
 
@@ -393,7 +402,7 @@ def test_the_other_halfs_file_is_named_as_that_and_not_as_a_problem() -> None:
         EXPID, store, lambda _revision: part, username="jjh", plate_plan=whole
     )
     review = read_harvest(
-        sources, lambda path: files[path], lambda _expid: _records(part)
+        sources, _read(files), lambda _expid: _records(part)
     )
     states = dict(review.sources)
 
@@ -406,7 +415,7 @@ def test_the_other_halfs_file_is_named_as_that_and_not_as_a_problem() -> None:
         prepare_harvest_review(
             EXPID, store, lambda _revision: part, username="jjh"
         ),
-        lambda path: files[path],
+        _read(files),
         lambda _expid: _records(part),
     )
 
@@ -572,3 +581,46 @@ def test_a_file_in_a_layout_nothing_can_read_says_so_and_not_the_other_thing() -
     assert dict(review.sources) == {
         "/s1/station.csv": "not in a layout XtalFlow can read"
     }
+
+
+def test_a_harvest_sitting_in_results_beside_an_untouched_file_is_not_silent() -> None:
+    """The shape that loses a harvest with nothing said at all.
+
+    One station wrote its answer into a results/ subfolder on 2026-11-23,
+    leaving our own worksheet untouched at the path we exported to. Read as it
+    stands that is a plate nobody has picked yet, and every crystal of it
+    reads as not picked with no note of any kind - which is what somebody
+    would have been told had they looked between 15:37 and 16:49. The station
+    writes into our worksheet now, confirmed at the beamline, so this is the
+    shape and not the station: nothing here chose it, and nothing here can
+    promise it will not come back.
+
+    Named and not read: two runs of one revision were measured that day and
+    they disagree well by well, so recording the one beside it could put a
+    crystal in a puck it was taken out of again.
+    """
+    plan = _plan((0,))
+    rows = shifter_worksheet_groups(plan)[0][1]
+    files = {
+        "/s1/f.csv": _returned(rows, picked=False),
+        "/s1/results/f.csv": _returned(rows),
+    }
+    store = _store(plan, paths=("/s1/f.csv",))
+
+    review = _review(plan, store, files, _records(plan))
+
+    assert dict(review.sources) == {"/s1/f.csv": "read"}
+    assert [row.outcome for row in review.rows] == [HarvestOutcome.NOT_PICKED]
+    assert any("/s1/results/f.csv" in note for note in review.warnings), review.warnings
+
+
+def test_an_unpicked_plate_with_nothing_beside_it_says_nothing_extra() -> None:
+    """A plate mid-session is the normal state of a plate, not a warning."""
+    plan = _plan((0,))
+    rows = shifter_worksheet_groups(plan)[0][1]
+    files = {"/s1/f.csv": _returned(rows, picked=False)}
+    store = _store(plan, paths=tuple(files))
+
+    review = _review(plan, store, files, _records(plan))
+
+    assert review.warnings == ()

@@ -32,6 +32,7 @@ from ..domain.shifter_results import (
     collect_harvest,
     expected_wells,
     file_is_one_of,
+    read_shifter_results,
     wells_in_file,
     worksheets_a_revision_sent,
 )
@@ -234,6 +235,15 @@ def read_harvest(
             continue
         read_states.append((path, "read"))
         files.append((path, text))
+        beside = _returned_beside(path, sources.candidates, read_file)
+        if beside is not None:
+            warnings.append(
+                f"{path} is a worksheet of this revision with no harvest in "
+                f"it, and {beside} holds one for the same wells. The file "
+                f"XtalFlow reads is the one it exported to, so every well of "
+                f"it reads as not picked yet. Which of the two is the later "
+                f"run cannot be told from here."
+            )
 
     report = collect_harvest(sources.expected, tuple(files))
     records = tuple(labworks(sources.experiment_id))
@@ -254,6 +264,49 @@ def read_harvest(
         rows, report, tuple(read_states), tuple(warnings) + report.notes,
         strays,
     )
+
+
+RESULTS_FOLDER = "results"
+"""A subfolder one station once wrote its answer into instead of over our file."""
+
+
+def _returned_beside(path: str, candidates, read_file) -> str | None:
+    """A harvest in results/ beside a file of ours that has none, or None.
+
+    One of this beamline's SHIFTERs wrote its answer into a results/ subfolder
+    rather than over our file on 2026-11-23, and the share still holds what it
+    left. It does not do that any more - the beamline has since confirmed that
+    it writes the harvest into our worksheet where we put it, and checked the
+    values there - so this finds nothing on a station working as it now works.
+
+    It stays for the shape that behaviour leaves behind, which is the one that
+    costs a harvest in silence: our own untouched worksheet at the path we
+    exported to, every time and puck of it empty, with the harvest sitting
+    unread beside it. Read as it stands, that is a plate nobody has picked
+    yet, said with no note of any kind. Nothing in this program chose when the
+    station writes where, so nothing in it can promise the shape will not come
+    back - and the cost of being wrong about that is a whole station's harvest
+    reported as unpicked.
+
+    The file beside it is named and not read. Two runs of one revision were
+    measured that day, 15:37 and 16:50, and they disagree well by well: A03a
+    went into a puck in the first and failed in the second. Recording the
+    earlier of those as this experiment's harvest would put a crystal in a
+    puck it was taken out of again, and MxLive cannot be asked to take a
+    record back. Which run is the later one is not something a path can say.
+    """
+    folder, _, name = path.rpartition("/")
+    if not folder:
+        return None
+    beside = f"{folder}/{RESULTS_FOLDER}/{name}"
+    try:
+        text = read_file(beside)
+    except OSError:
+        return None
+    if not file_is_one_of(candidates, text):
+        return None
+    found = read_shifter_results(text)
+    return beside if found.harvested or found.attempted else None
 
 
 def _why_not_ours(text: str) -> str:

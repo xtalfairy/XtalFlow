@@ -264,8 +264,10 @@ def read_harvest(
             f"{counted(len(report.shared_addresses), 'well address')} in this "
             f"experiment on more than one plate ({shown}). Nothing will be "
             f"recorded: MxLive finds a record by plate and well but applies "
-            f"the update without the plate, so writing a harvest onto one of "
-            f"them writes it onto every record sharing its address."
+            f"the update without the plate, and it applies every column, so "
+            f"writing a harvest onto one of them overwrites every record "
+            f"sharing its address with a copy of it - the plate it is on and "
+            f"the fragment in it included."
         )
     strays = stray_records(sources.expected, records)
     if strays:

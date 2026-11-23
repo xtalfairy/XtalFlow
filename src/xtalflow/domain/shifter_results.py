@@ -429,12 +429,24 @@ def _addresses_on_more_than_one_plate(
 ) -> tuple[str, ...]:
     """Well addresses this revision sent from more than one plate.
 
-    MxLive finds a record by project, experiment, protein, plate and well, but
-    the update it then applies filters on everything except the plate (its
-    ``AddLabwork`` view). So writing a harvest onto one of two records sharing
-    a well address writes it onto both, and the wrong crystal is then said to
-    be in that puck position. Such an experiment is refused rather than
-    half-written.
+    Read on 2026-11-23 in the server's own code, ``remote/views.py``, class
+    ``AddLabwork`` - the view behind ``upload_labworks/<beamline>/`` - and not
+    inferred: it looks a record up by project, experiment, protein, well **and
+    plate**, then applies the update filtered by project, experiment, protein
+    and well, with the plate left out. It is a ``queryset.update(**details)``,
+    and ``details`` is every column of the record, so the rows it reaches do
+    not merely gain our harvest: they are overwritten column for column with
+    ours, ``plate_code``, ``soak_id`` and the fragment among them. Four
+    records sharing an address become four copies of one, and the other three
+    plates no longer say which crystal they held.
+
+    (The code was read from a 2026-10-17 install tarball on the beamline. That
+    it is what the server is running has not been verified by anyone here.)
+
+    Such an experiment is refused rather than half-written, and it cannot be
+    rescued by writing the siblings back afterwards: each write reaches the
+    others in turn, so the last one leaves them all alike. No per-well check
+    can see it either - the rows it destroys are not the well being written.
     """
     plates: dict[str, set[str]] = {}
     for plate, well in expected:

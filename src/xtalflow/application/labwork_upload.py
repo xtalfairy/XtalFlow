@@ -103,6 +103,42 @@ def payloads_by_well(
     return found
 
 
+def addresses_sent_twice(
+    payloads: Sequence[Mapping[str, Any]]
+) -> tuple[str, ...]:
+    """Addresses this payload carries more than once, which must not be sent.
+
+    An upload sends one record per call, and MxLive's write endpoint looks a
+    record up by plate and well before deciding whether to create it or update
+    it. Two records of one address in one payload would therefore create on
+    the first call and update on the second - and that update is filtered
+    without the plate, so in an experiment where a well address is on two
+    plates it overwrites, column for column, the sibling created seconds
+    earlier.
+
+    Nothing downstream could find it afterwards. ``payloads_by_well`` keeps
+    the last record of an address, so the audit would read as though what was
+    sent is what MxLive holds, and the harvest read compares against that
+    audit.
+
+    No payload like that has been seen: wells are unique upstream by their
+    id, not by the text of their address. Which is why this is a refusal and
+    not a repair - it costs nothing when it is wrong, and what it prevents
+    cannot be undone.
+    """
+    counted_by_address: dict[tuple[str, str], int] = {}
+    for payload in payloads:
+        key = (
+            str(payload.get("plate_code") or ""),
+            str(payload.get("plate_well") or ""),
+        )
+        counted_by_address[key] = counted_by_address.get(key, 0) + 1
+    return tuple(
+        f"{plate} {well}"
+        for (plate, well), seen in counted_by_address.items() if seen > 1
+    )
+
+
 def records_not_stored(
     event: WebDBUploadEvent,
     experiment_id: str,

@@ -94,6 +94,7 @@ from xtalflow.application.labwork_upload import (
     LabworkUploadService,
     UploadAvailability,
     UploadLockState,
+    addresses_sent_twice,
     records_not_stored,
     send_labworks,
 )
@@ -2912,6 +2913,21 @@ class ExperimentCoordinator:
         if answer != QMessageBox.Yes:
             return
         payload = tuple(record.to_payload() for record in records)
+        repeated = addresses_sent_twice(payload)
+        if repeated:
+            # Never seen, and refused anyway: the second record of an address
+            # would be an update rather than a create, and that update is
+            # filtered without the plate, so it would overwrite the sibling
+            # this same upload created moments earlier.
+            QMessageBox.critical(
+                self.window, "Cannot upload",
+                f"{counted(len(repeated), 'well address')} in this upload "
+                f"appears more than once ({', '.join(repeated[:3])}).\n\n"
+                "MxLive updates the second record of an address without "
+                "looking at the plate, which would overwrite the record this "
+                "upload had just created. Nothing was sent.",
+            )
+            return
         try:
             pending = self.upload_service.begin(
                 revision, account.username, account.account_id, endpoint, payload

@@ -3,6 +3,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 from xtalflow.application.labwork_upload import (
+    addresses_sent_twice,
     UploadAvailability,
     records_not_stored,
     upload_lock_state,
@@ -200,3 +201,25 @@ def test_an_attempt_with_no_readable_payload_still_verifies_by_count() -> None:
 
     assert verified_upload_event(event, "RawCrystal-01", ()).status == "failed"
     assert records_not_stored(event, "RawCrystal-01", ()) == ()
+
+
+def test_one_address_twice_in_a_payload_is_named_so_it_can_be_refused() -> None:
+    """The second of them would be an update, and an update reaches siblings.
+
+    MxLive looks a record up by plate and well and creates it if there is
+    none, so the first of a repeated address creates and the second updates -
+    filtered without the plate, overwriting column for column the record this
+    same upload created moments earlier. Nothing downstream could find it:
+    payloads_by_well keeps the last record of an address, so the audit would
+    read as though what was sent is what MxLive holds.
+    """
+    payloads = (
+        {"plate_code": "2215", "plate_well": "C02a", "soak_id": "a"},
+        {"plate_code": "2216", "plate_well": "C02a", "soak_id": "b"},
+        {"plate_code": "2215", "plate_well": "C02a", "soak_id": "c"},
+    )
+
+    # Two plates sharing an address is not the problem here - one plate
+    # carrying the same address twice is.
+    assert addresses_sent_twice(payloads) == ("2215 C02a",)
+    assert addresses_sent_twice(payloads[:2]) == ()

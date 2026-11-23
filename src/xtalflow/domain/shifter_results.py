@@ -201,10 +201,22 @@ class HarvestReport:
 
     @property
     def can_be_recorded(self) -> bool:
-        """Whether anything may be sent: a conflict or a stray row stops all of it.
+        """Whether anything may be sent. Three things stop all of it, for two reasons.
 
-        Partial sending would leave somebody to work out which half went, and
-        the one thing MxLive cannot do is take a record back.
+        A conflict or an unexpected row stops it because what the files say
+        cannot be resolved here, and sending the part that is clear would
+        leave somebody to work out which part went. That is not an argument
+        against partial sending as such - a harvest is routinely sent while
+        wells that were not picked, and picks that failed, are left out, and a
+        later run finishes it.
+
+        A well address on two plates stops it for a reason that has nothing to
+        do with halves. The write destroys records that are not the well being
+        written: MxLive applies the update without the plate and with every
+        column, so the siblings become copies of ours. Sending the wells whose
+        address is unique would be safe on its own terms, and it is still not
+        done - see ``_addresses_on_more_than_one_plate`` for what it would
+        leave behind.
         """
         return (
             bool(self.harvested)

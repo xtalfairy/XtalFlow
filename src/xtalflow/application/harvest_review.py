@@ -250,6 +250,23 @@ def read_harvest(
     rows = plan_harvest_records(
         sources.expected, report, records, sources.payloads
     )
+    if report.shared_addresses:
+        # Said because the button going grey says nothing. This is the one
+        # blocking reason the screen never showed: a conflict names its two
+        # files and a stray names its records, while this reached somebody as
+        # a disabled button beside a line reading "250 harvests to record".
+        # On 2026-11-23 it stopped every one of them, and the only way to find
+        # out why was to read this module.
+        shown = ", ".join(report.shared_addresses[:3])
+        if len(report.shared_addresses) > 3:
+            shown += f", and {len(report.shared_addresses) - 3} more"
+        warnings.append(
+            f"{counted(len(report.shared_addresses), 'well address')} in this "
+            f"experiment on more than one plate ({shown}). Nothing will be "
+            f"recorded: MxLive finds a record by plate and well but applies "
+            f"the update without the plate, so writing a harvest onto one of "
+            f"them writes it onto every record sharing its address."
+        )
     strays = stray_records(sources.expected, records)
     if strays:
         warnings.append(

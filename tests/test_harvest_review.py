@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Sequence
@@ -624,3 +625,34 @@ def test_an_unpicked_plate_with_nothing_beside_it_says_nothing_extra() -> None:
     review = _review(plan, store, files, _records(plan))
 
     assert review.warnings == ()
+
+
+def test_an_address_on_two_plates_says_why_it_is_stopping_everything() -> None:
+    """The one blocking reason that reached somebody as a grey button.
+
+    A conflict names its two files and a stray names its records. This named
+    nothing: on 2026-11-23 a five-plate experiment had 102 of its 187 well
+    addresses on more than one plate, every one of its 250 harvests was held
+    back, and the screen said "250 harvests to record" beside a button that
+    did nothing. The only way to find out why was to read the module.
+    """
+    plan = _plan((0,))
+    rows = shifter_worksheet_groups(plan)[0][1]
+    files = {"/s1/f.csv": _returned(rows)}
+    store = _store(plan, paths=tuple(files))
+    # The same address on a second plate of the same experiment.
+    sources = prepare_harvest_review(
+        EXPID, store, lambda _revision: plan, username="jjh"
+    )
+    sources = replace(
+        sources,
+        expected=sources.expected + (("2070", sources.expected[0][1]),),
+    )
+
+    review = read_harvest(sources, _read(files), lambda _expid: _records(plan))
+
+    assert not review.can_record
+    assert any("on more than one plate" in note for note in review.warnings), (
+        review.warnings
+    )
+    assert any(sources.expected[0][1] in note for note in review.warnings)

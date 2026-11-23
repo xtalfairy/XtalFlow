@@ -757,6 +757,12 @@ class ProjectController:
         if project is not None and project.active_image_set_id is not None:
             self.activate_image_set(project.active_image_set_id)
 
+    def image_sets_in_experiment(self) -> set[str]:
+        """Plates the open experiment has selected wells on, for its list."""
+        if self.workspace_store is None or not self.experiment_id:
+            return set()
+        return self.workspace_store.image_sets_with_positions(self.experiment_id)
+
     def _release_review_controller(self) -> None:
         if self.review_controller is not None:
             self._image_filter = self.review_controller.image_filter

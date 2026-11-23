@@ -311,6 +311,22 @@ class ViewerWindow(QMainWindow):
         self.plate_filter_input = QLineEdit()
         self.plate_filter_input.setPlaceholderText("Find plate…")
         self.plate_filter_input.setClearButtonEnabled(True)
+        # A plate belongs to the workspace, so every experiment in it lists
+        # every plate - and a workspace here holds thirty or more. This
+        # narrows the list to the ones the open experiment has worked on.
+        self.plate_scope_input = QComboBox()
+        self.plate_scope_input.addItem("All plates", False)
+        self.plate_scope_input.addItem("Wells selected here", True)
+        self.plate_scope_input.setToolTip(
+            "An experiment keeps no plates of its own: a plate belongs to the "
+            "workspace, and every experiment in it sees all of them.\n\n"
+            "\"Wells selected here\" lists only the plates this experiment has "
+            "selected a well on, plus the plate open now. A new experiment has "
+            "selected none, so it sees the plate it opened on and nothing else."
+        )
+        self.plate_scope_input.setCurrentIndex(
+            1 if self.user_preferences.plate_list_shows_experiment_only else 0
+        )
         self.image_set_list = ImageSetListView()
         self.image_set_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.image_set_model = ProjectImageSetListModel(self._target_count_for_image_set)
@@ -328,6 +344,7 @@ class ViewerWindow(QMainWindow):
         plates_layout.setContentsMargins(0, 0, 0, 0)
         plates_layout.addLayout(plates_header)
         plates_layout.addWidget(self.plate_filter_input)
+        plates_layout.addWidget(self.plate_scope_input)
         plates_layout.addWidget(self.image_set_list, 1)
         plates_panel = QWidget()
         plates_panel.setMinimumWidth(200)
@@ -861,6 +878,7 @@ class ViewerWindow(QMainWindow):
         self.experiment_page.primary_requested.connect(self.experiments._primary_action)
         self.experiment_page.stepper.step_selected.connect(self.experiments.go_to_step)
         self.plate_filter_input.textChanged.connect(self._filter_plate_list)
+        self.plate_scope_input.currentIndexChanged.connect(self._change_plate_scope)
         self.target_summary_button.toggled.connect(self.target_summary_dock.setVisible)
         self.target_summary_dock.visibilityChanged.connect(
             self._target_summary_visibility_changed
@@ -1556,10 +1574,45 @@ class ViewerWindow(QMainWindow):
 
     def _filter_plate_list(self, text: str) -> None:
         query = text.strip().casefold()
+        worked_on = self._plates_with_wells_in_this_experiment()
         for row, image_set in enumerate(self.image_set_model.image_sets):
-            self.image_set_list.setRowHidden(
-                row, bool(query) and query not in image_set.plate_code.casefold()
+            hidden = bool(query) and query not in image_set.plate_code.casefold()
+            if worked_on is not None and image_set.id not in worked_on:
+                hidden = True
+            self.image_set_list.setRowHidden(row, hidden)
+
+    def _plates_with_wells_in_this_experiment(self) -> set[str] | None:
+        """The ids the list is narrowed to, or None to show the workspace."""
+        if not self.plate_scope_input.currentData():
+            return None
+        try:
+            worked_on = self.project_controller.image_sets_in_experiment()
+        except ReviewPersistenceError:
+            # Narrowing is a convenience; failing to read it must not take
+            # the plate list away. Show the workspace and say nothing.
+            return None
+        # The plate on screen stays listed whatever it has on it, or opening
+        # a plate in this view would hide the plate just opened.
+        active = self.project_controller.active_project
+        if active is not None and active.active_image_set_id is not None:
+            worked_on = worked_on | {active.active_image_set_id}
+        return worked_on
+
+    def _change_plate_scope(self) -> None:
+        experiment_only = bool(self.plate_scope_input.currentData())
+        preferences = replace(
+            self.user_preferences,
+            plate_list_shows_experiment_only=experiment_only,
+        )
+        try:
+            self.preferences_store.save(preferences)
+        except OSError as error:
+            self.status_message_label.show_message(
+                f"Could not save user preferences: {error}", 5000
             )
+        else:
+            self.user_preferences = preferences
+        self._filter_plate_list(self.plate_filter_input.text())
 
     def _active_plate_format(self) -> PlateFormat | None:
         image_set = self.project_controller.active_image_set

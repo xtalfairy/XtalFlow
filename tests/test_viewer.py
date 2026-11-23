@@ -7964,3 +7964,77 @@ def test_the_eliding_label_does_not_ratchet_itself_shut() -> None:
 
     window.close()
     app.processEvents()
+
+
+@pytest.mark.requires_rmserver_fixture
+@pytest.mark.skipif(not FIXTURE_ROOT.is_dir(), reason="local RMServer fixture is not available")
+def test_the_plate_list_can_be_narrowed_to_the_open_experiments_plates(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A workspace here holds thirty plates and one experiment uses three.
+
+    A plate belongs to the workspace, so every experiment in it lists every
+    plate and there was no way to see only the ones in hand. An experiment
+    records no plates of its own, so the list is narrowed by the trace it
+    does leave: a position placed or an image reviewed.
+    """
+    app = QApplication.instance() or QApplication([])
+    store = SQLiteReviewStore(tmp_path / "reviews.sqlite3")
+    preferences_path = tmp_path / "preferences.json"
+    window = ViewerWindow(
+        RockMakerImageRepository(FIXTURE_ROOT), store,
+        preferences_store=JsonUserPreferencesStore(preferences_path),
+    )
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    page = window.experiment_page
+
+    window.workspace_sidebar.start_buttons[PlanType.RAW_CRYSTAL.value].click()
+    first = window.experiments.current_editor
+    first.protein_input.setText("BRD4")
+    page.primary_button.click()
+    window.load_plate("2070", SWISSCI_MRC_2_WELL)
+    window._auto_detect_calibration()
+    window._accept_current_calibration()
+    window._handle_image_click(600, 500, Qt.LeftButton)
+    window.load_plate("2069", SWISSCI_MRC_2_WELL)
+    app.processEvents()
+
+    rows = {
+        image_set.plate_code: row
+        for row, image_set in enumerate(window.image_set_model.image_sets)
+    }
+    assert set(rows) == {"2070", "2069"}, rows
+    # Somebody who has not chosen sees the whole workspace.
+    assert window.user_preferences.plate_list_shows_experiment_only is False
+    assert not any(window.image_set_list.isRowHidden(row) for row in rows.values())
+
+    window.workspace_sidebar.start_buttons[PlanType.RAW_CRYSTAL.value].click()
+    second = window.experiments.current_editor
+    assert second is not first
+    window.plate_scope_input.setCurrentIndex(1)
+    app.processEvents()
+
+    # The new experiment has worked on nothing, so only the plate it is
+    # showing is listed - the one it opened on, not the one the experiment
+    # before it picked from.
+    assert window.image_set_list.isRowHidden(rows["2070"])
+    assert not window.image_set_list.isRowHidden(rows["2069"])
+
+    # And the choice outlives the window.
+    assert (
+        JsonUserPreferencesStore(preferences_path).load()
+        .plate_list_shows_experiment_only
+        is True
+    )
+
+    window.plate_scope_input.setCurrentIndex(0)
+    app.processEvents()
+    assert not any(window.image_set_list.isRowHidden(row) for row in rows.values())
+    assert (
+        JsonUserPreferencesStore(preferences_path).load()
+        .plate_list_shows_experiment_only
+        is False
+    )
+
+    window.close()
+    app.processEvents()

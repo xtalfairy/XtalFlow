@@ -242,6 +242,32 @@ class SQLiteWorkspaceStore:
         except sqlite3.Error as error:
             raise ReviewPersistenceError("could not delete experiment positions") from error
 
+    def image_sets_with_positions(self, experiment_id: str) -> set[str]:
+        """Image sets this experiment has placed a position on.
+
+        An experiment records no plates of its own - a plate belongs to the
+        workspace, and every experiment in it sees all of them - so the only
+        trace it leaves on one is a position placed.
+
+        Reviewed images were tried as a second trace and dropped. Four
+        plates opened one after another left reviews on two of them, so a
+        list built on reviews hid plates that had been opened and would have
+        made entries come and go for reasons nobody could see. A position is
+        recorded when it is placed, and "wells selected" is already what the
+        plate card counts, so it is a membership that can be explained.
+        """
+        try:
+            rows = self._connection.execute(
+                """SELECT DISTINCT image_set_id FROM image_set_target_point
+                   WHERE experiment_id = ?""",
+                (experiment_id,),
+            ).fetchall()
+        except sqlite3.Error as error:
+            raise ReviewPersistenceError(
+                "could not load the plates this experiment has positions on"
+            ) from error
+        return {row[0] for row in rows}
+
     def experiments_using_images(
         self, image_set_id: str, exclude_experiment_id: str
     ) -> dict[str, tuple[str, ...]]:

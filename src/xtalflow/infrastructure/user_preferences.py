@@ -23,6 +23,13 @@ class UserPreferences:
     # while a worksheet is being checked against a plate, not while crystals
     # are being looked for.
     position_numbers_visible: bool = False
+    # Every experiment in a workspace sees every plate in it, and a
+    # workspace here holds thirty or more. Narrowing the list to the plates
+    # one experiment has worked on is for somebody deep in an experiment,
+    # not for somebody starting one: a new experiment has worked on nothing,
+    # so that view would be empty and there would be no plate to begin with.
+    # The whole workspace is what somebody who has not chosen sees.
+    plate_list_shows_experiment_only: bool = False
 
     def __post_init__(self) -> None:
         if not 0 <= self.auto_confirm_confidence_percent <= 100:
@@ -58,6 +65,7 @@ class JsonUserPreferencesStore:
                 bool(data.get("review_hint_shown", False)),
                 bool(data.get("workspace_panel_visible", True)),
                 bool(data.get("position_numbers_visible", False)),
+                bool(data.get("plate_list_shows_experiment_only", False)),
             )
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
             return UserPreferences()
@@ -75,6 +83,8 @@ class JsonUserPreferencesStore:
                     "review_hint_shown": preferences.review_hint_shown,
                     "workspace_panel_visible": preferences.workspace_panel_visible,
                     "position_numbers_visible": preferences.position_numbers_visible,
+                    "plate_list_shows_experiment_only":
+                        preferences.plate_list_shows_experiment_only,
                 },
                 indent=2,
             ) + "\n",

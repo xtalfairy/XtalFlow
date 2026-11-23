@@ -626,3 +626,64 @@ def test_a_failed_pick_in_that_layout_is_a_failure_and_not_an_unpicked_well() ->
     assert read.attempted[0].puck_name == ""
     assert read.unpicked == (("2215", "A01a"),)
     assert read.notes == ()
+
+
+def _station_zero(rows: tuple[tuple[str, str, str, str], ...]) -> str:
+    """A file in that station's thirteen columns: (plate, well, puck, position)."""
+    lines = [STATION_ZERO_HEADER]
+    for plate, well, puck, position in rows:
+        picked = bool(puck)
+        lines.append(",".join((
+            "SwissCI-MRC-3d", plate, well, "", "1" if picked else "",
+            "2026-11-23 17:11:45" if picked else "",
+            "2026-11-23 17:13:40" if picked else "",
+            "00:01:55" if picked else "",
+            puck, position, "", "", "Mount" if picked else "",
+        )))
+    return "\r\n".join(lines) + "\r\n"
+
+
+def test_three_stations_each_harvesting_its_own_plates_are_one_answer() -> None:
+    """How this beamline actually runs it, with the odd station among them.
+
+    One worksheet goes to all three, each station takes the plates in front of
+    it, and every copy therefore reports the other stations' plates as nobody
+    has picked yet - which is why nothing here counts a file's unpicked rows.
+    A well is harvested if any copy says so, and on 2026-11-23 the three
+    agreed well for well: 82 picked at station 1, 176 at station 2 and 62 at
+    station 0, no overlap, 320 in all.
+    """
+    expected = (("2215", "A01a"), ("2217", "B02a"), ("2219", "C03a"))
+    report = collect_harvest(expected, (
+        # The two that fill our own worksheet in, header dropped.
+        ("/shifter1/jjh/FragSC.csv", _file(
+            _row("A01a", plate="2215", time="17:01:00", puck="5C-0001", position="1"),
+            _row("B02a", plate="2217"),
+            _row("C03a", plate="2219"),
+        )),
+        ("/shifter2/jjh/FragSC.csv", _file(
+            _row("A01a", plate="2215"),
+            _row("B02a", plate="2217", time="17:02:00", puck="5C-0002", position="2"),
+            _row("C03a", plate="2219"),
+        )),
+        # The one that answers in its own thirteen columns.
+        ("/shifter0/jjh/FragSC.csv", _station_zero((
+            ("2215", "A1a", "", ""),
+            ("2217", "B2a", "", ""),
+            ("2219", "C3a", "5C-0018", "3"),
+        ))),
+    ))
+
+    assert sorted(
+        (crystal.plate_code, crystal.well_address) for crystal in report.harvested
+    ) == sorted(expected)
+    assert report.not_harvested == ()
+    assert report.conflicts == ()
+    assert report.unexpected == ()
+    assert report.shared_addresses == ()
+    assert report.notes == ()
+    assert report.can_be_recorded
+    # Each station's own plate, and the puck it put it in.
+    assert {
+        crystal.well_address: crystal.puck_name for crystal in report.harvested
+    } == {"A01a": "5C-0001", "B02a": "5C-0002", "C03a": "5C-0018"}

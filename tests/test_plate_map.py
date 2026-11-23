@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import QApplication
 
 from xtalflow.domain.plate_format import SWISSCI_MIDI_3_LENS, SWISSCI_MRC_2_WELL
 from xtalflow.ui.plate_map import (
-    CELL, DOT, GAP, MARGIN_LEFT, MARGIN_TOP, PlateMap, WellCell,
+    CELL, DOT, GAP, MARGIN_LEFT, MARGIN_TOP, DropMark, PlateMap, WellCell,
 )
 
 # The corner the chosen dot is drawn in, left out when comparing two cells.
@@ -102,44 +102,85 @@ def _cell_corner_has(image, plate_map: PlateMap, well: int, colour: str) -> bool
     )
 
 
-def test_a_chosen_well_still_says_whether_a_crystal_was_seen_in_it(app) -> None:
+def test_a_picked_drop_keeps_its_shape_and_is_not_marked_by_colour_alone(app) -> None:
     """The count used to be drawn in place of the class, which hid it.
 
     Marking a well is the ordinary thing to do, and doing it removed the one
     thing the map is for: whether the model ever saw a crystal there. The
-    class stays, a dot says the well has positions, and how many is in the
-    tooltip - a count is a number to read, and this map is looked at.
+    shape stays and the mark changes colour instead - and because colour
+    alone does not survive a beamline monitor or a reader who cannot
+    separate blue from grey, a picked mark is underlined as well. Three
+    marks to a cell leave no width for a ring, so the ink goes below.
     """
-    from xtalflow.ui import theme
+    from PyQt5.QtGui import QImage
 
     plate_map = PlateMap()
-    cells = (
-        _cell(1, label="crystal", image_index=0),
-        _cell(2, label="crystal", positions=2, image_index=3),
-    )
-    plate_map.show_plate(SWISSCI_MIDI_3_LENS, cells)
-    image = _rendered(plate_map)
-
-    assert _cell_corner_has(image, plate_map, 2, theme.FOCUS)
-    assert not _cell_corner_has(image, plate_map, 1, theme.FOCUS)
-
-    # The two wells are drawn the same but for that dot: the class is still
-    # there in both. Compared down the middle, clear of the corner.
-    row_y = MARGIN_TOP
-    middle = [
+    crystal = (DropMark("crystal"), DropMark("no crystal"), DropMark("empty"))
+    picked = (DropMark("crystal", 2),) + crystal[1:]
+    plate_map.show_plate(
+        SWISSCI_MIDI_3_LENS,
         (
-            image.pixel(MARGIN_LEFT + offset, row_y + down),
-            image.pixel(MARGIN_LEFT + CELL + GAP + offset, row_y + down),
-        )
-        for offset in range(CELL - DOT_FREE)
-        for down in range(CELL - DOT_FREE)
-    ]
+            _cell(1, label="crystal", drops=crystal, image_index=0),
+            _cell(2, label="crystal", positions=2, drops=picked, image_index=3),
+        ),
+    )
+    image = _rendered(plate_map).convertToFormat(QImage.Format_Grayscale8)
 
-    assert all(left == right for left, right in middle)
+    def band(cell_offset: int) -> list[int]:
+        """The strip under the first drop's mark, where the underline goes."""
+        left_edge = MARGIN_LEFT + cell_offset * (CELL + GAP)
+        return [
+            image.pixel(left_edge + across, MARGIN_TOP + down)
+            for across in range(1, CELL // 3)
+            for down in range(18, 24)
+        ]
 
-    # And the number is in the tooltip, for both the well and its drops.
+    # Under the mark, the picked drop has ink the unpicked one does not.
+    # Not "the whole cell is darker": the blue of a picked mark turns to a
+    # mid grey lighter than the near-black of an unpicked one, so counting
+    # ink across the cell says the opposite of what the eye sees. The
+    # underline is the part that is there in one and absent in the other.
+    assert sum(band(1)) < sum(band(0)), (
+        "the underline is missing, so picked differs only in hue"
+    )
+
+    # And the shape is still a crystal in both: picking one did not replace
+    # what the model said with a count.
+    assert plate_map._cells[2].drops[0].label == "crystal"
     assert "2 positions" in PlateMap.tooltip_for(plate_map._cells[2])
     assert "position" not in PlateMap.tooltip_for(plate_map._cells[1])
+
+
+def test_every_subwell_of_a_well_gets_a_mark_of_its_own(app) -> None:
+    """One mark stood for the best drop, so one crystal and three looked alike.
+
+    Which drop it was lived only in the tooltip, and the tooltip is read
+    while the map is looked at.
+    """
+    from PyQt5.QtGui import QImage
+
+    plate_map = PlateMap()
+    one = (DropMark("crystal"), DropMark("no crystal"), DropMark("no crystal"))
+    plate_map.show_plate(
+        SWISSCI_MIDI_3_LENS,
+        (
+            _cell(1, label="crystal", drops=one, image_index=0),
+            _cell(2, label="crystal", drops=(DropMark("crystal"),) * 3, image_index=3),
+        ),
+    )
+    image = _rendered(plate_map).convertToFormat(QImage.Format_Grayscale8)
+
+    cells = [
+        [
+            image.pixel(MARGIN_LEFT + offset * (CELL + GAP) + across, MARGIN_TOP + down)
+            for across in range(CELL)
+            for down in range(CELL)
+        ]
+        for offset in (0, 1)
+    ]
+    assert cells[0] != cells[1], (
+        "a crystal in one drop and a crystal in all three are drawn the same"
+    )
 
 
 def test_a_cell_can_be_read_without_colour(app) -> None:

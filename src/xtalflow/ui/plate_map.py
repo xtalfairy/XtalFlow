@@ -25,8 +25,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PyQt5.QtCore import QSize, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QPainter, QPen
+from PyQt5.QtCore import QPointF, QSize, Qt, pyqtSignal
+from PyQt5.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
 from PyQt5.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from xtalflow.domain.plate_format import PlateFormat
@@ -52,10 +52,18 @@ GLYPHS = {
 }
 CHOSEN_GLYPH = "●"
 LEGEND = (
-    f"{CRYSTAL_GLYPH} crystal   {NO_CRYSTAL_GLYPH} no crystal   {EMPTY_GLYPH} empty   "
-    f"{UNSCORED_GLYPH} not scored   {CHOSEN_GLYPH} positions placed   "
-    f"shaded = reviewed"
+    f"One mark per subwell.   {CRYSTAL_GLYPH} crystal   {NO_CRYSTAL_GLYPH} no crystal   "
+    f"{EMPTY_GLYPH} empty   {UNSCORED_GLYPH} not scored   "
+    f"underlined = positions placed in that subwell   shaded = reviewed"
 )
+
+
+@dataclass(frozen=True)
+class DropMark:
+    """One subwell of a well: what the model made of it, and whether it is picked."""
+
+    label: str = ""      # "crystal", "no crystal", "empty", or "" for not scored
+    positions: int = 0   # positions placed in this drop
 
 
 @dataclass(frozen=True)
@@ -70,6 +78,10 @@ class WellCell:
     reviewed: bool = False
     detail: str = ""         # the tooltip's per-drop lines
     image_index: int | None = None  # where a click goes
+    # One mark per subwell, in drop order. A well of three drops draws three
+    # marks, so "crystal in one of them" and "crystal in all three" stop
+    # looking the same - which is the question the map is opened to answer.
+    drops: tuple[DropMark, ...] = ()
 
 
 class PlateMap(QWidget):
@@ -222,36 +234,103 @@ class PlateMap(QWidget):
         if cell is None:
             return
 
-        glyph_font = QFont(self.font())
-        if not cell.label:
-            glyph, colour = UNSCORED_GLYPH, theme.ATTENTION
-            glyph_font.setBold(True)
-        else:
-            glyph, colour = GLYPHS.get(cell.label, (UNSCORED_GLYPH, theme.ATTENTION))
-            if cell.reviewed:
-                colour = theme.TEXT_TERTIARY
-        painter.setFont(glyph_font)
-        painter.setPen(QColor(colour))
-        painter.drawText(x, y, CELL, CELL, Qt.AlignCenter, glyph)
-
-        if cell.positions:
-            # Chosen or not, and not how many: the count is a number to read,
-            # and this map is looked at rather than read. It used to be drawn
-            # in place of the class, so marking a well hid whether a crystal
-            # was ever seen in it - the one thing the map is for. The count
-            # per drop is in the tooltip, where a number can be read.
-            #
-            # A dot, not a colour: it has to survive a beamline monitor and
-            # somebody who does not separate blue from grey.
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(theme.FOCUS))
-            painter.drawEllipse(x + CELL - DOT - 3, y + CELL - DOT - 3, DOT, DOT)
-            painter.setBrush(Qt.NoBrush)
+        self._paint_drop_marks(painter, cell, x, y)
 
         if well_number == self._current_well:
             painter.setPen(QPen(QColor(theme.FOCUS), 2))
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(x + 1, y + 1, CELL - 2, CELL - 2, 4, 4)
+
+
+    def _paint_drop_marks(self, painter: QPainter, cell: WellCell, x: int, y: int) -> None:
+        """One mark per subwell, left to right in drop order.
+
+        The well used to show its best drop alone, so a well with a crystal
+        in one of three drops and a well with a crystal in all three were
+        drawn identically - and which drop it was lived only in the tooltip.
+
+        A mark is drawn rather than written. At three to a cell each one has
+        about nine pixels, and a font glyph at that size turns to mush while
+        a polygon stays the shape it is.
+        """
+        drops = cell.drops or (DropMark(cell.label, cell.positions),)
+        slot = CELL / len(drops)
+        size = min(slot - 2.0, 11.0)
+        for position, drop in enumerate(drops):
+            centre_x = x + slot * (position + 0.5)
+            centre_y = y + CELL / 2.0
+            self._paint_one_mark(painter, drop, cell.reviewed, centre_x, centre_y, size)
+        painter.setBrush(Qt.NoBrush)
+
+    @staticmethod
+    def _paint_one_mark(
+        painter: QPainter, drop: DropMark, reviewed: bool,
+        centre_x: float, centre_y: float, size: float,
+    ) -> None:
+        half = size / 2.0
+        if drop.positions:
+            # A picked drop keeps its shape and changes colour, so marking a
+            # drop cannot hide whether a crystal was seen in it - and which
+            # drop was picked is now on the map, where the corner dot this
+            # replaced could only say that some drop was.
+            #
+            # Colour is not the only difference: a picked mark is underlined.
+            # Three marks to a cell leave no width for a ring around one, but
+            # a cell is 28 tall against a mark of 11, so the room that is
+            # left is below it. The line survives a monochrome screen and a
+            # reader who does not separate blue from grey.
+            colour = theme.FOCUS
+        elif not drop.label:
+            # Grey, not the attention colour. One unscored mark per well was
+            # an exception worth a colour; three per well across a plate
+            # nobody has scored yet is most of the map, and a map that is
+            # mostly warning is a map that is shouted at rather than read.
+            colour = theme.TEXT_TERTIARY
+        elif reviewed:
+            colour = theme.TEXT_TERTIARY
+        else:
+            colour = GLYPHS.get(drop.label, (UNSCORED_GLYPH, theme.ATTENTION))[1]
+        pen = QPen(QColor(colour))
+        pen.setWidthF(1.4)
+        painter.setPen(pen)
+
+        if not drop.label:
+            # Not scored: an open triangle, the shape the rest of the window
+            # uses for something still to be looked at.
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPolygon(
+                QPolygonF([
+                    QPointF(centre_x, centre_y - half),
+                    QPointF(centre_x + half, centre_y + half),
+                    QPointF(centre_x - half, centre_y + half),
+                ])
+            )
+        elif drop.label == "crystal":
+            painter.setBrush(QColor(colour))
+            painter.drawPolygon(
+                QPolygonF([
+                    QPointF(centre_x, centre_y - half),
+                    QPointF(centre_x + half, centre_y),
+                    QPointF(centre_x, centre_y + half),
+                    QPointF(centre_x - half, centre_y),
+                ])
+            )
+        elif drop.label == "no crystal":
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(QPointF(centre_x, centre_y), half, half)
+        else:
+            # Empty: far less ink than either, so a glance passes over it.
+            painter.setBrush(QColor(colour))
+            painter.drawEllipse(QPointF(centre_x, centre_y), 1.2, 1.2)
+
+        if drop.positions:
+            underline = QPen(QColor(colour))
+            underline.setWidthF(1.8)
+            painter.setPen(underline)
+            painter.drawLine(
+                QPointF(centre_x - half, centre_y + half + 2.5),
+                QPointF(centre_x + half, centre_y + half + 2.5),
+            )
 
 
 class PlateMapPanel(QWidget):
@@ -319,15 +398,20 @@ def plate_map_cells(controller, scores, ranks) -> tuple[WellCell, ...]:
         score = scores.get(best.image_key)
         positions = sum(controller.session.target_count_for(image) for image in images)
         lines = []
+        drops = []
         for image in images:
             suffix = _drop_suffix(plate_format, image)
-            parts = [scores[image.image_key].display_label] if image.image_key in scores else ["not scored"]
+            scored = scores.get(image.image_key)
+            parts = [scored.display_label] if scored is not None else ["not scored"]
             count = controller.session.target_count_for(image)
             if count:
                 parts.append(f"{count} position{'' if count == 1 else 's'}")
             elif controller.session.is_reviewed(image):
                 parts.append("reviewed")
             lines.append(f"{suffix}  {' · '.join(parts)}")
+            drops.append(
+                DropMark(scored.display_label if scored is not None else "", count)
+            )
         cells.append(
             WellCell(
                 well_number=well_number,
@@ -338,6 +422,7 @@ def plate_map_cells(controller, scores, ranks) -> tuple[WellCell, ...]:
                 reviewed=all(controller.session.is_reviewed(image) for image in images),
                 detail="\n".join(lines),
                 image_index=indices[best_position],
+                drops=tuple(drops),
             )
         )
     return tuple(cells)
